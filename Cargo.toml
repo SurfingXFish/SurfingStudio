@@ -1,0 +1,85 @@
+[workspace]
+resolver = "2"
+members = ["tools/vst2-fixture", "platforms/android"]
+
+[package]
+name = "surfing-studio"
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.85"
+description = "SurfingStudio - a MIDI-centric music production workstation written in Rust"
+
+[lib]
+name = "surfing_studio"
+path = "src/lib.rs"
+
+[[bin]]
+name = "surfing-studio"
+path = "src/main.rs"
+
+[dependencies]
+cpal = "0.18"
+midir = "0.11"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hound = "3.5"
+vst3-host = { version = "0.10", default-features = false, features = ["egui-widgets"] }
+raw-window-handle = "0.6"
+vst = "0.4"
+rmp-serde = "1.3.1"
+zstd = "0.14.3"
+crc32fast = "1.5.2"
+flate2 = "1"
+# GPU 音频渲染（离线导出）与设备枚举；版本与 eframe 的 wgpu 后端保持一致，复用同一份编译产物。
+# GPU audio rendering (offline export) and device enumeration; pinned to eframe's wgpu version so the
+# same compiled artifacts are reused.
+wgpu = "29"
+pollster = "0.4"
+
+# 桌面平台（Windows / macOS / Linux）：eframe 走默认特性，文件对话框使用 rfd。
+# Desktop platforms (Windows / macOS / Linux): eframe keeps its default features and file dialogs
+# use rfd.
+[target.'cfg(not(target_os = "android"))'.dependencies]
+# Glow 渲染器用于避免 wgpu 在大网格/原生插件子窗口场景下的分块崩溃。
+# Use the glow renderer; wgpu's staging-buffer path panics on large UI meshes.
+eframe = { version = "0.34", features = ["glow"] }
+rfd = "0.17"
+
+# 安卓平台：winit 只能通过 NativeActivity 运行，`accesskit` 与 native-activity 互斥，
+# 因此关闭默认特性并显式选择 OpenGL ES（glow）渲染路径。
+# Android: winit only runs through NativeActivity, and `accesskit` conflicts with
+# native-activity, so default features are disabled and the OpenGL ES (glow) path is selected.
+[target.'cfg(target_os = "android")'.dependencies]
+eframe = { version = "0.34", default-features = false, features = [
+    "glow",
+    "default_fonts",
+    "android-native-activity",
+] }
+# Storage Access Framework（SAF）导入/导出需要直接调用 Java API。
+# The Storage Access Framework (SAF) import/export calls Java APIs directly.
+jni = "0.21"
+
+# VST1/VST2 editor windows need the Win32 window API. The crate is already in
+# the dependency graph through vst3-host; this exposes it to the plugin module.
+[target.'cfg(target_os = "windows")'.dependencies]
+# `winreg` / `minwinbase` / `fileapi` / `timezoneapi` 用于 ASIO 驱动枚举与本地时间换算；
+# `psapi` / `handleapi` / `tlhelp32` 用于诊断日志的进程资源采样（内存/句柄/线程）。
+# `winreg` / `minwinbase` / `fileapi` / `timezoneapi` power ASIO driver discovery and local time;
+# `psapi` / `handleapi` / `tlhelp32` power diagnostic resource sampling (memory/handles/threads).
+winapi = { version = "0.3", features = ["winuser", "windef", "libloaderapi", "minwindef", "objbase", "combaseapi", "processthreadsapi", "winreg", "winnt", "minwinbase", "fileapi", "timezoneapi", "errhandlingapi", "psapi", "handleapi", "tlhelp32"] }
+
+# Local patch: pin plugin editor content scale to 100 % so plugins that manage
+# their own GUI zoom (e.g. Serum 2) are not double-scaled by the OS DPI.
+[patch.crates-io]
+vst3-host = { path = "vendor/vst3-host" }
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

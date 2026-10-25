@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 所属模块：platforms/android / 应用清单
+     文件用途：把 Rust cdylib 声明为 NativeActivity 启动的应用；没有 Java 代码，因此 hasCode=false。
+     Module: platforms/android / app manifest
+     Purpose: Declare the Rust cdylib as a NativeActivity app; there is no Java code (hasCode=false). -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.surfingstudio.app"
+    android:versionCode="1"
+    android:versionName="1.0.0">
+
+    <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="35" />
+
+    <!-- 编辑器使用 OpenGL ES 3.0 渲染（eframe/glow）。 -->
+    <!-- The editor renders through OpenGL ES 3.0 (eframe/glow). -->
+    <uses-feature android:glEsVersion="0x00030000" android:required="true" />
+    <uses-feature android:name="android.hardware.audio.output" android:required="true" />
+
+    <application
+        android:label="SurfingStudio"
+        android:hasCode="true"
+        android:extractNativeLibs="true"
+        android:allowBackup="true"
+        android:debuggable="true">
+
+        <activity
+            android:name="com.surfingstudio.app.MainActivity"
+            android:exported="true"
+            android:screenOrientation="sensorLandscape"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|screenLayout|uiMode|density|smallestScreenSize"
+            android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
+
+            <!-- 必须与 platforms/android/Cargo.toml 的 [lib] name 一致，NativeActivity 会加载
+                 lib<lib_name>.so 并调用其中的 android_main。
+                 Must match [lib] name in platforms/android/Cargo.toml: NativeActivity loads
+                 lib<lib_name>.so and calls its android_main. -->
+            <meta-data
+                android:name="android.app.lib_name"
+                android:value="surfing_studio_android" />
+
+            <intent-filter>
+                <action android:name="android.app.NativeActivity" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

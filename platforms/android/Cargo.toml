@@ -1,0 +1,25 @@
+[package]
+name = "surfing-studio-android"
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.85"
+publish = false
+description = "Android (NativeActivity) entry point for SurfingStudio"
+
+[lib]
+# NativeActivity 会加载 `lib<name>.so` 并调用其中的 `android_main`。
+# NativeActivity loads `lib<name>.so` and calls its `android_main`.
+name = "surfing_studio_android"
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+# 依赖只在安卓目标下生效：桌面构建（`cargo build --workspace`）会得到空库。
+# Dependencies apply on Android only, so a desktop workspace build produces an empty library.
+[target.'cfg(target_os = "android")'.dependencies]
+android-activity = { version = "0.6", features = ["native-activity"] }
+eframe = { version = "0.34", default-features = false, features = [
+    "glow",
+    "default_fonts",
+    "android-native-activity",
+] }
+surfing-studio = { path = "../.." }
