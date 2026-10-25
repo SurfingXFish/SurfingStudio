@@ -253,6 +253,10 @@ pub struct AppSettings {
     /// Requested buffer size in frames.
     #[serde(default = "default_buffer_frames")]
     pub audio_buffer_frames: u32,
+    /// 请求的输出声道数：`0` 跟随设备，`2` 立体声，`6` 5.1，`8` 7.1。
+    /// Requested output channel count: `0` follows the device, `2` stereo, `6` 5.1, `8` 7.1.
+    #[serde(default)]
+    pub audio_output_channels: u32,
     /// 是否启用 GPU 界面渲染加速；关闭时使用 OpenGL 兼容路径。
     /// Whether GPU UI rendering is accelerated; off uses the OpenGL compatibility path.
     #[serde(default)]
@@ -277,6 +281,11 @@ pub struct AppSettings {
     /// Driver display text used by GPU audio rendering; empty means automatic.
     #[serde(default)]
     pub gpu_audio_driver: String,
+    /// 是否让 GPU 参与实时播放的主总线软限幅；失败或超时自动回退 CPU。
+    /// Whether the GPU limits the master bus during realtime playback; failures/timeouts fall back
+    /// to the CPU.
+    #[serde(default)]
+    pub gpu_audio_realtime_enabled: bool,
     /// 控制器延迟偏移（毫秒），用于补偿控制器的输入延迟。
     /// Controller latency offset in milliseconds, compensating controller input delay.
     #[serde(default)]
@@ -314,6 +323,10 @@ impl AppSettings {
             output_device: self.audio_output_device.clone(),
             sample_rate: Some(self.audio_sample_rate).filter(|rate| *rate >= 8_000),
             buffer_frames: Some(self.audio_buffer_frames).filter(|frames| *frames >= 32),
+            output_channels: match self.audio_output_channels {
+                2 | 6 | 8 => Some(self.audio_output_channels as u16),
+                _ => None,
+            },
         }
     }
 
@@ -330,6 +343,28 @@ impl AppSettings {
     /// Complexity: O(1) time and O(text length) space.
     pub fn gpu_audio_config(&self) -> Option<crate::audio::gpu::GpuRenderConfig> {
         self.gpu_audio_enabled.then(|| {
+            crate::audio::gpu::GpuRenderConfig::new(
+                &self.gpu_audio_api,
+                &self.gpu_audio_device,
+                &self.gpu_audio_driver,
+            )
+        })
+    }
+
+    /// 所属模块：app / 全局设置
+    /// 功能：返回实时播放使用的 GPU 限幅配置；未启用实时加速时为 `None`。
+    /// 输入：`self`。
+    /// 输出/副作用：配置或 `None`；不修改状态。
+    /// 复杂度：时间 O(1)，空间 O(设备键长度)。
+    ///
+    /// Module: app / global settings
+    /// Purpose: Return the GPU limiter config for realtime playback; `None` when realtime
+    /// acceleration is disabled.
+    /// Inputs: `self`.
+    /// Outputs / side effects: the config or `None`; no state change.
+    /// Complexity: O(1) time and O(device-key length) space.
+    pub fn gpu_realtime_config(&self) -> Option<crate::audio::gpu::GpuRenderConfig> {
+        self.gpu_audio_realtime_enabled.then(|| {
             crate::audio::gpu::GpuRenderConfig::new(
                 &self.gpu_audio_api,
                 &self.gpu_audio_device,
@@ -385,6 +420,11 @@ impl AppSettings {
         }
         if crate::audio::gpu::GpuApi::from_id(&settings.gpu_audio_api).is_none() {
             settings.gpu_audio_api.clear();
+        }
+        // 输出声道数只接受 0（跟随设备）/ 2 / 6 / 8；其它值回到自动，避免设备协商失败。
+        // Output channels accept only 0 (follow the device) / 2 / 6 / 8; anything else becomes auto.
+        if !matches!(settings.audio_output_channels, 0 | 2 | 6 | 8) {
+            settings.audio_output_channels = 0;
         }
         settings
     }
@@ -716,12 +756,14 @@ impl Default for AppSettings {
             audio_input_device: None,
             audio_sample_rate: DEFAULT_SAMPLE_RATE,
             audio_buffer_frames: DEFAULT_BUFFER_FRAMES,
+            audio_output_channels: 0,
             gpu_render_enabled: false,
             gpu_render_api: default_gpu_render_api(),
             gpu_audio_enabled: false,
             gpu_audio_api: String::new(),
             gpu_audio_device: String::new(),
             gpu_audio_driver: String::new(),
+            gpu_audio_realtime_enabled: false,
             controller_latency_offset_ms: 0.0,
             controller_input_device: None,
             controller_output_device: None,
@@ -1298,6 +1340,31 @@ impl SurfingApp {
                 ui,
                 "缓冲越小延迟越低，但更依赖驱动稳定性；ASIO 驱动会按自身粒度取整。",
             );
+            ui.horizontal(|ui| {
+                settings_field_label(ui, "输出声道");
+                let mut channels = self.settings.audio_output_channels;
+                let label = match channels {
+                    2 => "立体声（2.0）".to_string(),
+                    6 => "环绕声（5.1）".to_string(),
+                    8 => "环绕声（7.1）".to_string(),
+                    _ => "跟随设备".to_string(),
+                };
+                settings_combo(ui, "settings_audio_channels", label, |ui| {
+                    ui.selectable_value(&mut channels, 0, "跟随设备");
+                    ui.selectable_value(&mut channels, 2, "立体声（2.0）");
+                    ui.selectable_value(&mut channels, 6, "环绕声（5.1）");
+                    ui.selectable_value(&mut channels, 8, "环绕声（7.1）");
+                });
+                if channels != self.settings.audio_output_channels {
+                    self.settings.audio_output_channels = channels;
+                    self.commit_settings();
+                    changed = true;
+                }
+            });
+            settings_hint(
+                ui,
+                "环绕声需要输出设备声明对应声道数；设备不支持时会自动退回立体声，工程仍按所选布局渲染并导出。",
+            );
         });
 
         settings_section(ui, "启用的输入设备", |ui| {
@@ -1378,6 +1445,14 @@ impl SurfingApp {
     fn ui_settings_render(&mut self, ui: &mut egui::Ui) {
         let mut changed = false;
         let mut refresh = false;
+        // 实时限幅状态由引擎持有；锁忙时按未启用显示，避免设置页抢锁。
+        // The engine owns the realtime limiter state; a busy lock reads as disabled so settings never
+        // contend for the lock.
+        let realtime_active = self
+            .engine
+            .try_lock()
+            .map(|engine| engine.gpu_realtime_active())
+            .unwrap_or(false);
         settings_section(ui, "GPU 音频渲染", |ui| {
             ui.horizontal(|ui| {
                 ui.label(
@@ -1393,9 +1468,24 @@ impl SurfingApp {
                     }
                 });
             });
+            settings_hint(ui, "离线导出时把主总线软限幅交给所选 GPU 计算。");
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new("实时播放使用 GPU 软限幅")
+                        .size(11.5)
+                        .color(theme::TEXT),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let mut enabled = self.settings.gpu_audio_realtime_enabled;
+                    if settings_switch(ui, &mut enabled) {
+                        self.settings.gpu_audio_realtime_enabled = enabled;
+                        changed = true;
+                    }
+                });
+            });
             settings_hint(
                 ui,
-                "离线导出时把主总线软限幅交给所选 GPU 计算；实时播放仍由 CPU 处理，避免音频回调等待显卡。",
+                "实时路径在每块最多等待 1 ms；显卡未及时返回或不可用时立即回退 CPU，不会阻塞音频线程。",
             );
         });
 
@@ -1566,6 +1656,18 @@ impl SurfingApp {
                         ui,
                         "导出时按所选设备与 API 运行计算着色器；设备不可用时自动回退 CPU 并在状态栏提示。",
                     );
+                let realtime_label = if !self.settings.gpu_audio_realtime_enabled {
+                    "未启用"
+                } else if realtime_active {
+                    "GPU"
+                } else {
+                    "CPU 回退"
+                };
+                ui.label(
+                    egui::RichText::new(format!("实时限幅：{realtime_label}"))
+                        .size(11.0)
+                        .color(theme::TEXT_DIM),
+                );
             }
             Ok(_) => settings_hint(ui, "未检测到可用的 GPU 计算设备，导出会回退到 CPU 渲染。"),
             Err(error) => {
@@ -1579,6 +1681,12 @@ impl SurfingApp {
         }
         if changed {
             self.commit_settings();
+            // 实时 GPU 限幅只影响主总线终段，可立即应用到当前窗口；配置未变化时不会重建设备。
+            // The realtime GPU limiter only affects the master-bus final stage, so apply it right
+            // away; an unchanged config never rebuilds the device.
+            if let Ok(mut engine) = self.engine.try_lock() {
+                engine.configure_gpu_realtime(self.settings.gpu_realtime_config());
+            }
         }
     }
 

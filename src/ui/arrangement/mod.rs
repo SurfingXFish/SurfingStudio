@@ -2489,7 +2489,7 @@ impl SurfingApp {
             }
         }
 
-        // Dropping a WAV file on a main lane adds an audio clip. Dropping on
+        // Dropping an audio file on a main lane adds an audio clip. Dropping on
         // empty space creates a fresh audio track at the playhead.
         let dropped = ui.ctx().input(|i| i.raw.dropped_files.clone());
         if !dropped.is_empty() {
@@ -2498,13 +2498,9 @@ impl SurfingApp {
                 let Some(path) = file.path else {
                     continue;
                 };
-                let extension = path
-                    .extension()
-                    .and_then(|value| value.to_str())
-                    .unwrap_or_default()
-                    .to_ascii_lowercase();
-                if extension != "wav" {
-                    self.status = "仅支持拖入 WAV 音频文件".into();
+                if !crate::audio::io::AudioRuntime::accepts_audio_file(&path) {
+                    self.status =
+                        "仅支持 WAV / MP3 / FLAC / AAC·M4A / OGG / AIFF 等音频文件".into();
                     continue;
                 }
                 let duration = match crate::audio::io::AudioRuntime::audio_duration_seconds(&path) {

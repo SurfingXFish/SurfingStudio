@@ -2,31 +2,43 @@
 //! 文件用途：
 //! - 提供 GPU 渲染运行时框架：设备与驱动枚举、图形 API 选择以及主总线 GPU 处理入口。
 //! - 定义 `GpuApi` / `GpuDeviceInfo` / `GpuRenderConfig` 等跨层数据契约。
-//! - 只在离线渲染与导出路径使用；实时音频回调内不做任何 GPU 调用。
+//! - 离线渲染与导出使用一次性 GPU 提交；实时播放使用常驻的 `GpuRealtimeLimiter`，
+//!   在限定等待时间内完成主总线软限幅，超时自动回退 CPU。
 //!
 //! 函数清单：
 //! - `GpuApi::ALL` / `id` / `label` / `from_id`：图形 API 标识与展示文本。
 //! - `GpuDeviceInfo::key` / `driver_label` / `device_type_label`：设备去重键与展示文本。
 //! - `GpuRenderConfig::new`：把设置中的字符串转换为渲染配置。
-//! - `GpuRuntime::standard` / `devices` / `apply_master_limiter`：注册后端、枚举设备、执行 GPU 处理。
+//! - `GpuRuntime::standard` / `devices` / `apply_master_limiter` / `open_realtime_limiter`：注册后端、
+//!   枚举设备、执行 GPU 处理。
+//! - `GpuRealtimeLimiter::open` / `process`：常驻实时限幅器。
 //!
 //! Module: audio / GPU rendering
 //! Purpose:
 //! - Provide the GPU rendering runtime framework: device/driver enumeration, graphics-API selection
 //!   and the master-bus GPU processing entry point.
 //! - Define the shared contracts `GpuApi` / `GpuDeviceInfo` / `GpuRenderConfig`.
-//! - Used by offline rendering and export only; the realtime audio callback never touches the GPU.
+//! - Offline rendering and export use one-shot GPU submissions; realtime playback uses the
+//!   persistent `GpuRealtimeLimiter`, which limits the master bus within a bounded wait and falls
+//!   back to the CPU on timeout.
 //!
 //! Functions:
 //! - `GpuApi::ALL` / `id` / `label` / `from_id`: graphics-API identity and display text.
 //! - `GpuDeviceInfo::key` / `driver_label` / `device_type_label`: de-duplication key and display text.
 //! - `GpuRenderConfig::new`: convert the persisted setting strings into a render config.
-//! - `GpuRuntime::standard` / `devices` / `apply_master_limiter`: register backends, enumerate
-//!   devices and run GPU processing.
+//! - `GpuRuntime::standard` / `devices` / `apply_master_limiter` / `open_realtime_limiter`: register
+//!   backends, enumerate devices and run GPU processing.
+//! - `GpuRealtimeLimiter::open` / `process`: persistent realtime limiter.
 
 mod backends;
 
-use backends::wgpu_compute::WgpuComputeBackend;
+use backends::wgpu_compute::{WgpuComputeBackend, WgpuRealtimeLimiter};
+use std::time::Duration;
+
+/// 实时 GPU 限幅的等待上限；超过后本块回退 CPU，避免音频回调被显卡拖住。
+/// Upper bound for the realtime GPU limiter; after it the block falls back to the CPU so the audio
+/// callback is never held by the GPU.
+pub const GPU_REALTIME_TIMEOUT: Duration = Duration::from_millis(1);
 
 /// 图形 API 标识；与 `wgpu::Backend` 一一对应。
 /// Graphics-API identity; maps one-to-one onto `wgpu::Backend`.
@@ -371,5 +383,70 @@ impl GpuRuntime {
             }
         }
         Err(last_error.unwrap_or_else(|| "没有可用的 GPU 渲染后端".to_string()))
+    }
+
+    /// 所属模块：audio / GPU 渲染
+    /// 功能：按配置创建常驻的实时主总线限幅器。
+    /// 输入：`config`：设备/驱动/API 选择。
+    /// 输出/副作用：返回限幅器；设备不可用时返回中文原因。
+    /// 复杂度：时间 O(GPU 设备创建)，空间 O(实时缓冲容量)。
+    ///
+    /// Module: audio / GPU rendering
+    /// Purpose: Create the persistent realtime master-bus limiter for the config.
+    /// Inputs: `config`: device/driver/API selection.
+    /// Outputs / side effects: the limiter; a Chinese reason when no device is usable.
+    /// Complexity: O(GPU device creation) time and O(realtime buffer capacity) space.
+    pub fn open_realtime_limiter(
+        &self,
+        config: &GpuRenderConfig,
+    ) -> Result<GpuRealtimeLimiter, String> {
+        if self.backends.is_empty() {
+            return Err("没有可用的 GPU 渲染后端".into());
+        }
+        WgpuRealtimeLimiter::open(config).map(|inner| GpuRealtimeLimiter { inner })
+    }
+}
+
+/// 常驻的实时 GPU 主总线软限幅器（运行时封装）。
+/// Persistent realtime GPU master-bus soft limiter (runtime wrapper).
+pub struct GpuRealtimeLimiter {
+    inner: WgpuRealtimeLimiter,
+}
+
+impl GpuRealtimeLimiter {
+    /// 所属模块：audio / GPU 渲染
+    /// 功能：创建实时限幅器；等价于 `GpuRuntime::standard().open_realtime_limiter(config)`。
+    /// 输入：`config`：设备/驱动/API 选择。
+    /// 输出/副作用：返回限幅器；失败时返回中文原因。
+    /// 复杂度：时间 O(GPU 设备创建)，空间 O(实时缓冲容量)。
+    ///
+    /// Module: audio / GPU rendering
+    /// Purpose: Create the realtime limiter; equivalent to
+    /// `GpuRuntime::standard().open_realtime_limiter(config)`.
+    /// Inputs: `config`: device/driver/API selection.
+    /// Outputs / side effects: the limiter; a Chinese reason on failure.
+    /// Complexity: O(GPU device creation) time and O(realtime buffer capacity) space.
+    pub fn open(config: &GpuRenderConfig) -> Result<Self, String> {
+        GpuRuntime::standard().open_realtime_limiter(config)
+    }
+
+    /// 所属模块：audio / GPU 渲染
+    /// 功能：在限定时间内对交错样本执行主总线软限幅。
+    /// 输入：
+    /// - `samples`：交错多声道样本。
+    /// - `timeout`：等待上限。
+    /// 输出/副作用：成功时原地改写样本；失败时内容未定义，调用方必须回退 CPU 并丢弃本实例。
+    /// 复杂度：时间 O(样本数)，空间 O(样本数)。
+    ///
+    /// Module: audio / GPU rendering
+    /// Purpose: Apply the master soft limiter to interleaved samples within a deadline.
+    /// Inputs:
+    /// - `samples`: interleaved multichannel samples.
+    /// - `timeout`: wait limit.
+    /// Outputs / side effects: rewrites the samples on success; contents are undefined on failure, so
+    /// the caller must fall back to the CPU and drop this instance.
+    /// Complexity: O(samples) time and O(samples) space.
+    pub fn process(&mut self, samples: &mut [f32], timeout: Duration) -> Result<(), String> {
+        self.inner.process(samples, timeout)
     }
 }

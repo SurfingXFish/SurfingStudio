@@ -101,6 +101,7 @@ pub fn import_project(path: &Path) -> Result<ImportedProject, String> {
     let length_beats = content_end_beats.max(timeline_end_beats).max(4.0);
 
     let project = Project {
+        output_layout: crate::core::model::ChannelLayout::Stereo,
         version: crate::core::model::CURRENT_PROJECT_VERSION,
         name: if manifest.name.trim().is_empty() {
             "SoundBug 工程".to_string()

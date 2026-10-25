@@ -25,6 +25,8 @@ impl SurfingApp {
         let track_index = self.selected_track;
         let track_id = track.id;
         let level = self.ui_levels.get(track_index).copied().unwrap_or(0.0);
+        let output_layout = self.project.output_layout;
+        let mut layout_choice = output_layout;
 
         // Parameter lists are served from the app cache (refreshed a few times
         // per second). Cloning them from the engine every frame would hold the
@@ -481,6 +483,29 @@ impl SurfingApp {
                                 track_changed = true;
                             }
                         });
+                        if output_layout.pairs() > 1 {
+                            ui.horizontal(|ui| {
+                                ui.label("输出通道");
+                                let mut pair = (track.output_pair as usize)
+                                    .min(output_layout.pairs().saturating_sub(1));
+                                egui::ComboBox::from_id_salt(("track_output_pair", track_id))
+                                    .width(ui.available_width())
+                                    .selected_text(output_layout.pair_label(pair))
+                                    .show_ui(ui, |ui| {
+                                        for index in 0..output_layout.pairs() {
+                                            ui.selectable_value(
+                                                &mut pair,
+                                                index,
+                                                output_layout.pair_label(index),
+                                            );
+                                        }
+                                    });
+                                if pair as u8 != track.output_pair {
+                                    track.output_pair = pair as u8;
+                                    track_changed = true;
+                                }
+                            });
+                        }
                         ui.horizontal(|ui| {
                             if ui.checkbox(&mut track.muted, "静音").changed() {
                                 track_changed = true;
@@ -548,6 +573,21 @@ impl SurfingApp {
                         ui.horizontal(|ui| {
                             ui.label("主音量");
                             let _ = ui.add(Slider::new(&mut master_volume, 0.0..=1.2));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("输出布局");
+                            egui::ComboBox::from_id_salt("master_output_layout")
+                                .width(ui.available_width())
+                                .selected_text(layout_choice.label())
+                                .show_ui(ui, |ui| {
+                                    for layout in crate::core::model::ChannelLayout::ALL {
+                                        ui.selectable_value(
+                                            &mut layout_choice,
+                                            layout,
+                                            layout.label(),
+                                        );
+                                    }
+                                });
                         });
                         if let Some(effect_ref) = self.project.master_effect.clone() {
                             match &effect_ref {
@@ -717,6 +757,20 @@ impl SurfingApp {
             }
         }
 
+        if layout_choice != self.project.output_layout {
+            self.project.output_layout = layout_choice;
+            // 布局变化会改变主总线声道数；越界的轨道通道对由引擎夹取到前左/前右。
+            // A layout change alters the master channel count; out-of-range track pairs are clamped
+            // to front left/right by the engine.
+            for track in &mut self.project.tracks {
+                let max_pair = layout_choice.pairs().saturating_sub(1) as u8;
+                if track.output_pair > max_pair {
+                    track.output_pair = max_pair;
+                }
+            }
+            self.mark_dirty();
+            self.status = format!("输出布局已切换为 {}", layout_choice.label());
+        }
         if (self.project.master_volume - master_volume).abs() > 1e-6 {
             self.project.master_volume = master_volume;
             self.mark_dirty();

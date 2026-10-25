@@ -1,6 +1,6 @@
 //! 所属模块：app / 文件操作
 //! 文件用途：
-//! - 新建工程窗口、加载（只调用工程运行时框架 `ProjectRuntime`）、保存工程与 WAV 导出。
+//! - 新建工程窗口、加载（只调用工程运行时框架 `ProjectRuntime`）、保存工程与导出入口。
 //! - 轮询后台加载/保存线程结果，并维护工程路径、未保存标记与导入警告。
 //!
 //! 函数清单：
@@ -10,13 +10,14 @@
 //! - `save_project` / `save_project_as` / `save_project_in_background` / `poll_save_project`：
 //!   抓取插件状态、后台框架保存与保存结果轮询（含自动保存与关闭确认后的关闭）。
 //! - `collect_peak_entries`：收集编曲区波形峰值。
-//! - `export_wav_dialog` / `pause_transport`：离线导出与导出前暂停。
+//! - `export_wav_dialog` / `export_project_copy_to_public` / `export_wav_copy_to_public` / `pause_transport`：
+//!   打开独立导出窗口、公共目录副本导出与导出前暂停。
 //! - `summarize_warnings`：压缩导入警告用于状态栏。
 //!
 //! Module: app / file operations
 //! Purpose:
 //! - Create project windows, load (only through the `ProjectRuntime` framework), save projects and
-//!   export WAV.
+//!   open the export window.
 //! - Poll background load/save workers and maintain the project path, dirty flag
 //!   and import warnings.
 //!
@@ -31,7 +32,9 @@
 //!   capture plugin state, save through the framework in the background and poll the result
 //!   (including autosave and closing after the close confirmation).
 //! - `collect_peak_entries`: collect waveform peaks for the arrangement.
-//! - `export_wav_dialog` / `pause_transport`: offline export and pre-export pause.
+//! - `export_wav_dialog` / `export_project_copy_to_public` / `export_wav_copy_to_public` /
+//!   `pause_transport`: open the standalone export window, copy exports to a public folder and pause
+//!   before exporting.
 //! - `summarize_warnings`: compress import warnings for the status bar.
 
 use super::*;
@@ -50,7 +53,7 @@ use crate::platform::DialogParent;
 /// Inputs: none.
 /// Outputs / side effects: the path or `None`; nothing is created.
 /// Complexity: O(path length) time and space.
-fn default_project_dir() -> Option<PathBuf> {
+pub(super) fn default_project_dir() -> Option<PathBuf> {
     crate::platform::config_dir().map(|base| base.join("Projects"))
 }
 
@@ -885,80 +888,18 @@ impl SurfingApp {
     }
 
     /// 所属模块：app / 文件操作
-    /// 功能：离线导出 WAV：抓取插件状态、按设置决定是否启用 GPU 软限幅并同步渲染。
+    /// 功能：打开独立导出窗口（格式、参数、路径与 GPU 选项都在窗口中设置）。
     /// 输入：`self`。
-    /// 输出/副作用：弹出保存对话框、暂停传输、写盘；状态栏显示导出结果或 GPU 回退原因。
-    /// 复杂度：时间 O(工程长度 × 轨道数)，空间 O(渲染样本数)。
+    /// 输出/副作用：设置 `export.open`；不立即渲染。
+    /// 复杂度：时间 O(1)，空间 O(1)。
     ///
     /// Module: app / file operations
-    /// Purpose: Export WAV offline: capture plugin states, honour the GPU limiter setting and render
-    /// synchronously.
+    /// Purpose: Open the standalone export window (format, options, path and GPU are set there).
     /// Inputs: `self`.
-    /// Outputs / side effects: opens the save dialog, pauses the transport and writes the file; the
-    /// status bar reports the result or the GPU fallback reason.
-    /// Complexity: O(project length × tracks) time and O(rendered samples) space.
+    /// Outputs / side effects: sets `export.open`; nothing is rendered yet.
+    /// Complexity: O(1) time and space.
     pub fn export_wav_dialog(&mut self) {
-        if self.engine_sync_rx.is_some() || self.instrument_load_pending {
-            self.status = "正在加载插件，请稍候…".into();
-            return;
-        }
-        let default_name = format!("{}.wav", self.project.name);
-        let filters: &[(&str, &[&str])] = &[("WAV 音频", &["wav"])];
-        let request = crate::platform::FileRequest {
-            title: "导出 WAV",
-            filters,
-            start_dir: self.settings.default_project_dir.as_deref(),
-            default_name: Some(&default_name),
-            parent: self.dialog_parent(),
-        };
-        // 没有系统对话框时导出到应用工程目录，保证导出始终可用。
-        // Without a native dialog the file lands in the app project directory.
-        let Some(path) = crate::platform::save_file(&request).or_else(|| {
-            (!crate::platform::caps().native_file_dialog)
-                .then(|| default_project_dir().map(|dir| dir.join(&default_name)))
-                .flatten()
-        }) else {
-            return;
-        };
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        self.pause_transport();
-        if !self.engine_stale {
-            let engine = self.engine.clone();
-            if let Ok(engine) = engine.lock() {
-                engine.capture_plugin_states(&mut self.project);
-            };
-        }
-        self.status = "正在离线渲染…".into();
-        let gpu = self.settings.gpu_audio_config();
-        let path_text = path.to_string_lossy().to_string();
-        // 离线导出是同步渲染：卡死或特别慢时，日志里的这条区间就是现场。
-        // Offline export renders synchronously; this span identifies the scene when it hangs or is
-        // unusually slow.
-        let span =
-            diag::Span::start_logged("app.project", "project.export_wav", &[("path", &path_text)]);
-        diag::set_activity("project.export");
-        match crate::audio::io::AudioRuntime::export_project_with_gpu(
-            &self.project,
-            &path,
-            48_000.0,
-            gpu.as_ref(),
-        ) {
-            Ok(None) => {
-                self.status = format!("已导出 {}", path.display());
-                span.end(&[("status", "ok")]);
-            }
-            Ok(Some(warning)) => {
-                self.status = format!("已导出 {}（{warning}）", path.display());
-                span.end(&[("status", "ok"), ("warning", &warning)]);
-            }
-            Err(error) => {
-                self.status = format!("导出失败: {error}");
-                span.end(&[("status", "error"), ("error", &error)]);
-            }
-        }
-        diag::set_activity("ui.frame");
+        self.open_export_window();
     }
 
     /// 所属模块：app / 文件操作 / 公共目录

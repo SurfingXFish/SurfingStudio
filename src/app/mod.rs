@@ -50,6 +50,7 @@ use vst3_host::PluginWindow;
 mod autosave;
 mod backup;
 mod edit;
+mod export;
 mod files;
 mod heartbeat;
 mod history;
@@ -70,6 +71,7 @@ mod transport;
 use transport::PendingAudition;
 mod window_chrome;
 
+pub use export::{ExportChannels, ExportFormat, ExportState};
 pub use plugins::EditorWindow;
 pub use settings::{gpu_render_startup, GpuRenderApi, GpuRenderStartup};
 pub use shared::SharedServices;
@@ -337,6 +339,12 @@ pub struct SurfingApp {
     /// Background copy of a project/WAV snapshot to a public folder (SAF or save-as); the result
     /// only feeds the status bar.
     public_copy_rx: Option<Receiver<Result<Option<String>, String>>>,
+    /// 独立导出窗口的状态（格式、参数、路径与后台任务）。
+    /// Standalone export-window state (format, options, path and background job).
+    pub export: ExportState,
+    /// 后台选择导出路径的对话框结果。
+    /// Background destination picker for the export window.
+    export_dialog_rx: Option<Receiver<Option<PathBuf>>>,
     /// 后台插件同步：加载工程时在独立线程构建插件运行时，避免 UI 冻结。
     /// Background plugin sync used when loading a project; keeps the UI responsive.
     engine_sync_rx: Option<Receiver<(Vec<String>, Vec<PathBuf>)>>,
@@ -901,6 +909,8 @@ impl SurfingApp {
             loaded_project: None,
             save_rx: None,
             public_copy_rx: None,
+            export: ExportState::default(),
+            export_dialog_rx: None,
             engine_sync_rx: None,
             engine_sync_tx: None,
             sync_in_background: false,
@@ -1347,6 +1357,8 @@ impl SurfingApp {
         self.poll_load_project();
         self.poll_save_project();
         self.poll_public_copy();
+        self.poll_export_dialog();
+        self.poll_export();
         self.poll_autosave();
         self.poll_engine_sync();
         // 加载/插件同步结束、关闭请求得以继续时，本帧发送关闭。
@@ -1529,6 +1541,7 @@ impl SurfingApp {
         self.ui_instrument_picker(ctx);
         self.ui_help(ctx);
         self.ui_settings_window(ctx);
+        self.ui_export_window(ctx);
         // 未保存关闭确认绘制在所有面板之上；确认期间窗口保持打开。
         // The unsaved-changes confirmation is painted above every panel; the window stays open
         // while it is shown.

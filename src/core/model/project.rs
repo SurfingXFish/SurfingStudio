@@ -1,5 +1,6 @@
 //! Project container, defaults and the built-in demo arrangement.
 
+use super::channel::{default_layout, ChannelLayout};
 use super::clip::{Clip, Note};
 use super::controller::{evaluate_automation, ControllerKind, ControllerLanes};
 use super::effect::EffectRef;
@@ -37,6 +38,11 @@ pub struct Project {
     /// Minimum arrangement length in beats (can grow automatically).
     #[serde(default = "default_length")]
     pub length_beats: f64,
+    /// 工程输出声道布局：决定主总线、导出与设备映射的声道数。放在结构结尾，旧工程按默认立体声解码。
+    /// Project output layout: decides the master bus, export and device-mapping channel count. Kept
+    /// at the end so older projects decode as stereo.
+    #[serde(default = "default_layout")]
+    pub output_layout: ChannelLayout,
 }
 
 fn default_project_name() -> String {
@@ -70,6 +76,7 @@ impl Default for Project {
             master_volume: 0.85,
             master_controllers: ControllerLanes::default(),
             master_effect: None,
+            output_layout: ChannelLayout::Stereo,
             loop_enabled: false,
             loop_start: 0.0,
             loop_end: 16.0,

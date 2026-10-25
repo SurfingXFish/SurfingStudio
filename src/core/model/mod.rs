@@ -4,6 +4,7 @@
 //! - 定义工程清单版本、主输出伪轨道 id 与 revision 默认值。
 //!
 //! 导出项：
+//! - `channel`：工程输出声道布局与通道对路由名称。
 //! - `clip`：MIDI / 音频片段与音符。
 //! - `controller`：自动化控制器与插值规则。
 //! - `effect`：内置原生效果器与效果链引用。
@@ -20,6 +21,7 @@
 //! - Define the project manifest version, master pseudo-track id and revision default.
 //!
 //! Exports:
+//! - `channel`: project output layout and channel-pair routing names.
 //! - `clip`: MIDI/audio clips and notes.
 //! - `controller`: automation controllers and interpolation rules.
 //! - `effect`: native effects and effect-chain references.
@@ -29,6 +31,7 @@
 //! - `project`: project container, defaults and demo arrangement.
 //! - `template`: mainstream music templates, example projects and the expander.
 
+mod channel;
 mod clip;
 mod controller;
 mod effect;
@@ -38,6 +41,7 @@ mod project;
 pub mod template;
 mod track;
 
+pub use channel::{default_layout, ChannelLayout};
 pub use clip::{AudioSource, Clip, Note};
 pub use controller::{evaluate_automation, AutomationPoint, ControllerKind, ControllerLanes};
 pub use effect::{

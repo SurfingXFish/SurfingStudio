@@ -13,6 +13,7 @@ pub mod browser;
 pub mod controller;
 pub mod effect_picker;
 pub mod effects;
+pub mod export;
 pub mod help;
 pub mod inspector;
 pub mod instrument_picker;
