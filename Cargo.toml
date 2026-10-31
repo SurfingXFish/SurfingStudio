@@ -4,7 +4,7 @@ members = ["tools/vst2-fixture", "platforms/android"]
 
 [package]
 name = "surfing-studio"
-version = "1.1.3-a"
+version = "1.1.4-a"
 edition = "2021"
 rust-version = "1.85"
 description = "SurfingStudio - a MIDI-centric music production workstation written in Rust"
