@@ -249,6 +249,17 @@ impl SurfingApp {
             DEFAULT_NOTE_H
         };
         let visible_beats = (content_end / self.piano_zoom.max(0.25) as f64).max(0.25);
+        // 自动翻页开启时，卷帘同样在播放头越过右侧 90% 处翻页，保持与编曲区一致。
+        // With auto page on, the roll pages at the same 90% threshold as the arrangement.
+        if self.auto_page && self.ui_playing {
+            let playhead = self.playhead();
+            let margin = (visible_beats * 0.1).max(0.25);
+            if playhead < self.piano_view_beat
+                || playhead > self.piano_view_beat + visible_beats - margin
+            {
+                self.piano_view_beat = (playhead - margin).max(0.0);
+            }
+        }
         let view_beat = self.piano_view_beat.clamp(0.0, content_end.max(1.0));
         let px_per_beat = (grid_width / visible_beats as f32).max(6.0);
         let beat_to_x = |beat: f64| grid_left + (beat - view_beat) as f32 * px_per_beat;

@@ -7,7 +7,7 @@
 //! - `SurfingApp::ui_lane_paste_prompt`：子轨覆盖确认弹窗。
 //! - `SurfingApp::app_bar`：应用栏：拖动窗口、隐藏下拉栏、项目栏与窗口按钮。
 //! - `SurfingApp::ui_main_menu`：主页 / 文件 / 编辑 / VST 插件 / 帮助 / 设置入口，返回菜单区域用于点击外部收起。
-//! - `SurfingApp::main_toolbar`：工具栏：添加轨道、走带、BPM/拍号、循环起止与鼠标模式。
+//! - `SurfingApp::main_toolbar`：工具栏：走带、BPM/拍号、循环、自动翻页与鼠标模式。
 //! - `SurfingApp::window_resize_edges`：无边框窗口的边缘与角落缩放热区。
 //! - `SurfingApp::status_bar`：状态、CPU、音频设备与 MIDI 指示。
 //! - `apply_chrome_style` / `apply_menu_style`：IDEA 风格的应用栏与弹出菜单样式。
@@ -648,6 +648,30 @@ impl SurfingApp {
                     {
                         self.project.loop_end = loop_end.max(self.project.loop_start + 0.25);
                         self.mark_dirty();
+                    }
+
+                    // 自动翻页：播放时让编曲区与卷帘跟随播放头，避免手动滚动。
+                    // Auto page: follow the playhead in the arrangement and rolls while playing.
+                    toolbar_separator(ui);
+                    let auto_page_shortcut =
+                        self.settings.shortcut_label(ShortcutAction::ToggleAutoPage);
+                    if ui
+                        .add(
+                            egui::Button::new(egui::RichText::new("自动翻页").size(11.5))
+                                .selected(self.auto_page)
+                                .min_size(egui::Vec2::new(64.0, 24.0)),
+                        )
+                        .on_hover_text(format!(
+                            "播放时自动翻页跟随播放头（快捷键 {auto_page_shortcut}）"
+                        ))
+                        .clicked()
+                    {
+                        self.auto_page = !self.auto_page;
+                        self.status = if self.auto_page {
+                            "自动翻页：开".into()
+                        } else {
+                            "自动翻页：关".into()
+                        };
                     }
 
                     // Pointer tool selector (arrangement + piano/controller roll).

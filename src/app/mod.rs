@@ -210,6 +210,9 @@ pub struct SurfingApp {
 
     pub view_start: f64,
     pub visible_beats: f64,
+    /// 播放时自动翻页，让视图跟随播放头；仅 UI 状态，不持久化。
+    /// Auto-page while playing so the view follows the playhead; UI-only, never persisted.
+    pub auto_page: bool,
     pub snap_beats: f64,
 
     pub arr_drag: ArrangementDrag,
@@ -1246,6 +1249,7 @@ impl SurfingApp {
             mouse_mode: MouseMode::Select,
             view_start: 0.0,
             visible_beats: 32.0,
+            auto_page: false,
             snap_beats: 0.25,
             arr_drag: ArrangementDrag::None,
             piano_drag: PianoDrag::None,

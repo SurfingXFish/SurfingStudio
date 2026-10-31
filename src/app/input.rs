@@ -128,6 +128,17 @@ impl SurfingApp {
                     );
                 }
             }
+            if self
+                .settings
+                .shortcut_pressed(ctx, ShortcutAction::ToggleAutoPage)
+            {
+                self.auto_page = !self.auto_page;
+                self.status = if self.auto_page {
+                    "自动翻页：开".into()
+                } else {
+                    "自动翻页：关".into()
+                };
+            }
             let mode = if self
                 .settings
                 .shortcut_pressed(ctx, ShortcutAction::ToolSelect)

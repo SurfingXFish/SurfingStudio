@@ -91,6 +91,7 @@ pub enum ShortcutAction {
     PluginBrowser,
     EffectsRoll,
     ControllerRoll,
+    ToggleAutoPage,
     ToolSelect,
     ToolDraw,
     ToolCut,
@@ -106,7 +107,7 @@ pub enum ShortcutAction {
 }
 
 impl ShortcutAction {
-    pub const ALL: [ShortcutAction; 29] = [
+    pub const ALL: [ShortcutAction; 30] = [
         ShortcutAction::PlayPause,
         ShortcutAction::GoToStart,
         ShortcutAction::GoToEnd,
@@ -124,6 +125,7 @@ impl ShortcutAction {
         ShortcutAction::PluginBrowser,
         ShortcutAction::EffectsRoll,
         ShortcutAction::ControllerRoll,
+        ShortcutAction::ToggleAutoPage,
         ShortcutAction::ToolSelect,
         ShortcutAction::ToolDraw,
         ShortcutAction::ToolCut,
@@ -168,6 +170,7 @@ impl ShortcutAction {
             ShortcutAction::PluginBrowser => "plugin_browser",
             ShortcutAction::EffectsRoll => "effects_roll",
             ShortcutAction::ControllerRoll => "controller_roll",
+            ShortcutAction::ToggleAutoPage => "toggle_auto_page",
             ShortcutAction::ToolSelect => "tool_select",
             ShortcutAction::ToolDraw => "tool_draw",
             ShortcutAction::ToolCut => "tool_cut",
@@ -213,6 +216,7 @@ impl ShortcutAction {
             ShortcutAction::PluginBrowser => "插件浏览器",
             ShortcutAction::EffectsRoll => "效果器链",
             ShortcutAction::ControllerRoll => "控制器卷帘",
+            ShortcutAction::ToggleAutoPage => "自动翻页",
             ShortcutAction::ToolSelect => "选择工具",
             ShortcutAction::ToolDraw => "绘制工具",
             ShortcutAction::ToolCut => "切割工具",
@@ -257,7 +261,8 @@ impl ShortcutAction {
             ShortcutAction::Help
             | ShortcutAction::PluginBrowser
             | ShortcutAction::EffectsRoll
-            | ShortcutAction::ControllerRoll => ShortcutGroup::View,
+            | ShortcutAction::ControllerRoll
+            | ShortcutAction::ToggleAutoPage => ShortcutGroup::View,
             ShortcutAction::ToolSelect
             | ShortcutAction::ToolDraw
             | ShortcutAction::ToolCut
@@ -315,6 +320,7 @@ impl ShortcutAction {
             ShortcutAction::PluginBrowser => vec![Binding::new(Key::F9, NONE, NONE, NONE)],
             ShortcutAction::EffectsRoll => vec![Binding::new(Key::F8, NONE, NONE, NONE)],
             ShortcutAction::ControllerRoll => vec![Binding::new(Key::F7, NONE, NONE, NONE)],
+            ShortcutAction::ToggleAutoPage => vec![Binding::new(Key::F10, NONE, NONE, NONE)],
             ShortcutAction::ToolSelect => vec![Binding::new(Key::Num1, NONE, NONE, NONE)],
             ShortcutAction::ToolDraw => vec![Binding::new(Key::Num2, NONE, NONE, NONE)],
             ShortcutAction::ToolCut => vec![Binding::new(Key::Num3, NONE, NONE, NONE)],

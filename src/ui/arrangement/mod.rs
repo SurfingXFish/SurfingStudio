@@ -45,8 +45,17 @@ impl SurfingApp {
     /// Complexity: O(visible tracks + visible clips + visible controller points) per frame.
     pub fn ui_arrangement(&mut self, ui: &mut egui::Ui) {
         let playhead = self.playhead();
-        // 不自动跟随播放头：播放时用户可以自由平移。
-        // No auto-follow: the user can pan freely while the transport runs.
+        // 自动翻页开启时，播放头越过右侧 90% 处就向前翻一页（左侧留 10% 作为上下文）；
+        // 循环/回绕到视图左侧时同样翻回。关闭时用户可自由平移。
+        // With auto page on, reaching 90% of the view pages forward (10% context on the left) and
+        // wrapping to the left pages back. When off the user pans freely.
+        if self.auto_page && self.ui_playing {
+            let span = self.visible_beats.max(1.0);
+            let margin = (span * 0.1).max(0.25);
+            if playhead < self.view_start || playhead > self.view_start + span - margin {
+                self.view_start = (playhead - margin).max(0.0);
+            }
+        }
 
         let available = ui.available_size();
         if available.x < 120.0 || available.y < 80.0 {
