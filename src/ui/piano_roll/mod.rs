@@ -80,13 +80,6 @@ impl SurfingApp {
             self.piano_placeholder(ui);
             return;
         };
-        // Restore this track's own scroll/zoom. Opening or editing another track
-        // must never change the view of a roll that is already open.
-        let view = self.piano_views.get(&track_id).copied().unwrap_or_default();
-        self.piano_zoom = view.zoom;
-        self.piano_view_beat = view.view_beat;
-        self.piano_top_pitch = view.top_pitch;
-        self.piano_note_h = view.note_h;
         let track_color = theme::track_color(track.color);
         // Snapshot of every clip on the track (absolute timeline).
         let clips: Vec<(usize, Clip)> = track
@@ -100,6 +93,20 @@ impl SurfingApp {
             .map(|(_, clip)| clip.end())
             .fold(0.0_f64, f64::max)
             .max(16.0);
+        // 恢复该轨道自己的滚动/缩放；首次打开时把水平缩放对齐编曲区当前可见拍数，
+        // 让卷帘与轨道页面显示相同的时间跨度。已打开的卷帘不受其它轨道影响。
+        // Restore this track's own scroll/zoom; when opened for the first time, match the
+        // arrangement's visible beat span so both views show the same time range. An already
+        // open roll is never affected by another track.
+        let view = self.piano_views.get(&track_id).copied().unwrap_or_else(|| {
+            let mut view = PianoViewState::default();
+            view.zoom = (content_end / self.visible_beats.max(1.0)).clamp(0.25, 16.0) as f32;
+            view
+        });
+        self.piano_zoom = view.zoom;
+        self.piano_view_beat = view.view_beat;
+        self.piano_top_pitch = view.top_pitch;
+        self.piano_note_h = view.note_h;
 
         let available = ui.available_size();
         if available.y < 40.0 || available.x < 120.0 {
@@ -177,12 +184,12 @@ impl SurfingApp {
                 let pointer = response.hover_pos().unwrap_or(rect.center());
                 if ctrl && shift {
                     // Ctrl+Shift zooms horizontally.
-                    let visible_old = (content_end / self.piano_zoom.max(1.0) as f64).max(0.25);
+                    let visible_old = (content_end / self.piano_zoom.max(0.25) as f64).max(0.25);
                     let ppb_old = grid_width as f64 / visible_old;
                     let anchor_beat =
                         self.piano_view_beat + ((pointer.x - grid_left) as f64 / ppb_old).max(0.0);
                     self.piano_zoom =
-                        (self.piano_zoom * (1.0 + scroll as f32 * 0.002)).clamp(1.0, 16.0);
+                        (self.piano_zoom * (1.0 + scroll as f32 * 0.002)).clamp(0.25, 16.0);
                     let visible_new = (content_end / self.piano_zoom as f64).max(0.25);
                     let fraction = ((pointer.x - grid_left) / grid_width).clamp(0.0, 1.0) as f64;
                     self.piano_view_beat =
@@ -196,7 +203,7 @@ impl SurfingApp {
                     self.piano_note_h = new_h;
                     self.piano_top_pitch = (top.round() as i32).clamp(36, 120);
                 } else if shift {
-                    let visible = (content_end / self.piano_zoom.max(1.0) as f64).max(0.25);
+                    let visible = (content_end / self.piano_zoom.max(0.25) as f64).max(0.25);
                     let ppb = grid_width as f64 / visible;
                     self.piano_view_beat = (self.piano_view_beat - scroll as f64 / ppb)
                         .clamp(0.0, content_end.max(1.0));
@@ -224,11 +231,11 @@ impl SurfingApp {
         }
         if let Some((zoom, center)) = pinch {
             if (zoom - 1.0).abs() > 1e-3 && grid_width > 1.0 && rect.contains(center) {
-                let visible_old = (content_end / self.piano_zoom.max(1.0) as f64).max(0.25);
+                let visible_old = (content_end / self.piano_zoom.max(0.25) as f64).max(0.25);
                 let ppb_old = grid_width as f64 / visible_old;
                 let anchor_beat =
                     self.piano_view_beat + ((center.x - grid_left) as f64 / ppb_old).max(0.0);
-                self.piano_zoom = (self.piano_zoom * zoom).clamp(1.0, 16.0);
+                self.piano_zoom = (self.piano_zoom * zoom).clamp(0.25, 16.0);
                 let visible_new = (content_end / self.piano_zoom as f64).max(0.25);
                 let fraction = ((center.x - grid_left) / grid_width).clamp(0.0, 1.0) as f64;
                 self.piano_view_beat =
@@ -241,7 +248,7 @@ impl SurfingApp {
         } else {
             DEFAULT_NOTE_H
         };
-        let visible_beats = (content_end / self.piano_zoom.max(1.0) as f64).max(0.25);
+        let visible_beats = (content_end / self.piano_zoom.max(0.25) as f64).max(0.25);
         let view_beat = self.piano_view_beat.clamp(0.0, content_end.max(1.0));
         let px_per_beat = (grid_width / visible_beats as f32).max(6.0);
         let beat_to_x = |beat: f64| grid_left + (beat - view_beat) as f32 * px_per_beat;
