@@ -720,7 +720,7 @@ impl SurfingApp {
     /// 所属模块：app / 插件生命周期
     /// 功能：在限定时间内取得引擎锁并终止全部 VST3 组件，让插件拉起的外部应用窗口随工程关闭。
     /// 输入：`timeout`：最长等待时间。
-    /// 输出/副作用：停止处理并调用 `IComponent::terminate`；返回是否成功取得引擎锁。
+    /// 输出/副作用：停止处理并调用 `IComponent::terminate`；返回是否完成插件收尾（终止或安全跳过）。
     /// 复杂度：时间 O(等待 + 插件终止)，空间 O(1)。
     ///
     /// Module: app / plugin lifecycle
@@ -728,9 +728,39 @@ impl SurfingApp {
     /// plugin-spawned external app windows close with the project.
     /// Inputs: `timeout`: maximum wait.
     /// Outputs / side effects: stops processing and calls `IComponent::terminate`; returns whether
-    /// the engine lock was acquired.
+    /// plugin shutdown completed (terminated or safely skipped).
     /// Complexity: O(wait + plugin termination) time and O(1) space.
     fn terminate_engine_plugins(&mut self, timeout: Duration) -> bool {
+        // 先请求插件自己拉起的顶层窗口（VOCALOID6 Editor 等）关闭：这是插件的正常关闭路径，
+        // 不会像 `IComponent::terminate` 那样在 WPF 的 OnClosing 里抛空引用异常并卡住 UI。
+        // First ask plugin-spawned top-level windows (VOCALOID6 Editor etc.) to close: this is the
+        // plugin's normal close path and avoids the WPF `OnClosing` null-reference exception that
+        // `IComponent::terminate` triggers on the UI thread.
+        let (closed_windows, all_closed) = self.close_plugin_owned_windows(Duration::from_secs(3));
+        if closed_windows > 0 {
+            diag::info(
+                "app.window",
+                "window.drop",
+                &[
+                    ("phase", "plugin_windows_closed"),
+                    ("windows", &closed_windows.to_string()),
+                    ("all_closed", if all_closed { "true" } else { "false" }),
+                ],
+            );
+        }
+        if !all_closed {
+            // 插件窗口拒绝关闭（例如弹出模态对话框）：此时终止组件会把 UI 线程永久卡住。
+            // 保留实例（窗口关闭路径本就会泄漏引擎），只记录告警。
+            // A plugin window refused to close (for example a modal dialog is open): terminating the
+            // component would hang the UI thread forever. Keep the instance (the window-close path
+            // already leaks the engine) and log a warning.
+            diag::warn(
+                "app.window",
+                "window.drop",
+                &[("phase", "plugin_windows_still_open")],
+            );
+            return true;
+        }
         let deadline = Instant::now() + timeout;
         loop {
             match self.engine.try_lock() {
@@ -750,6 +780,135 @@ impl SurfingApp {
                 }
             }
         }
+    }
+
+    /// 所属模块：app / 插件生命周期
+    /// 功能：向本进程内由插件创建的可见顶层窗口发送 `WM_CLOSE`，并泵消息等待它们关闭。
+    /// 输入：`timeout`：最长等待时间。
+    /// 输出/副作用：关闭插件窗口；返回（已发送关闭请求的窗口数，是否全部关闭）。
+    /// 复杂度：时间 O(窗口数 × 等待迭代)，空间 O(窗口数)。
+    ///
+    /// Module: app / plugin lifecycle
+    /// Purpose: Send `WM_CLOSE` to visible top-level windows created by plugins in this process and
+    /// pump messages until they close.
+    /// Inputs: `timeout`: maximum wait.
+    /// Outputs / side effects: closes plugin windows; returns (close requests sent, all closed).
+    /// Complexity: O(windows × wait iterations) time and O(windows) space.
+    #[cfg(target_os = "windows")]
+    fn close_plugin_owned_windows(&self, timeout: Duration) -> (usize, bool) {
+        use winapi::shared::minwindef::{BOOL, DWORD, LPARAM};
+        use winapi::shared::windef::HWND;
+        use winapi::um::winuser::{
+            DispatchMessageW, EnumWindows, GetWindow, GetWindowTextLengthW, GetWindowTextW,
+            GetWindowThreadProcessId, MsgWaitForMultipleObjectsEx, PeekMessageW, PostMessageW,
+            TranslateMessage, GW_OWNER, MSG, MWMO_INPUTAVAILABLE, PM_REMOVE, QS_ALLINPUT, WM_CLOSE,
+        };
+
+        unsafe fn title_of(hwnd: HWND) -> Option<String> {
+            let length = unsafe { GetWindowTextLengthW(hwnd) };
+            if length <= 0 {
+                return None;
+            }
+            let mut buffer = vec![0u16; length as usize + 1];
+            let written = unsafe { GetWindowTextW(hwnd, buffer.as_mut_ptr(), buffer.len() as i32) };
+            (written > 0).then(|| String::from_utf16_lossy(&buffer[..written as usize]))
+        }
+
+        unsafe extern "system" fn collect(hwnd: HWND, lparam: LPARAM) -> BOOL {
+            let state = unsafe { &mut *(lparam as *mut (DWORD, Vec<HWND>)) };
+            let mut pid: DWORD = 0;
+            unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+            if pid != state.0 {
+                return 1;
+            }
+            let Some(title) = (unsafe { title_of(hwnd) }) else {
+                return 1;
+            };
+            // 跳过宿主自己的窗口：标题统一带 SurfingStudio。宿主创建的插件编辑器窗口以工程
+            // 窗口为 owner（标题同样带 SurfingStudio），也一并跳过，避免多窗口时关掉其它
+            // 工程的编辑器；插件自建窗口的 owner 是插件的隐藏窗口，仍会被关闭。
+            // Skip the host's own windows: their titles contain SurfingStudio. Host-created plugin
+            // editors are owned by a project window (whose title also contains SurfingStudio) and
+            // are skipped, so closing one project never closes another project's editor. A
+            // plugin-created window is owned by the plugin's hidden window and is still targeted.
+            if title.contains("SurfingStudio") {
+                return 1;
+            }
+            let owner = unsafe { GetWindow(hwnd, GW_OWNER) };
+            if !owner.is_null() {
+                if let Some(owner_title) = unsafe { title_of(owner) } {
+                    if owner_title.contains("SurfingStudio") {
+                        return 1;
+                    }
+                }
+            }
+            state.1.push(hwnd);
+            1
+        }
+
+        let pid = unsafe { winapi::um::processthreadsapi::GetCurrentProcessId() };
+        let mut state: (DWORD, Vec<HWND>) = (pid, Vec::new());
+        unsafe { EnumWindows(Some(collect), &mut state as *mut _ as LPARAM) };
+        if state.1.is_empty() {
+            return (0, true);
+        }
+        let mut requested = 0;
+        for hwnd in &state.1 {
+            if unsafe { PostMessageW(*hwnd, WM_CLOSE, 0, 0) } != 0 {
+                requested += 1;
+            }
+        }
+        if requested == 0 {
+            // 无法投递关闭请求：按“未关闭”处理，避免随后 terminate 卡住 UI。
+            // Could not post a close request: treat as not closed so `terminate` cannot hang the UI.
+            return (0, false);
+        }
+        // 插件（尤其 WPF）需要本线程继续分发消息才能完成关闭。
+        // Plugins (notably WPF) need this thread to keep dispatching messages to finish closing.
+        let deadline = Instant::now() + timeout;
+        let mut remaining_count = state.1.len();
+        while Instant::now() < deadline {
+            unsafe {
+                MsgWaitForMultipleObjectsEx(
+                    0,
+                    std::ptr::null(),
+                    16,
+                    QS_ALLINPUT,
+                    MWMO_INPUTAVAILABLE,
+                );
+            }
+            let mut message: MSG = unsafe { std::mem::zeroed() };
+            while unsafe { PeekMessageW(&mut message, std::ptr::null_mut(), 0, 0, PM_REMOVE) } != 0
+            {
+                unsafe {
+                    TranslateMessage(&message);
+                    DispatchMessageW(&message);
+                }
+            }
+            let mut remaining: (DWORD, Vec<HWND>) = (pid, Vec::new());
+            unsafe { EnumWindows(Some(collect), &mut remaining as *mut _ as LPARAM) };
+            remaining_count = remaining.1.len();
+            if remaining_count == 0 {
+                break;
+            }
+        }
+        (requested, remaining_count == 0)
+    }
+
+    /// 所属模块：app / 插件生命周期
+    /// 功能：非 Windows 平台没有插件自建的 Win32 顶层窗口。
+    /// 输入：`_timeout`。
+    /// 输出/副作用：恒为（0，true）。
+    /// 复杂度：时间 O(1)，空间 O(1)。
+    ///
+    /// Module: app / plugin lifecycle
+    /// Purpose: No plugin-created Win32 top-level windows exist off Windows.
+    /// Inputs: `_timeout`.
+    /// Outputs / side effects: always `(0, true)`.
+    /// Complexity: O(1) time and space.
+    #[cfg(not(target_os = "windows"))]
+    fn close_plugin_owned_windows(&self, _timeout: Duration) -> (usize, bool) {
+        (0, true)
     }
 }
 
