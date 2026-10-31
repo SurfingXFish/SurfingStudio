@@ -567,11 +567,14 @@ impl SurfingApp {
         match step {
             Ok(progress) => {
                 self.export.progress = progress;
-                if progress < 0.999 {
+                // 以会话的真实完成状态为准：进度比例在长工程里可能提前四舍五入到 100%。
+                // Use the session's real finished flag: the ratio can round to 100% early on long
+                // renders.
+                if !guard.offline_render_finished() {
                     let (total, rendered) = guard.offline_frame_counts().unwrap_or((0, 0));
                     self.export.status = format!(
                         "正在渲染 {:.0}%（{} / {} 帧）",
-                        progress * 100.0,
+                        (progress * 100.0).min(99.0),
                         rendered,
                         total
                     );
@@ -579,6 +582,12 @@ impl SurfingApp {
                     return;
                 }
                 let result = guard.finish_offline_render();
+                if result.is_err() {
+                    // 失败时清掉引擎里的导出会话，否则下一次导出会报“已有导出任务正在进行”。
+                    // Clear the engine session on failure so the next export is not blocked by
+                    // "another export is already running".
+                    guard.cancel_offline_render();
+                }
                 drop(guard);
                 match result {
                     Ok(render) => {

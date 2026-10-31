@@ -149,7 +149,16 @@ impl OfflineRenderSession {
         if self.total_frames == 0 {
             return 1.0;
         }
-        (self.rendered_frames as f32 / self.total_frames as f32).clamp(0.0, 1.0)
+        // 用 f64 计算并封顶在 0.9999：长工程（数千万帧）在 f32 下会提前四舍五入到 1.0，
+        // 让调用方误以为渲染完成。
+        // Compute in f64 and cap below 1.0 until finished: long renders (tens of millions of
+        // frames) round to 1.0 in f32 and would look finished before the last block.
+        let progress = (self.rendered_frames as f64 / self.total_frames as f64) as f32;
+        if self.finished {
+            1.0
+        } else {
+            progress.clamp(0.0, 0.9999)
+        }
     }
 
     /// 所属模块：audio::engine / 离线渲染
@@ -1269,6 +1278,23 @@ impl Engine {
     }
 
     /// 所属模块：audio::engine / 离线渲染
+    /// 功能：当前导出会话是否已渲染完所有帧。
+    /// 输入：`self`。
+    /// 输出/副作用：无会话时为 `false`；不修改状态。
+    /// 复杂度：O(1)。
+    ///
+    /// Module: audio::engine / offline render
+    /// Purpose: Whether the current export session has rendered every frame.
+    /// Inputs: `self`.
+    /// Outputs / side effects: `false` without a session; no state change.
+    /// Complexity: O(1).
+    pub fn offline_render_finished(&self) -> bool {
+        self.offline
+            .as_ref()
+            .is_some_and(OfflineRenderSession::is_finished)
+    }
+
+    /// 所属模块：audio::engine / 离线渲染
     /// 功能：取消导出并恢复原工程与走带状态，丢弃已渲染样本。
     /// 输入：`self`。
     /// 输出/副作用：无会话时为空操作；采样率不同会重载插件。
@@ -1907,6 +1933,32 @@ mod tests {
         );
     }
 
+    /// 覆盖：长工程未完成时进度不会提前变成 100%（f32 四舍五入回归）。
+    /// Covers: a long, unfinished render never reports 100% early (f32 rounding regression).
+    #[test]
+    fn progress_stays_below_one_until_finished() {
+        let mut session = OfflineRenderSession {
+            saved_project: Project::empty(),
+            saved_position: 0.0,
+            saved_playing: false,
+            saved_auto_stop_enabled: true,
+            saved_defer_master_clip: false,
+            saved_sample_rate: 48_000.0,
+            sample_rate: 48_000.0,
+            channels: 2,
+            total_frames: 20_000_000,
+            rendered_frames: 19_999_999,
+            buffers: Vec::new(),
+            samples: Vec::new(),
+            gpu: None,
+            warning: None,
+            finished: false,
+        };
+        assert!(session.progress() < 1.0);
+        session.finished = true;
+        assert_eq!(session.progress(), 1.0);
+    }
+
     /// 覆盖：逐帧离线导出与一次性离线渲染输出一致，结束后恢复走带状态。
     /// Covers: step-driven export matches the batch render and restores the transport afterwards.
     #[test]
@@ -1954,6 +2006,10 @@ mod tests {
                 break;
             }
         }
+        assert!(
+            engine.offline_render_finished(),
+            "the progress threshold must match the real finished state"
+        );
         let stepped = engine.finish_offline_render().expect("finish");
         assert_eq!(stepped.channels, expected.channels);
         assert_eq!(stepped.samples.len(), expected.samples.len());
