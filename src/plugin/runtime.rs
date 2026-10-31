@@ -3,10 +3,24 @@
 use super::backends::{make_vst2_cc, send_vst2_events, send_vst2_gates, Vst2Host};
 use super::{ParamView, PluginKind};
 use crate::audio::synth::{GateKind, SynthEvent};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use vst::plugin::Plugin as VstPluginTrait;
 use vst3_host::midi::{MidiChannel, MidiEvent as Vst3MidiEvent};
 use vst3_host::Plugin as Vst3Plugin;
+
+/// 全量参数比对的参数数量上限：Kontakt 等采样器有数千个参数，逐个调用控制器会让 UI 线程
+/// 卡住数秒并长期占用引擎锁（音频回调拿不到锁，表现为没有声音）；超过上限时只依赖插件主动
+/// 上报的编辑手势日志。
+/// Upper bound for a full parameter comparison: samplers such as Kontakt expose thousands of
+/// parameters, and querying each one freezes the UI for seconds while it holds the engine lock
+/// (the audio callback then times out, heard as silence). Above this bound only the plugin's own
+/// edit-gesture log is used.
+const MAX_FULL_SCAN_PARAMS: usize = 512;
+/// 每帧最多格式化的编辑器反馈条数：分析器/电平类参数可能每帧上报数百条。
+/// Maximum editor-feedback entries formatted per frame: analyser/meter parameters may report
+/// hundreds of values every frame.
+const MAX_EDITOR_FEEDBACK_UPDATES: usize = 64;
 
 pub struct Vst3Runtime {
     pub plugin: Arc<Mutex<Vst3Plugin>>,
@@ -184,6 +198,46 @@ impl PluginRuntime {
         }
     }
 
+    /// 所属模块：plugin / 统一运行时
+    /// 功能：终止插件组件但保留 Rust 实例，用于关闭工程时释放插件拉起的外部应用窗口。
+    /// 输入：`self`。
+    /// 输出/副作用：VST3 调用 `shutdown_component`，随后把自身替换为 `Failed` 并泄漏一份
+    /// `Plugin` 强引用，避免在 UI 线程运行插件析构（VOCALOID/ACE Bridge 会等待消息循环）；
+    /// VST2/失败态不做处理。
+    /// 复杂度：时间 O(1 + 插件终止)，空间 O(1)（泄漏一个实例）。
+    ///
+    /// Module: plugin / unified runtime
+    /// Purpose: Terminate the plugin component while keeping the Rust instance alive, so closing a
+    /// project releases plugin-spawned external app windows.
+    /// Inputs: `self`.
+    /// Outputs / side effects: VST3 calls `shutdown_component`, then replaces itself with `Failed`
+    /// and leaks one strong `Plugin` reference so the plugin destructor never runs on the UI thread
+    /// (VOCALOID/ACE Bridge wait for a message loop); VST2/failed runtimes are untouched.
+    /// Complexity: O(1 + plugin termination) time and O(1) space (one leaked instance).
+    pub fn shutdown(&mut self) {
+        let PluginRuntime::Vst3(v) = self else {
+            return;
+        };
+        // 中毒的锁也继续终止：一次无关 panic 不能让插件拉起的窗口残留在系统里。
+        // Continue even with a poisoned lock: an unrelated panic must not leave plugin-spawned
+        // windows behind.
+        let mut plugin = v.plugin.lock().unwrap_or_else(|poison| poison.into_inner());
+        if let Err(error) = plugin.shutdown_component() {
+            crate::diag::warn(
+                "plugin.runtime",
+                "plugin.shutdown",
+                &[("status", "error"), ("error", &error.to_string())],
+            );
+        }
+        drop(plugin);
+        // 泄漏一份强引用：Vst3Runtime 被替换后，插件对象与已终止的组件都不会析构。
+        // Leak one strong reference: after Vst3Runtime is replaced, neither the object nor the
+        // terminated component is destroyed.
+        let leaked = v.plugin.clone();
+        *self = PluginRuntime::Failed("插件已关闭".into());
+        std::mem::forget(leaked);
+    }
+
     /// Capture state blob and parameter snapshot for project persistence.
     pub fn capture_state(&self) -> (Vec<u8>, Vec<f32>) {
         match self {
@@ -276,16 +330,21 @@ impl PluginRuntime {
                     .into_iter()
                     .filter_map(|edit| edit.value.map(|value| (edit.id, value)))
                     .collect();
-                if changed_ids.is_empty() && full_scan {
+                if changed_ids.is_empty() && full_scan && v.params.len() <= MAX_FULL_SCAN_PARAMS {
                     if let Ok(list) = plugin.get_parameters() {
-                        for live in list {
-                            if let Some(param) =
-                                v.params.iter_mut().find(|param| param.id == live.id)
-                            {
-                                if (live.value - param.value).abs() > 1e-4 {
-                                    param.value = live.value;
-                                    changed_ids.push((live.id, live.value));
-                                }
+                        // 先建索引再比对：参数多时逐个 `find` 是平方复杂度，会把 UI 线程和
+                        // 引擎锁一起拖住。
+                        // Index first, then compare: a per-parameter `find` is quadratic and would
+                        // hold both the UI thread and the engine lock.
+                        let live: HashMap<u32, f64> =
+                            list.into_iter().map(|item| (item.id, item.value)).collect();
+                        for param in &mut v.params {
+                            let Some(&value) = live.get(&param.id) else {
+                                continue;
+                            };
+                            if (value - param.value).abs() > 1e-4 {
+                                param.value = value;
+                                changed_ids.push((param.id, value));
                             }
                         }
                     }
@@ -374,7 +433,10 @@ impl PluginRuntime {
     pub fn panic(&mut self) {
         match self {
             PluginRuntime::Vst3(v) => {
-                if let Ok(mut plugin) = v.plugin.lock() {
+                // 音频线程绝不等待插件锁：GUI 初始化/参数轮询可能长时间持有它。
+                // The audio thread never waits for the plugin lock: GUI initialisation or parameter
+                // polling may hold it for a long time.
+                if let Some(mut plugin) = lock_plugin(&v.plugin) {
                     let _ = plugin.midi_panic();
                 }
             }
@@ -408,8 +470,16 @@ impl PluginRuntime {
         let Some(plugin) = lock_plugin(&v.plugin) else {
             return;
         };
-        let changes = plugin.get_parameter_changes();
-        for (id, value) in changes {
+        // 每帧最多格式化前 64 条：分析器/电平参数可能成百上千条，逐条调用插件的
+        // `format_parameter` 会长时间占用引擎锁；剩余值下一帧继续刷新。
+        // Format at most 64 entries per frame: analysers and meters can report hundreds of values,
+        // and calling the plugin's `format_parameter` for each one holds the engine lock for too
+        // long; the rest refresh on the next frame.
+        for (id, value) in plugin
+            .get_parameter_changes()
+            .into_iter()
+            .take(MAX_EDITOR_FEEDBACK_UPDATES)
+        {
             if let Some(param) = v.params.iter_mut().find(|param| param.id == id) {
                 param.value = value;
                 param.display = plugin
@@ -422,7 +492,7 @@ impl PluginRuntime {
     pub fn send_cc(&mut self, controller: u8, value: u8) {
         match self {
             PluginRuntime::Vst3(v) => {
-                if let Ok(mut plugin) = v.plugin.lock() {
+                if let Some(mut plugin) = lock_plugin(&v.plugin) {
                     let _ = plugin.send_midi_event(Vst3MidiEvent::ControlChange {
                         channel: MidiChannel::Ch1,
                         controller,
@@ -442,7 +512,7 @@ impl PluginRuntime {
         let value = (normalized.clamp(0.0, 1.0) * 16_383.0).round() as u16;
         match self {
             PluginRuntime::Vst3(v) => {
-                if let Ok(mut plugin) = v.plugin.lock() {
+                if let Some(mut plugin) = lock_plugin(&v.plugin) {
                     let _ = plugin.send_midi_event(Vst3MidiEvent::PitchBend {
                         channel: MidiChannel::Ch1,
                         value,
@@ -485,7 +555,14 @@ impl PluginRuntime {
         out_r.fill(0.0);
         match self {
             PluginRuntime::Vst3(v) => {
-                let mut plugin = v.plugin.lock().unwrap_or_else(|p| p.into_inner());
+                // GUI 打开/初始化期间插件可能长时间持锁；音频线程必须跳过本块而不是等待，
+                // 否则整个输出流会停住（表现为 Kontakt 等插件“没有声音”）。
+                // A plugin may hold its lock during GUI initialisation; the audio thread must skip this
+                // block instead of waiting, otherwise the whole output stream stalls (heard as silence
+                // with plugins such as Kontakt).
+                let Some(mut plugin) = lock_plugin(&v.plugin) else {
+                    return;
+                };
                 for gate in gates {
                     let event = match gate.kind {
                         GateKind::On => Vst3MidiEvent::NoteOn {

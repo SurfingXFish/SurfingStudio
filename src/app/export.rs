@@ -1,30 +1,38 @@
 //! 所属模块：app / 导出窗口
 //! 文件用途：
 //! - 维护独立导出窗口的状态：格式、采样率、位深、声道布局、范围、尾长、GPU 与目标路径。
-//! - 在后台线程离线渲染并写出音频文件，结果由 `poll_export` 非阻塞接收。
+//! - 复用实时引擎逐帧离线渲染（插件实例始终留在 UI 线程），渲染完成后由后台线程编码写盘；
+//!   结果由 `poll_export` 非阻塞接收。
 //! - 提供默认路径与文件对话框；真正的界面绘制在 `ui/export.rs`。
 //!
 //! 函数清单：
 //! - `ExportFormat` / `ExportChannels` / `ExportState`：导出窗口的数据契约。
-//! - `ExportState::ensure_extension` / `Default::default`：路径扩展名与默认值。
+//! - `ExportState::ensure_extension` / `is_rendering` / `Default::default`：扩展名、渲染状态与默认值。
 //! - `SurfingApp::open_export_window` / `export_default_path` / `export_pick_path`：
 //!   打开窗口、默认路径与后台文件对话框。
-//! - `SurfingApp::start_export` / `poll_export` / `poll_export_dialog`：后台导出与轮询。
+//! - `SurfingApp::start_export` / `step_export_render` / `spawn_export_writer`：
+//!   开始逐帧渲染、推进块并交给写盘线程。
+//! - `SurfingApp::fail_export` / `cancel_export` / `poll_export` / `poll_export_dialog`：
+//!   失败/取消收尾、轮询写盘结果与路径对话框。
 //!
 //! Module: app / export window
 //! Purpose:
 //! - Hold the standalone export window state: format, sample rate, bit depth, channel layout,
 //!   range, tail, GPU and destination path.
-//! - Render offline and write the audio file on a worker thread; `poll_export` receives the result
-//!   without blocking.
+//! - Render offline in steps on the live engine (plugin instances stay on the UI thread), then
+//!   encode the samples on a worker thread; `poll_export` receives the result without blocking.
 //! - Provide the default path and file dialog; the UI itself lives in `ui/export.rs`.
 //!
 //! Functions:
 //! - `ExportFormat` / `ExportChannels` / `ExportState`: export-window contracts.
-//! - `ExportState::ensure_extension` / `Default::default`: path extension and defaults.
+//! - `ExportState::ensure_extension` / `is_rendering` / `Default::default`: extension, render state
+//!   and defaults.
 //! - `SurfingApp::open_export_window` / `export_default_path` / `export_pick_path`:
 //!   open the window, default path and background file dialog.
-//! - `SurfingApp::start_export` / `poll_export` / `poll_export_dialog`: background export and polling.
+//! - `SurfingApp::start_export` / `step_export_render` / `spawn_export_writer`:
+//!   start step rendering, advance blocks and hand samples to the writer.
+//! - `SurfingApp::fail_export` / `cancel_export` / `poll_export` / `poll_export_dialog`:
+//!   finish failures/cancellation, poll the writer result and the path dialog.
 
 use super::*;
 use crate::audio::engine::{OfflineRenderOptions, RenderRange};
@@ -32,6 +40,22 @@ use crate::audio::io::{AudioBitDepth, AudioEncodeOptions, AudioRuntime};
 use crate::core::model::ChannelLayout;
 use crate::diag;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+/// 每帧推进的离线块数初始值：8 × 512 帧约 85 ms 音频；运行中按耗时在 1~64 之间自适应。
+/// Initial offline blocks per frame: 8 × 512 frames ≈ 85 ms of audio; the runtime adapts it
+/// between 1 and 64 based on the time each step takes.
+const EXPORT_BLOCKS_PER_FRAME: usize = 8;
+
+/// 一次导出任务的参数；渲染会话本身保存在引擎中，`blocks_per_step` 会随耗时调整。
+/// Parameters of one export job; the render session itself lives in the engine and
+/// `blocks_per_step` adapts to the measured step time.
+struct ExportJob {
+    path: PathBuf,
+    encode: AudioEncodeOptions,
+    blocks_per_step: usize,
+    span: diag::Span,
+}
 
 /// 导出容器格式。
 /// Export container format.
@@ -197,9 +221,15 @@ pub struct ExportState {
     /// 后台导出是否进行中。
     /// Whether a background export is running.
     pub busy: bool,
-    /// 后台导出结果通道。
-    /// Background export result channel.
+    /// 后台导出结果通道（仅编码/写盘阶段）。
+    /// Background export result channel (encoding/writing stage only).
     pub rx: Option<Receiver<Result<String, String>>>,
+    /// 当前渲染任务；`None` 表示还没有开始或已进入写盘阶段。
+    /// Current render job; `None` before starting or once writing has begun.
+    job: Option<ExportJob>,
+    /// 渲染进度 0..1。
+    /// Render progress in 0..1.
+    pub progress: f32,
 }
 
 impl Default for ExportState {
@@ -230,6 +260,8 @@ impl Default for ExportState {
             status: String::new(),
             busy: false,
             rx: None,
+            job: None,
+            progress: 0.0,
         }
     }
 }
@@ -262,6 +294,21 @@ impl ExportState {
             .with_extension(self.format.extension())
             .to_string_lossy()
             .to_string();
+    }
+
+    /// 所属模块：app / 导出窗口
+    /// 功能：是否正在逐帧渲染。
+    /// 输入：`self`。
+    /// 输出/副作用：布尔值；不修改状态。
+    /// 复杂度：O(1)。
+    ///
+    /// Module: app / export window
+    /// Purpose: Whether step rendering is in progress.
+    /// Inputs: `self`.
+    /// Outputs / side effects: a boolean; no state change.
+    /// Complexity: O(1).
+    pub fn is_rendering(&self) -> bool {
+        self.job.is_some()
     }
 }
 
@@ -394,18 +441,21 @@ impl SurfingApp {
     }
 
     /// 所属模块：app / 导出窗口
-    /// 功能：按窗口参数离线渲染并在后台线程写出音频文件。
+    /// 功能：在 UI 线程启动逐帧离线渲染；插件实例与编辑器始终留在 UI 线程，避免后台线程
+    /// 重新实例化 Kontakt / VOCALOID 等插件导致崩溃。
     /// 输入：`self`。
-    /// 输出/副作用：暂停播放、抓取插件状态、克隆工程快照、设置 `export.busy` 与 `export.rx`；
-    /// 完成后由 `poll_export` 更新状态。
-    /// 复杂度：时间 O(工程大小)（快照克隆），渲染在后台线程。
+    /// 输出/副作用：暂停播放、抓取插件状态、关闭编辑器、在引擎上开始导出会话并记录任务；
+    /// 后续由 `poll_export` 每帧推进少量块。
+    /// 复杂度：时间 O(工程同步 + 插件重载)（开始阶段），之后每帧由 `poll_export` 分摊。
     ///
     /// Module: app / export window
-    /// Purpose: Render offline with the window options and write the audio file on a worker thread.
+    /// Purpose: Start step-driven offline rendering on the UI thread; plugin instances and editors stay
+    /// on the UI thread so plugins such as Kontakt / VOCALOID are never instantiated on a worker and
+    /// cannot crash the export.
     /// Inputs: `self`.
-    /// Outputs / side effects: pauses playback, captures plugin state, clones the project snapshot,
-    /// sets `export.busy` and `export.rx`; `poll_export` updates the status once done.
-    /// Complexity: O(project size) time for the snapshot (rendering runs on the worker).
+    /// Outputs / side effects: pauses playback, captures plugin state, closes editors, starts the
+    /// engine export session and records the job; `poll_export` advances it per frame.
+    /// Complexity: O(project sync + plugin reload) at start; the rest is spread over frames.
     pub(crate) fn start_export(&mut self) {
         if self.export.busy {
             return;
@@ -415,11 +465,11 @@ impl SurfingApp {
             return;
         }
         self.export.ensure_extension();
-        let path = PathBuf::from(self.export.path.trim());
         if self.export.path.trim().is_empty() {
             self.export.status = "请先选择导出路径".into();
             return;
         }
+        let path = PathBuf::from(self.export.path.trim());
         let layout = self.export.channels.resolve(self.project.output_layout);
         let sample_rate = self.export.sample_rate.max(8_000) as f64;
         self.pause_transport();
@@ -429,8 +479,10 @@ impl SurfingApp {
                 engine.capture_plugin_states(&mut self.project);
             };
         }
-        let mut snapshot = self.project.clone();
-        snapshot.version = crate::core::model::CURRENT_PROJECT_VERSION;
+        // 采样率或布局变化会重建插件实例；先关闭编辑器，避免 GUI 继续引用旧视图。
+        // A sample-rate or layout change recreates plugin instances; close editors first so their GUIs
+        // never reference an old view.
+        self.close_all_editors();
         let gpu = self
             .export
             .use_gpu
@@ -448,28 +500,150 @@ impl SurfingApp {
             channels: layout.channels(),
             bit_depth: self.export.bit_depth,
         };
-        let (tx, rx) = channel();
-        let path_text = path.to_string_lossy().to_string();
+        let span = diag::Span::start("app.project", "project.export_window");
+        let engine = self.engine.clone();
+        let total = match engine.lock() {
+            Ok(mut guard) => guard.begin_offline_render(&self.project, &render),
+            Err(_) => Err("音频引擎正忙，请稍后再试".to_string()),
+        };
+        let total = match total {
+            Ok(total) => total,
+            Err(error) => {
+                span.end(&[("status", "error"), ("error", &error)]);
+                self.export.status = format!("导出失败：{error}");
+                self.status = format!("导出失败：{error}");
+                return;
+            }
+        };
+        self.export.job = Some(ExportJob {
+            path,
+            encode,
+            blocks_per_step: EXPORT_BLOCKS_PER_FRAME,
+            span,
+        });
         self.export.busy = true;
-        self.export.status = "正在离线渲染并导出…".into();
-        let path_for_thread = path.clone();
+        self.export.progress = 0.0;
+        self.export.rx = None;
+        self.export.status = format!("正在渲染 0%（共 {total} 帧）");
+        self.status = self.export.status.clone();
+    }
+
+    /// 所属模块：app / 导出窗口
+    /// 功能：每帧推进离线渲染；完成后启动编码写盘线程。
+    /// 输入：`self`。
+    /// 输出/副作用：更新 `export.progress` / `status`；完成时把样本交给写盘线程。
+    /// 复杂度：时间 O(每帧块数 × 512 × 轨道数)，空间 O(已渲染样本)。
+    ///
+    /// Module: app / export window
+    /// Purpose: Advance the offline render per frame; once complete, start the encoding thread.
+    /// Inputs: `self`.
+    /// Outputs / side effects: updates `export.progress`/`status`; hands samples to the writer thread.
+    /// Complexity: O(blocks per frame × 512 × tracks) time and O(rendered samples) space.
+    fn step_export_render(&mut self) {
+        let Some(mut job) = self.export.job.take() else {
+            return;
+        };
+        let engine = self.engine.clone();
+        let mut guard = match engine.try_lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                // 音频回调正持锁：下一帧继续，不阻塞 UI。
+                // The audio callback holds the lock: retry next frame instead of blocking the UI.
+                self.export.job = Some(job);
+                return;
+            }
+        };
+        let started = Instant::now();
+        let step = guard.render_offline_step(job.blocks_per_step);
+        // 按本帧实际耗时调整块数：重插件下自动减小块数保持界面流畅，轻工程下加速导出。
+        // Adapt the block count to the time this step took: heavy plugins shrink it to keep the UI
+        // responsive, while light projects speed up.
+        let elapsed = started.elapsed();
+        if elapsed > Duration::from_millis(40) {
+            job.blocks_per_step = (job.blocks_per_step / 2).max(1);
+        } else if elapsed < Duration::from_millis(10) {
+            job.blocks_per_step = (job.blocks_per_step * 2).min(64);
+        }
+        match step {
+            Ok(progress) => {
+                self.export.progress = progress;
+                if progress < 0.999 {
+                    let (total, rendered) = guard.offline_frame_counts().unwrap_or((0, 0));
+                    self.export.status = format!(
+                        "正在渲染 {:.0}%（{} / {} 帧）",
+                        progress * 100.0,
+                        rendered,
+                        total
+                    );
+                    self.export.job = Some(job);
+                    return;
+                }
+                let result = guard.finish_offline_render();
+                drop(guard);
+                match result {
+                    Ok(render) => {
+                        job.span.end(&[
+                            ("status", "rendered"),
+                            ("channels", &render.channels.to_string()),
+                        ]);
+                        self.spawn_export_writer(job.path, job.encode, render);
+                    }
+                    Err(error) => {
+                        job.span.end(&[("status", "error"), ("error", &error)]);
+                        self.fail_export(&error);
+                    }
+                }
+            }
+            Err(error) => {
+                job.span.end(&[("status", "error"), ("error", &error)]);
+                drop(guard);
+                let engine = self.engine.clone();
+                if let Ok(mut guard) = engine.lock() {
+                    guard.cancel_offline_render();
+                }
+                self.fail_export(&error);
+            }
+        }
+    }
+
+    /// 所属模块：app / 导出窗口
+    /// 功能：把渲染好的样本交给后台线程编码写盘（此时已不持有任何插件实例）。
+    /// 输入：`path` / `encode` / `render`。
+    /// 输出/副作用：设置 `export.rx` 与状态；完成后由 `poll_export` 收尾。
+    /// 复杂度：时间 O(1)（写盘在后台），空间 O(样本数)（移动所有权）。
+    ///
+    /// Module: app / export window
+    /// Purpose: Hand rendered samples to a worker thread for encoding/writing (no plugin instances are
+    /// involved at this point).
+    /// Inputs: `path` / `encode` / `render`.
+    /// Outputs / side effects: sets `export.rx` and status; `poll_export` finalises.
+    /// Complexity: O(1) time (writing happens on the worker) and O(samples) space (ownership moves).
+    fn spawn_export_writer(
+        &mut self,
+        path: PathBuf,
+        encode: AudioEncodeOptions,
+        render: crate::audio::engine::OfflineRender,
+    ) {
+        let (tx, rx) = channel();
+        self.export.rx = Some(rx);
+        self.export.progress = 1.0;
+        self.export.status = "正在写入音频文件…".into();
+        self.status = self.export.status.clone();
+        // 导出期间工程可能被编辑；写盘开始后让下一次同步把当前工程重新应用到引擎。
+        // The project may have been edited during the export; resync it once writing starts.
+        self.needs_sync = true;
+        let path_text = path.to_string_lossy().to_string();
         std::thread::spawn(move || {
-            let span = diag::Span::start("app.project", "project.export_window");
-            if let Some(parent) = path_for_thread.parent() {
+            let span = diag::Span::start("app.project", "project.export_window.write");
+            if let Some(parent) = path.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
-            let result = AudioRuntime::export_project_with_options(
-                &snapshot,
-                &path_for_thread,
-                &render,
-                &encode,
-            )
-            .map(|warning| match warning {
-                Some(warning) => {
-                    format!("已导出 {}（{warning}）", path_for_thread.display())
-                }
-                None => format!("已导出 {}", path_for_thread.display()),
-            });
+            let result = AudioRuntime::standard()
+                .export_with_options(&path, &render.samples, &encode)
+                .map(|()| match render.warning {
+                    Some(warning) => format!("已导出 {}（{warning}）", path.display()),
+                    None => format!("已导出 {}", path.display()),
+                });
             match &result {
                 Ok(_) => span.end(&[("status", "ok"), ("path", &path_text)]),
                 Err(error) => {
@@ -478,45 +652,97 @@ impl SurfingApp {
             }
             let _ = tx.send(result);
         });
-        self.export.rx = Some(rx);
     }
 
     /// 所属模块：app / 导出窗口
-    /// 功能：非阻塞接收导出结果并更新窗口状态与状态栏。
+    /// 功能：渲染失败时统一清理任务并更新状态。
+    /// 输入：`error`：失败原因。
+    /// 输出/副作用：清空 `job`、`busy`，写入窗口与状态栏。
+    /// 复杂度：时间 O(1)，空间 O(1)。
+    ///
+    /// Module: app / export window
+    /// Purpose: Clear the task and report a render failure.
+    /// Inputs: `error`: failure reason.
+    /// Outputs / side effects: clears `job`/`busy`; updates the window and status bar.
+    /// Complexity: O(1) time and space.
+    fn fail_export(&mut self, error: &str) {
+        self.export.job = None;
+        self.export.progress = 0.0;
+        self.export.busy = false;
+        self.export.rx = None;
+        self.needs_sync = true;
+        self.export.status = format!("导出失败：{error}");
+        self.status = self.export.status.clone();
+    }
+
+    /// 所属模块：app / 导出窗口
+    /// 功能：取消正在渲染的导出并恢复实时引擎；写盘阶段不可取消。
+    /// 输入：`self`。
+    /// 输出/副作用：恢复工程/走带状态，清空任务并更新状态。
+    /// 复杂度：时间 O(工程同步 + 插件重载)，空间 O(1)。
+    ///
+    /// Module: app / export window
+    /// Purpose: Cancel an in-progress render and restore the live engine; writing cannot be cancelled.
+    /// Inputs: `self`.
+    /// Outputs / side effects: restores project/transport, clears the job and updates the status.
+    /// Complexity: O(project sync + plugin reload) time and O(1) space.
+    pub(crate) fn cancel_export(&mut self) {
+        if let Some(job) = self.export.job.take() {
+            let engine = self.engine.clone();
+            if let Ok(mut guard) = engine.lock() {
+                guard.cancel_offline_render();
+            }
+            job.span.end(&[("status", "cancelled")]);
+            self.export.busy = false;
+            self.export.progress = 0.0;
+            self.needs_sync = true;
+            self.export.status = "已取消导出".into();
+            self.status = self.export.status.clone();
+        } else if self.export.rx.is_some() {
+            self.export.status = "正在写入文件，无法取消".into();
+        }
+    }
+
+    /// 所属模块：app / 导出窗口
+    /// 功能：非阻塞接收写盘结果并更新窗口状态与状态栏。
     /// 输入：`self`。
     /// 输出/副作用：清空 `export.rx`、`export.busy`；更新 `export.status` 与 `status`。
     /// 复杂度：时间 O(1)，空间 O(1)。
     ///
     /// Module: app / export window
-    /// Purpose: Non-blocking receive of the export result and update the window/status bar.
+    /// Purpose: Non-blocking receive of the writer result and update the window/status bar.
     /// Inputs: `self`.
     /// Outputs / side effects: clears `export.rx`/`export.busy`; updates `export.status` and `status`.
     /// Complexity: O(1) time and space.
     pub(super) fn poll_export(&mut self) {
-        let Some(rx) = &self.export.rx else {
-            return;
-        };
-        match rx.try_recv() {
-            Ok(result) => {
-                self.export.rx = None;
-                self.export.busy = false;
-                match result {
-                    Ok(message) => {
-                        self.export.status = message.clone();
-                        self.status = message;
+        if let Some(rx) = &self.export.rx {
+            match rx.try_recv() {
+                Ok(result) => {
+                    self.export.rx = None;
+                    self.export.busy = false;
+                    match result {
+                        Ok(message) => {
+                            self.export.progress = 1.0;
+                            self.export.status = message.clone();
+                            self.status = message;
+                        }
+                        Err(error) => {
+                            self.export.progress = 0.0;
+                            self.export.status = format!("导出失败：{error}");
+                            self.status = format!("导出失败：{error}");
+                        }
                     }
-                    Err(error) => {
-                        self.export.status = format!("导出失败：{error}");
-                        self.status = format!("导出失败：{error}");
-                    }
+                    return;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.export.rx = None;
+                    self.export.busy = false;
+                    self.export.status = "导出失败：后台线程中断".into();
+                    return;
                 }
             }
-            Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                self.export.rx = None;
-                self.export.busy = false;
-                self.export.status = "导出失败：后台线程中断".into();
-            }
         }
+        self.step_export_render();
     }
 }

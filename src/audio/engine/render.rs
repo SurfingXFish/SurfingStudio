@@ -9,6 +9,8 @@
 //! - `TrackEngine::refresh_events` / `seek_events` / `collect_events`：音符事件维护与收集。
 //! - `Engine::process` / `render_block` / `render_chunk`：实时渲染路径。
 //! - `Engine::render_offline` / `render_offline_with` / `OfflineRender`：整工程离线渲染（可交给 GPU）。
+//! - `OfflineRenderSession` / `Engine::begin_offline_render` / `render_offline_step` /
+//!   `finish_offline_render` / `cancel_offline_render`：复用实时引擎的逐帧导出会话。
 //! - `mix_audio_clips` / `apply_controller_state` / `scale_velocities` / `soft_clip`：混音辅助。
 //!
 //! Module: audio::engine / realtime render
@@ -23,6 +25,8 @@
 //! - `Engine::process` / `render_block` / `render_chunk`: realtime render path.
 //! - `Engine::render_offline` / `render_offline_with` / `OfflineRender`: offline project render
 //!   (optionally GPU-limited).
+//! - `OfflineRenderSession` / `Engine::begin_offline_render` / `render_offline_step` /
+//!   `finish_offline_render` / `cancel_offline_render`: step-driven export on the live engine.
 //! - `mix_audio_clips` / `apply_controller_state` / `scale_velocities` / `soft_clip`: mixing helpers.
 
 use super::*;
@@ -106,6 +110,77 @@ pub struct OfflineRender {
     /// GPU 处理失败时说明已回退 CPU 渲染。
     /// Explains the CPU fallback when GPU processing failed.
     pub warning: Option<String>,
+}
+
+/// 逐帧推进的离线导出会话：复用当前实时引擎与插件实例，避免后台线程重新实例化插件。
+/// Step-driven offline export session: reuses the live engine and plugin instances so no plugin is
+/// instantiated on a worker thread.
+pub struct OfflineRenderSession {
+    saved_project: Project,
+    saved_position: f64,
+    saved_playing: bool,
+    saved_auto_stop_enabled: bool,
+    saved_defer_master_clip: bool,
+    saved_sample_rate: f64,
+    sample_rate: f64,
+    channels: usize,
+    total_frames: usize,
+    rendered_frames: usize,
+    buffers: Vec<Vec<f32>>,
+    samples: Vec<f32>,
+    gpu: Option<GpuRenderConfig>,
+    warning: Option<String>,
+    finished: bool,
+}
+
+impl OfflineRenderSession {
+    /// 所属模块：audio::engine / 离线渲染
+    /// 功能：返回 0..1 的渲染进度。
+    /// 输入：`self`。
+    /// 输出/副作用：进度值；不修改状态。
+    /// 复杂度：O(1)。
+    ///
+    /// Module: audio::engine / offline render
+    /// Purpose: Return render progress in 0..1.
+    /// Inputs: `self`.
+    /// Outputs / side effects: the progress; no state change.
+    /// Complexity: O(1).
+    pub fn progress(&self) -> f32 {
+        if self.total_frames == 0 {
+            return 1.0;
+        }
+        (self.rendered_frames as f32 / self.total_frames as f32).clamp(0.0, 1.0)
+    }
+
+    /// 所属模块：audio::engine / 离线渲染
+    /// 功能：是否已渲染完所有帧。
+    /// 输入：`self`。
+    /// 输出/副作用：布尔值；不修改状态。
+    /// 复杂度：O(1)。
+    ///
+    /// Module: audio::engine / offline render
+    /// Purpose: Whether every frame has been rendered.
+    /// Inputs: `self`.
+    /// Outputs / side effects: a boolean; no state change.
+    /// Complexity: O(1).
+    pub fn is_finished(&self) -> bool {
+        self.finished
+    }
+
+    /// 所属模块：audio::engine / 离线渲染
+    /// 功能：返回总帧数与已渲染帧数。
+    /// 输入：`self`。
+    /// 输出/副作用：`(total, rendered)`；不修改状态。
+    /// 复杂度：O(1)。
+    ///
+    /// Module: audio::engine / offline render
+    /// Purpose: Return total and rendered frame counts.
+    /// Inputs: `self`.
+    /// Outputs / side effects: `(total, rendered)`; no state change.
+    /// Complexity: O(1).
+    pub fn frame_counts(&self) -> (usize, usize) {
+        (self.total_frames, self.rendered_frames)
+    }
 }
 
 /// 预计算的音符事件：同一音符产生一条开事件与一条关事件，按 beat 排序。
@@ -351,6 +426,30 @@ impl Engine {
     /// statistics; when the layout and device channel count differ it downmixes or pads with zeros.
     /// Complexity: O(frames × (tracks + channels) + events in block) time and O(1) space.
     pub fn process_output(&mut self, out: &mut [Vec<f32>]) {
+        // 导出会话期间实时回调必须静音：离线步骤会独占引擎推进走带，设备不应重复播放。
+        // Silence the realtime callback during an export session: offline steps drive the transport,
+        // so the device must not play the same project again.
+        if self.offline.is_some() {
+            for buffer in out.iter_mut() {
+                buffer.fill(0.0);
+            }
+            return;
+        }
+        self.process_output_internal(out);
+    }
+
+    /// 所属模块：audio::engine / 实时渲染
+    /// 功能：实际渲染一次回调；导出步骤复用该入口但不静音。
+    /// 输入：`out`：设备声道缓冲。
+    /// 输出/副作用：写入输出、推进播放位置、更新电平与 CPU 统计。
+    /// 复杂度：O(帧数 × (轨道数 + 声道数) + 本块事件数)。
+    ///
+    /// Module: audio::engine / realtime render
+    /// Purpose: Render one callback; export steps reuse this entry without the silence guard.
+    /// Inputs: `out`: device channel buffers.
+    /// Outputs / side effects: writes the output, advances the playhead, updates levels and CPU.
+    /// Complexity: O(frames × (tracks + channels) + events in block).
+    fn process_output_internal(&mut self, out: &mut [Vec<f32>]) {
         let frames = out.first().map(Vec::len).unwrap_or(0);
         if frames == 0 || out.is_empty() {
             return;
@@ -904,17 +1003,7 @@ impl Engine {
         let mut render_project = project.clone();
         render_project.output_layout = options.layout;
         render_project.loop_enabled = false;
-        let (start_beat, end_beat) = match options.range {
-            RenderRange::Project => (
-                0.0,
-                render_project.content_end_beat().max(4.0) + options.tail_beats.max(0.0),
-            ),
-            RenderRange::Loop => {
-                let start = render_project.loop_start.max(0.0);
-                let end = render_project.loop_end.max(start + 0.25);
-                (start, end)
-            }
-        };
+        let (start_beat, end_beat) = render_range(&render_project, options);
         let total_frames = ((end_beat - start_beat).max(0.0) * 60.0 / render_project.bpm.max(1.0)
             * sample_rate)
             .ceil() as usize;
@@ -970,6 +1059,274 @@ impl Engine {
         })
     }
 
+    /// 所属模块：audio::engine / 离线渲染
+    /// 功能：在实时引擎上开始一次逐帧导出：复用已加载的插件实例，保存并覆盖工程/走带状态。
+    /// 输入：
+    /// - `project`：导出使用的工程快照。
+    /// - `options`：采样率、布局、范围、尾长与 GPU 配置。
+    /// 输出/副作用：保存原工程与走带状态、设置导出布局与范围、定位并开始内部播放；实时回调
+    /// 在会话期间输出静音。返回总帧数。采样率不同会重载插件，调用方应先关闭编辑器窗口。
+    /// 复杂度：时间 O(工程同步 + 插件重载)，空间 O(项目快照 + 声道缓冲)。
+    ///
+    /// Module: audio::engine / offline render
+    /// Purpose: Begin a step-driven export on the live engine, reusing loaded plugin instances and
+    /// saving/overriding project and transport state.
+    /// Inputs:
+    /// - `project`: project snapshot to export.
+    /// - `options`: sample rate, layout, range, tail and GPU config.
+    /// Outputs / side effects: saves the original project/transport, applies the export layout and
+    /// range, seeks and starts internal playback; the realtime callback is silent during the session.
+    /// Returns the total frame count. A differing sample rate reloads plugins, so callers should close
+    /// editor windows first.
+    /// Complexity: O(project sync + plugin reload) time and O(project snapshot + channel buffers) space.
+    pub fn begin_offline_render(
+        &mut self,
+        project: &Project,
+        options: &OfflineRenderOptions,
+    ) -> Result<usize, String> {
+        if self.offline.is_some() {
+            return Err("已有导出任务正在进行".into());
+        }
+        let sample_rate = options.sample_rate.max(1.0);
+        let mut render_project = project.clone();
+        render_project.output_layout = options.layout;
+        render_project.loop_enabled = false;
+        let (start_beat, end_beat) = render_range(&render_project, options);
+        let total_frames = ((end_beat - start_beat).max(0.0) * 60.0 / render_project.bpm.max(1.0)
+            * sample_rate)
+            .ceil() as usize;
+        if total_frames == 0 {
+            return Err("导出范围为空".into());
+        }
+        let saved_project = self.project.clone();
+        let saved_position = self.position_beats;
+        let saved_playing = self.playing;
+        let saved_auto_stop_enabled = self.auto_stop_enabled;
+        let saved_defer_master_clip = self.defer_master_clip;
+        let saved_sample_rate = self.sample_rate;
+
+        if (sample_rate - self.sample_rate).abs() > 1.0 {
+            self.set_sample_rate(sample_rate);
+        }
+        self.auto_stop_enabled = false;
+        self.defer_master_clip = options.gpu.is_some();
+        self.sync_project(&render_project);
+        self.load_pending_audio_blocking();
+        let channels = options.layout.channels();
+        let first_frames = total_frames.min(512);
+        self.offline = Some(OfflineRenderSession {
+            saved_project,
+            saved_position,
+            saved_playing,
+            saved_auto_stop_enabled,
+            saved_defer_master_clip,
+            saved_sample_rate,
+            sample_rate,
+            channels,
+            total_frames,
+            rendered_frames: 0,
+            buffers: (0..channels).map(|_| vec![0.0; first_frames]).collect(),
+            samples: Vec::with_capacity(total_frames * channels),
+            gpu: options.gpu.clone(),
+            warning: None,
+            finished: false,
+        });
+        self.seek(start_beat);
+        self.play();
+        Ok(total_frames)
+    }
+
+    /// 所属模块：audio::engine / 离线渲染
+    /// 功能：推进最多 `max_blocks` 个 512 帧块的离线渲染。
+    /// 输入：`max_blocks`：本次推进的块数上限。
+    /// 输出/副作用：追加交错样本并推进内部走带；返回 0..1 进度。
+    /// 复杂度：时间 O(块数 × 512 × 轨道数)，空间 O(采样数)。
+    ///
+    /// Module: audio::engine / offline render
+    /// Purpose: Advance the offline render by at most `max_blocks` 512-frame blocks.
+    /// Inputs: `max_blocks`: block limit for this step.
+    /// Outputs / side effects: appends interleaved samples and advances the internal transport;
+    /// returns progress in 0..1.
+    /// Complexity: O(blocks × 512 × tracks) time and O(samples) space.
+    pub fn render_offline_step(&mut self, max_blocks: usize) -> Result<f32, String> {
+        let mut session = self
+            .offline
+            .take()
+            .ok_or_else(|| "没有导出任务".to_string())?;
+        if !session.finished {
+            for _ in 0..max_blocks.max(1) {
+                let remaining = session.total_frames.saturating_sub(session.rendered_frames);
+                if remaining == 0 {
+                    session.finished = true;
+                    break;
+                }
+                let frames = remaining.min(512);
+                for buffer in &mut session.buffers {
+                    buffer.clear();
+                    buffer.resize(frames, 0.0);
+                }
+                self.process_output_internal(&mut session.buffers);
+                for frame in 0..frames {
+                    for buffer in &session.buffers {
+                        session.samples.push(buffer[frame]);
+                    }
+                }
+                session.rendered_frames += frames;
+                if session.rendered_frames >= session.total_frames {
+                    session.finished = true;
+                    break;
+                }
+            }
+        }
+        let progress = session.progress();
+        self.offline = Some(session);
+        Ok(progress)
+    }
+
+    /// 所属模块：audio::engine / 离线渲染
+    /// 功能：结束导出：GPU 限幅整段样本，恢复原工程与走带状态并返回多声道结果。
+    /// 输入：`self`。
+    /// 输出/副作用：仅在 `render_offline_step` 完成后调用；恢复工程/循环/自动停止/采样率；
+    /// 采样率不同会再次重载插件。
+    /// 复杂度：时间 O(GPU 样本数 + 工程同步)，空间 O(样本数)。
+    ///
+    /// Module: audio::engine / offline render
+    /// Purpose: Finish the export: GPU-limit the whole sample buffer, restore the original project and
+    /// transport, and return the multichannel result.
+    /// Inputs: `self`.
+    /// Outputs / side effects: call only after `render_offline_step` completes; restores project/loop/
+    /// auto-stop/sample rate; a differing sample rate reloads plugins again.
+    /// Complexity: O(GPU samples + project sync) time and O(samples) space.
+    pub fn finish_offline_render(&mut self) -> Result<OfflineRender, String> {
+        let mut session = self
+            .offline
+            .take()
+            .ok_or_else(|| "没有导出任务".to_string())?;
+        if !session.finished {
+            self.offline = Some(session);
+            return Err("导出尚未完成".into());
+        }
+        if let Some(config) = &session.gpu {
+            if let Err(error) =
+                GpuRuntime::standard().apply_master_limiter(config, &mut session.samples)
+            {
+                for sample in &mut session.samples {
+                    *sample = soft_clip(*sample);
+                }
+                session.warning = Some(format!("GPU 加速不可用，已回退 CPU 渲染：{error}"));
+            }
+        }
+        let saved_project = std::mem::replace(&mut session.saved_project, Project::empty());
+        let saved_position = session.saved_position;
+        let saved_playing = session.saved_playing;
+        let saved_auto_stop_enabled = session.saved_auto_stop_enabled;
+        let saved_defer_master_clip = session.saved_defer_master_clip;
+        let saved_sample_rate = session.saved_sample_rate;
+        self.restore_after_offline(
+            saved_project,
+            saved_position,
+            saved_playing,
+            saved_auto_stop_enabled,
+            saved_defer_master_clip,
+            saved_sample_rate,
+        );
+        Ok(OfflineRender {
+            samples: session.samples,
+            channels: session.channels,
+            sample_rate: session.sample_rate,
+            warning: session.warning,
+        })
+    }
+
+    /// 所属模块：audio::engine / 离线渲染
+    /// 功能：返回当前导出会话的（总帧数，已渲染帧数）。
+    /// 输入：`self`。
+    /// 输出/副作用：无会话时为 `None`；不修改状态。
+    /// 复杂度：O(1)。
+    ///
+    /// Module: audio::engine / offline render
+    /// Purpose: Return `(total_frames, rendered_frames)` of the current export session.
+    /// Inputs: `self`.
+    /// Outputs / side effects: `None` without a session; no state change.
+    /// Complexity: O(1).
+    pub fn offline_frame_counts(&self) -> Option<(usize, usize)> {
+        self.offline.as_ref().map(|session| session.frame_counts())
+    }
+
+    /// 所属模块：audio::engine / 离线渲染
+    /// 功能：是否正在执行导出会话。
+    /// 输入：`self`。
+    /// 输出/副作用：布尔值；不修改状态。
+    /// 复杂度：O(1)。
+    ///
+    /// Module: audio::engine / offline render
+    /// Purpose: Whether an export session is active.
+    /// Inputs: `self`.
+    /// Outputs / side effects: a boolean; no state change.
+    /// Complexity: O(1).
+    pub fn offline_render_active(&self) -> bool {
+        self.offline.is_some()
+    }
+
+    /// 所属模块：audio::engine / 离线渲染
+    /// 功能：取消导出并恢复原工程与走带状态，丢弃已渲染样本。
+    /// 输入：`self`。
+    /// 输出/副作用：无会话时为空操作；采样率不同会重载插件。
+    /// 复杂度：时间 O(工程同步)，空间 O(1)。
+    ///
+    /// Module: audio::engine / offline render
+    /// Purpose: Cancel the export, restore the original project/transport and drop rendered samples.
+    /// Inputs: `self`.
+    /// Outputs / side effects: no-op without a session; a differing sample rate reloads plugins.
+    /// Complexity: O(project sync) time and O(1) space.
+    pub fn cancel_offline_render(&mut self) {
+        let Some(session) = self.offline.take() else {
+            return;
+        };
+        self.restore_after_offline(
+            session.saved_project,
+            session.saved_position,
+            session.saved_playing,
+            session.saved_auto_stop_enabled,
+            session.saved_defer_master_clip,
+            session.saved_sample_rate,
+        );
+    }
+
+    /// 所属模块：audio::engine / 离线渲染
+    /// 功能：恢复导出前的工程、走带与采样率状态。
+    /// 输入：保存的工程、位置、播放标记、自动停止、GPU 延迟限幅与采样率。
+    /// 输出/副作用：暂停、按需重载插件、重新同步工程并定位。
+    /// 复杂度：时间 O(工程同步 + 插件重载)，空间 O(1)。
+    ///
+    /// Module: audio::engine / offline render
+    /// Purpose: Restore the project, transport and sample rate saved before the export.
+    /// Inputs: saved project, position, playing flag, auto-stop, deferred clip and sample rate.
+    /// Outputs / side effects: pauses, reloads plugins when needed, re-syncs the project and seeks.
+    /// Complexity: O(project sync + plugin reload) time and O(1) space.
+    fn restore_after_offline(
+        &mut self,
+        saved_project: Project,
+        saved_position: f64,
+        saved_playing: bool,
+        saved_auto_stop_enabled: bool,
+        saved_defer_master_clip: bool,
+        saved_sample_rate: f64,
+    ) {
+        self.pause();
+        self.auto_stop_enabled = saved_auto_stop_enabled;
+        self.defer_master_clip = saved_defer_master_clip;
+        if (self.sample_rate - saved_sample_rate).abs() > 1.0 {
+            self.set_sample_rate(saved_sample_rate);
+        }
+        self.sync_project(&saved_project);
+        self.seek(saved_position);
+        self.playing = saved_playing;
+        if saved_playing {
+            self.reset_note_state(saved_position);
+        }
+    }
+
     /// 所属模块：audio::engine / 实时渲染
     /// 功能：返回缓存的自动停止 beat（未启用时为空）。
     /// 输入：`self`。
@@ -1005,6 +1362,36 @@ impl Engine {
         self.auto_stopped = true;
         self.audio_cursors.clear();
         self.reset_note_state(limit);
+    }
+}
+
+/// 所属模块：audio::engine / 离线渲染
+/// 功能：按导出参数计算起止 beat：整个工程为 `0 .. 内容末尾 + 尾长`，循环区间为 `loop_start .. loop_end`。
+/// 输入：
+/// - `project`：已写入导出布局且关闭循环的工程。
+/// - `options`：渲染参数。
+/// 输出/副作用：返回 `(start_beat, end_beat)`；不修改状态。
+/// 复杂度：时间 O(片段数)，空间 O(1)。
+///
+/// Module: audio::engine / offline render
+/// Purpose: Compute start/end beats from the export options: the whole project is
+/// `0 .. content end + tail`, the loop range is `loop_start .. loop_end`.
+/// Inputs:
+/// - `project`: project with the export layout already applied and looping disabled.
+/// - `options`: render options.
+/// Outputs / side effects: `(start_beat, end_beat)`; no state change.
+/// Complexity: O(clip count) time and O(1) space.
+fn render_range(project: &Project, options: &OfflineRenderOptions) -> (f64, f64) {
+    match options.range {
+        RenderRange::Project => (
+            0.0,
+            project.content_end_beat().max(4.0) + options.tail_beats.max(0.0),
+        ),
+        RenderRange::Loop => {
+            let start = project.loop_start.max(0.0);
+            let end = project.loop_end.max(start + 0.25);
+            (start, end)
+        }
     }
 }
 
@@ -1518,6 +1905,90 @@ mod tests {
             peaks[4] > 1e-4 && peaks[5] > 1e-4,
             "surround pair should carry audio: {peaks:?}"
         );
+    }
+
+    /// 覆盖：逐帧离线导出与一次性离线渲染输出一致，结束后恢复走带状态。
+    /// Covers: step-driven export matches the batch render and restores the transport afterwards.
+    #[test]
+    fn step_offline_render_matches_batch_render() {
+        let mut project = Project::default();
+        project.bpm = 120.0;
+        project.loop_start = 0.0;
+        project.loop_end = 1.0;
+        let mut track = Track::new(
+            1,
+            "Step",
+            [0, 0, 0],
+            InstrumentRef::Synth(SynthSettings::default()),
+        );
+        let mut clip = Clip::new(1, "clip", 0.0, 1.0);
+        clip.notes.push(Note {
+            start: 0.0,
+            length: 0.5,
+            pitch: 60,
+            velocity: 120,
+        });
+        track.clips.push(clip);
+        project.tracks.push(track);
+
+        let options = OfflineRenderOptions {
+            sample_rate: 48_000.0,
+            layout: ChannelLayout::Stereo,
+            range: RenderRange::Loop,
+            tail_beats: 0.0,
+            gpu: None,
+        };
+        let expected = Engine::render_offline_options(&project, &options).expect("batch render");
+
+        let mut engine = Engine::new(48_000.0);
+        let total = engine
+            .begin_offline_render(&project, &options)
+            .expect("begin");
+        assert!(total > 0, "the loop range must contain frames");
+        let mut steps = 0;
+        loop {
+            let progress = engine.render_offline_step(4).expect("step");
+            steps += 1;
+            assert!(steps < 10_000, "the step export never finished");
+            if progress >= 0.999 {
+                break;
+            }
+        }
+        let stepped = engine.finish_offline_render().expect("finish");
+        assert_eq!(stepped.channels, expected.channels);
+        assert_eq!(stepped.samples.len(), expected.samples.len());
+        assert!(
+            stepped.samples.iter().any(|sample| sample.abs() > 1e-4),
+            "the stepped export must contain audio"
+        );
+        assert!(
+            !engine.is_playing(),
+            "the transport must be restored after the export"
+        );
+        assert!(!engine.offline_render_active());
+    }
+
+    /// 覆盖：取消导出后丢弃会话并恢复播放状态。
+    /// Covers: cancelling an export drops the session and restores the transport.
+    #[test]
+    fn cancel_offline_render_restores_transport() {
+        let project = Project::demo();
+        let options = OfflineRenderOptions {
+            sample_rate: 48_000.0,
+            layout: ChannelLayout::Stereo,
+            range: RenderRange::Project,
+            tail_beats: 0.0,
+            gpu: None,
+        };
+        let mut engine = Engine::new(48_000.0);
+        engine
+            .begin_offline_render(&project, &options)
+            .expect("begin");
+        engine.render_offline_step(1).expect("step");
+        engine.cancel_offline_render();
+        assert!(!engine.offline_render_active());
+        assert!(!engine.is_playing());
+        assert!(engine.finish_offline_render().is_err());
     }
 
     /// 覆盖：5.1 离线渲染输出 6 声道交错样本。

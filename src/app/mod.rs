@@ -83,6 +83,12 @@ pub use state::*;
 /// Repaint interval while a plugin editor is open: keeps plugin timers, paints and
 /// `idle` calls serviced.
 const EDITOR_REPAINT_INTERVAL: Duration = Duration::from_millis(16);
+/// 插件编辑器不在前台时的强制重绘间隔：插件自身通常有绘制循环，宿主只做低频兜底，
+/// 每帧 `RedrawWindow` 会与 Kontakt 8 的 Qt Quick 绘制互相拖住。
+/// Forced repaint interval for a background plugin editor: plugins normally run their own paint
+/// loop, so the host only nudges them at a low rate; a per-frame `RedrawWindow` fights Kontakt 8's
+/// Qt Quick painter.
+const EDITOR_REPAINT_BACKGROUND_INTERVAL: Duration = Duration::from_millis(200);
 /// 窗口关闭时等待音频/后台线程释放引擎引用的最长时间。
 /// Maximum time spent waiting for the audio/background threads to release the engine on close.
 const ENGINE_RELEASE_WAIT: Duration = Duration::from_millis(200);
@@ -389,6 +395,11 @@ pub struct SurfingApp {
     last_engine_sync: Instant,
 
     pub editors: Vec<((TrackId, SlotKind), EditorWindow)>,
+    /// 上一次强制重绘插件编辑器的时刻；限制后台编辑器的 `RedrawWindow` 频率，避免与
+    /// Kontakt 等插件自身的绘制循环互相拖住。
+    /// Last forced repaint of each plugin editor; throttles `RedrawWindow` for background editors
+    /// so it never fights a plugin's own paint loop (Kontakt).
+    editor_repaint: HashMap<(TrackId, SlotKind), Instant>,
     /// 本帧已摆放的内嵌插件编辑器槽位；帧末未摆放的会被隐藏。
     /// Slots whose inline editor was placed this frame; unplaced ones are hidden at frame end.
     inline_placed: HashSet<(TrackId, SlotKind)>,
@@ -495,6 +506,11 @@ impl Drop for SurfingApp {
         let started = Instant::now();
         let window_text = self.window_id.to_string();
         let tid_text = diag::thread_id().to_string();
+        // 窗口在导出期间关闭：先取消会话，恢复引擎状态并释放插件视图。
+        // The window closed during an export: cancel the session and restore the engine first.
+        if self.export.is_rendering() {
+            self.cancel_export();
+        }
         let instrument_count = self
             .project
             .tracks
@@ -583,10 +599,27 @@ impl Drop for SurfingApp {
             "window.drop",
             &[("phase", "workers_stopped"), ("tid", &tid_text)],
         );
-        // 退出时先直接隐藏并销毁编辑器窗口，让 GUI 立即消失；但不再 detach 插件视图：
-        // 部分插件会在 removed() 中等待已停止的消息循环，导致关闭卡死。
-        // Destroy the editor windows first so their GUIs disappear immediately, but skip the
-        // plugin's `removed()`: some plugins wait for a message loop that no longer runs.
+        // 先终止 VST3 组件，再销毁可能仍附加着的编辑器窗口：VOCALOID / ACE Bridge 等插件
+        // 拉起的独立应用窗口会随 `IComponent::terminate` 关闭；`close_editor` 也在窗口仍有效时
+        // 执行，避免 `removed()` 访问已销毁的原生窗口。
+        // Terminate VST3 components before destroying any editor window that is still attached:
+        // plugins such as VOCALOID / ACE Bridge close their spawned app windows on
+        // `IComponent::terminate`, and `close_editor` runs while the native window is still valid.
+        // 音频回调可能刚好持锁：短暂重试，确保组件一定被终止（外部应用窗口随之关闭）。
+        // The audio callback may hold the lock for a moment: retry briefly so the component is
+        // always terminated (and its spawned app windows close with it).
+        if !self.terminate_engine_plugins(Duration::from_millis(200)) {
+            diag::warn(
+                "app.window",
+                "window.drop",
+                &[("phase", "plugins_terminate_timeout"), ("tid", &tid_text)],
+            );
+        }
+        diag::info(
+            "app.window",
+            "window.drop",
+            &[("phase", "plugins_terminated"), ("tid", &tid_text)],
+        );
         let editor_count = self.editors.len().to_string();
         for (_, mut window) in self.editors.drain(..) {
             window.destroy_for_exit();
@@ -679,6 +712,43 @@ impl Drop for SurfingApp {
                     ("tid", &tid_text),
                 ],
             );
+        }
+    }
+}
+
+impl SurfingApp {
+    /// 所属模块：app / 插件生命周期
+    /// 功能：在限定时间内取得引擎锁并终止全部 VST3 组件，让插件拉起的外部应用窗口随工程关闭。
+    /// 输入：`timeout`：最长等待时间。
+    /// 输出/副作用：停止处理并调用 `IComponent::terminate`；返回是否成功取得引擎锁。
+    /// 复杂度：时间 O(等待 + 插件终止)，空间 O(1)。
+    ///
+    /// Module: app / plugin lifecycle
+    /// Purpose: Acquire the engine lock within the timeout and terminate every VST3 component so
+    /// plugin-spawned external app windows close with the project.
+    /// Inputs: `timeout`: maximum wait.
+    /// Outputs / side effects: stops processing and calls `IComponent::terminate`; returns whether
+    /// the engine lock was acquired.
+    /// Complexity: O(wait + plugin termination) time and O(1) space.
+    fn terminate_engine_plugins(&mut self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            match self.engine.try_lock() {
+                Ok(mut engine) => {
+                    engine.shutdown_plugins();
+                    return true;
+                }
+                Err(std::sync::TryLockError::Poisoned(poison)) => {
+                    poison.into_inner().shutdown_plugins();
+                    return true;
+                }
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    if Instant::now() >= deadline {
+                        return false;
+                    }
+                    std::thread::yield_now();
+                }
+            }
         }
     }
 }
@@ -927,6 +997,7 @@ impl SurfingApp {
             pending_play: false,
             last_engine_sync: Instant::now(),
             editors: Vec::new(),
+            editor_repaint: HashMap::new(),
             inline_placed: HashSet::new(),
             inline_failed: HashMap::new(),
             effect_editor_flags: HashMap::new(),
@@ -1597,7 +1668,7 @@ impl SurfingApp {
             // Keep the loading spinner and the responsive UI animating while
             // plugins load on the background thread.
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
-        } else if playing || !self.editors.is_empty() {
+        } else if playing || !self.editors.is_empty() || self.export.busy {
             // 插件 GUI 依赖本线程持续分发窗口消息与 idle；编辑器打开时保持 60 FPS 轮询。
             // Plugin GUIs rely on this thread dispatching window messages and idle calls;
             // keep a 60 FPS tick while an editor is open.

@@ -488,6 +488,15 @@ impl SurfingApp {
         }
         self.ui_playing = false;
         self.close_all_editors();
+        // 切换工程前终止旧工程的 VST3 组件：VOCALOID / ACE Bridge 等插件拉起的外部应用窗口
+        // 只随 `IComponent::terminate` 关闭；等后台同步线程释放旧实例时窗口仍会残留，
+        // 再次打开工程就会报插件错误。实例本身泄漏至进程结束，避免在 UI 线程等待插件析构。
+        // Terminate the old project's VST3 components before switching projects: external app
+        // windows spawned by plugins such as VOCALOID / ACE Bridge only close on
+        // `IComponent::terminate`; releasing the instances later on the sync worker leaves the
+        // windows behind and the next open reports a plugin error. Instances are leaked until the
+        // process exits so the UI thread never waits for a plugin destructor.
+        self.terminate_engine_plugins(Duration::from_millis(500));
         self.pending_plugin_apply = None;
         self.roll_windows.clear();
         self.roll_drag = None;

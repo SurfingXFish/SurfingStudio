@@ -347,6 +347,12 @@ impl SurfingApp {
     /// plugin instances are created on the UI thread.
     /// Complexity: O(tracks + clips + plugin load) time and O(project) space.
     pub fn sync_engine(&mut self) {
+        // 导出会话独占引擎的工程/走带状态；期间禁止任何同步覆盖它。
+        // The export session owns the engine's project/transport; no sync may overwrite it meanwhile.
+        if self.export.is_rendering() {
+            self.needs_sync = true;
+            return;
+        }
         if self.engine_sync_rx.is_some() {
             self.needs_sync = true;
             return;
@@ -792,6 +798,10 @@ impl SurfingApp {
     }
 
     pub fn toggle_play(&mut self) {
+        if self.export.is_rendering() {
+            self.status = "正在导出音频，传输已锁定".into();
+            return;
+        }
         if self.engine_sync_rx.is_some() || self.instrument_load_pending {
             self.status = "正在加载插件，请稍候…".into();
             return;

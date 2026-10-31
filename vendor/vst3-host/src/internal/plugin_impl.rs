@@ -276,6 +276,9 @@ pub struct PluginImpl {
     // Thread which initialized the component/controller. Lifecycle-sensitive restart handling
     // and controller cache refresh must return to this thread.
     control_thread: ThreadId,
+    /// Set by `shutdown_component`; Drop then skips a second terminate sequence.
+    /// 由 `shutdown_component` 置位；Drop 不再重复终止。
+    terminated: bool,
 }
 
 // Processing data structure
@@ -1590,6 +1593,7 @@ impl PluginImpl {
                 _module: module,
                 _host_app: host_app,
                 control_thread: thread::current().id(),
+                terminated: false,
                 position: Default::default(),
                 continuous_samples: 0,
                 latency: 0,
@@ -2460,6 +2464,32 @@ impl PluginImpl {
 }
 
 impl PluginInternal for PluginImpl {
+    fn shutdown_component(&mut self) -> Result<()> {
+        if self.terminated {
+            return Ok(());
+        }
+        // 与 Drop 相同的顺序，但保留对象本身；宿主会在关闭工程时借此释放插件拉起的
+        // 外部应用窗口，同时避免在 UI 线程析构插件导致卡死。
+        // Same order as Drop, but keep the object alive: the host releases plugin-spawned external
+        // app windows when a project closes without destroying the plugin on the UI thread.
+        let _ = PluginInternal::close_editor(self);
+        let _ = self.stop_processing();
+        self._host_app.shutdown_data_exchange();
+        unsafe {
+            if self.is_active {
+                self.set_component_active(false);
+                self.is_active = false;
+            }
+            terminate_component(
+                &self.component,
+                self.controller.as_ref(),
+                self.single_component,
+                self.connection.as_ref(),
+            );
+        }
+        self.terminated = true;
+        Ok(())
+    }
     fn midi_controller_assignments(
         &self,
         direction: crate::audio::BusDirection,
@@ -4926,6 +4956,11 @@ unsafe fn terminate_component(
 
 impl Drop for PluginImpl {
     fn drop(&mut self) {
+        // `shutdown_component` already terminated the component while keeping the object alive.
+        // `shutdown_component` 已经终止组件，这里不得重复终止。
+        if self.terminated {
+            return;
+        }
         // VST3 teardown order: detach the editor, stop processing, deactivate the component,
         // disconnect the component/controller connection points, terminate the controller and the
         // component, then drop the COM references. Many plugins (dual-component ones especially)

@@ -36,7 +36,7 @@
 mod plugins;
 mod render;
 
-pub use render::{OfflineRender, OfflineRenderOptions, RenderRange};
+pub use render::{OfflineRender, OfflineRenderOptions, OfflineRenderSession, RenderRange};
 
 use crate::audio::fx::NativeEffectProcessor;
 use crate::audio::gpu::GpuRenderConfig;
@@ -135,6 +135,10 @@ pub struct Engine {
     /// Offline rendering defers the master soft limiter to the GPU; export-only and always `false`
     /// for the realtime callback.
     defer_master_clip: bool,
+    /// 逐帧推进的导出会话；存在时实时回调输出静音，导出步骤直接驱动渲染。
+    /// Step-driven export session; while present the realtime callback outputs silence and export
+    /// steps drive rendering directly.
+    offline: Option<render::OfflineRenderSession>,
 }
 
 /// 乐器插件实例化的时间片预算：一次同步只新建时间片内的插件，其余留到下一次调用。
@@ -687,6 +691,7 @@ impl Engine {
             gates_scratch: Vec::new(),
             output_layout: ChannelLayout::Stereo,
             defer_master_clip: false,
+            offline: None,
         }
     }
 
@@ -706,6 +711,45 @@ impl Engine {
             self.sample_rate = sample_rate;
             self.plugins_sample_rate = 0.0;
         }
+    }
+
+    /// 所属模块：audio::engine / 插件生命周期
+    /// 功能：关闭工程前终止所有 VST3 插件组件，让 VOCALOID / ACE Bridge 等插件关闭它们拉起的外部应用
+    /// 窗口；实例本身被泄漏而不是析构，避免在 UI 线程等待插件消息循环。
+    /// 输入：`self`。
+    /// 输出/副作用：停止处理、关闭编辑器视图并调用 `IComponent::terminate`；引擎之后不可再用于渲染。
+    /// 复杂度：时间 O(插件数量 + 终止耗时)，空间 O(1)。
+    ///
+    /// Module: audio::engine / plugin lifecycle
+    /// Purpose: Terminate every VST3 component before a project closes, letting plugins such as
+    /// VOCALOID / ACE Bridge close the external app windows they spawned; instances are leaked
+    /// instead of dropped so the UI thread never waits for a plugin message loop.
+    /// Inputs: `self`.
+    /// Outputs / side effects: stops processing, closes editor views and calls `IComponent::terminate`;
+    /// the engine must not render afterwards.
+    /// Complexity: O(plugin count + termination) time and O(1) space.
+    pub fn shutdown_plugins(&mut self) {
+        self.pause();
+        for track in &mut self.tracks {
+            if let InstrumentRuntime::Plugin(plugin) = &mut track.instrument {
+                plugin.shutdown();
+            }
+            // 清空身份键：已终止的实例只剩 `Failed` 外壳，下一次同步必须重建，
+            // 否则重新打开同一工程时插件不会重新加载。
+            // Clear the identity keys: a terminated instance is only a `Failed` shell, so the next
+            // sync must rebuild it; otherwise reopening the same project would never reload it.
+            track.instrument_key.clear();
+            for effect in &mut track.effects {
+                if let EffectRuntime::Plugin(plugin) = effect {
+                    plugin.shutdown();
+                }
+            }
+            track.effect_keys.clear();
+        }
+        if let Some(EffectRuntime::Plugin(plugin)) = &mut self.master_effect {
+            plugin.shutdown();
+        }
+        self.master_effect_key = None;
     }
 
     /// 所属模块：audio::engine / GPU 实时渲染
