@@ -784,21 +784,10 @@ impl SurfingApp {
             None
         };
 
-        // Long-press and drag empty grid space to detach the roll into its own
-        // window. Pressing a note keeps the normal edit gesture.
-        if !detached {
-            let press_on_note = ui
-                .input(|i| i.pointer.press_origin())
-                .map(|origin| hit_at(origin).is_some())
-                .unwrap_or(false);
-            let canvas = Rect::from_min_max(
-                egui::pos2(grid_left, grid_top),
-                egui::pos2(rect.right(), grid_bottom),
-            );
-            if self.try_detach_roll(ui, canvas, track_id, RollKind::PianoRoll, press_on_note) {
-                return;
-            }
-        }
+        // 卷帘只允许从顶部工具条拖出为独立窗口；在画布上拖动始终是框选/编辑手势，
+        // 幅度再大也不会误触拖出。
+        // A roll can only be detached by dragging its top toolbar; dragging on the canvas always
+        // stays a marquee/edit gesture, no matter how far the pointer moves.
 
         let mut cut_note_hit: Option<(usize, usize, f64)> = None;
         if response.drag_started() && !pinching {

@@ -228,28 +228,10 @@ impl SurfingApp {
             )
         };
 
-        // Long-press and drag blank canvas space to detach the roll into its
-        // own window. Pressing an existing point keeps the normal edit gesture.
-        if !detached && !is_master {
-            let press_near_point = ui
-                .input(|i| i.pointer.press_origin())
-                .map(|origin| {
-                    points.iter().any(|point| {
-                        (beat_to_x(point.beat) - origin.x).abs() <= 10.0
-                            && (value_to_y(point.value) - origin.y).abs() <= 10.0
-                    })
-                })
-                .unwrap_or(false);
-            if self.try_detach_roll(
-                ui,
-                inner,
-                track_id,
-                RollKind::Controller(kind),
-                press_near_point,
-            ) {
-                return;
-            }
-        }
+        // 卷帘只允许从顶部工具条拖出为独立窗口；在画布上拖动始终是编辑手势，
+        // 幅度再大也不会误触拖出。
+        // A roll can only be detached by dragging its top toolbar; dragging on the canvas always
+        // stays an edit gesture, no matter how far the pointer moves.
 
         if points.is_empty() {
             // No automation points: render the controller's default value.

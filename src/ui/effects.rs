@@ -285,26 +285,10 @@ impl SurfingApp {
         let body_bottom = rect.bottom() - 6.0;
         let margin = 8.0 - self.effects_scroll;
 
-        // 长按并拖动空白区域可把整条效果器链拖出为独立窗口；卡片头部仍用于排序。
-        // Long-press and drag empty canvas space detaches the chain; card headers keep
-        // their drag-to-reorder.
-        if !floating && !is_master {
-            let press_on_card = ui
-                .input(|i| i.pointer.press_origin())
-                .map(|origin| {
-                    (0..effect_count).any(|index| {
-                        Rect::from_min_size(
-                            egui::pos2(rect.left() + margin + card_lefts[index], body_top),
-                            Vec2::new(widths[index], body_bottom - body_top),
-                        )
-                        .contains(origin)
-                    })
-                })
-                .unwrap_or(false);
-            if self.try_detach_roll(ui, rect, track_id, RollKind::Effects, press_on_card) {
-                return;
-            }
-        }
+        // 卷帘只允许从顶部工具条拖出为独立窗口；在卡片区域拖动始终是排序/编辑手势，
+        // 幅度再大也不会误触拖出。
+        // A roll can only be detached by dragging its top toolbar; dragging over cards always
+        // stays a reorder/edit gesture, no matter how far the pointer moves.
 
         let mut remove_effect: Option<usize> = None;
         let mut open_detached: Option<usize> = None;

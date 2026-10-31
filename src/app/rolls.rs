@@ -223,48 +223,6 @@ impl SurfingApp {
         }
     }
 
-    /// Detach the roll currently shown by an editor canvas into its own OS
-    /// window. The gesture is a long press (>= 0.45 s) followed by a drag, so
-    /// normal note/point editing still works.
-    pub fn try_detach_roll(
-        &mut self,
-        ui: &egui::Ui,
-        rect: egui::Rect,
-        track_id: TrackId,
-        kind: RollKind,
-        press_on_item: bool,
-    ) -> bool {
-        if press_on_item || !crate::platform::caps().multi_window {
-            // 单窗口平台没有可拖出的独立窗口，保留底部编辑区。
-            // Single-window platforms cannot drag a roll out, so the bottom editor stays.
-            return false;
-        }
-        let (down, origin, start_time, now, pointer) = ui.input(|i| {
-            (
-                i.pointer.primary_down(),
-                i.pointer.press_origin(),
-                i.pointer.press_start_time(),
-                i.time,
-                i.pointer.interact_pos(),
-            )
-        });
-        let (Some(origin), Some(pointer), Some(start_time)) = (origin, pointer, start_time) else {
-            return false;
-        };
-        if !down || !rect.contains(origin) {
-            return false;
-        }
-        let held = now - start_time >= 0.45;
-        let moved = (pointer - origin).length() >= 36.0;
-        if !(held && moved) {
-            return false;
-        }
-        self.open_roll_window(track_id, kind);
-        self.bottom_open = false;
-        self.status = "已拖出独立编辑卷帘窗口".into();
-        true
-    }
-
     pub(super) fn ui_roll_windows(&mut self, ctx: &egui::Context) {
         // 每帧先清空焦点归属：没有任何浮动卷帘时，空格仍交回工程窗口/消息钩子处理。
         // Reset the ownership flag every frame: with no floating roll, Space belongs to the
