@@ -6,7 +6,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.surfingstudio.app"
     android:versionCode="1"
-    android:versionName="1.1.5a">
+    android:versionName="1.1.6a">
 
     <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="35" />
 
