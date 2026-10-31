@@ -15,6 +15,9 @@ pub(super) const VELOCITY_KNOB_R: f32 = 3.0;
 /// 命中力度圆点的横向容差（逻辑点）。
 /// Horizontal tolerance for hitting a velocity knob in points.
 pub(super) const VELOCITY_HIT_W: f32 = 8.0;
+/// 命中力度横线的纵向容差（逻辑点）；横线只有 1.6 点粗，需要更宽的拖动热区。
+/// Vertical tolerance for grabbing a velocity bar in points; the bar is only 1.6 points thick.
+pub(super) const VELOCITY_BAR_HIT_W: f32 = 4.0;
 /// 力度圆点后方横线的线宽（逻辑点）；横线长度与对应音符等长。
 /// Stroke width of the bar trailing a velocity knob in points; its length matches the note.
 pub(super) const VELOCITY_BAR_H: f32 = 1.6;

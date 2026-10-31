@@ -198,6 +198,12 @@ pub enum PianoDrag {
     Marquee {
         start: egui::Pos2,
     },
+    /// 上下拖动力度控制器中的竖线/横线，调整对应音符的力度。
+    /// Drag a velocity stem/bar vertically to change that note's velocity.
+    Velocity {
+        clip: usize,
+        note: usize,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

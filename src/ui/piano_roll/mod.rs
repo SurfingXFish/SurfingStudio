@@ -518,21 +518,45 @@ impl SurfingApp {
             (1.0 + ratio * 126.0).round().clamp(1.0, 127.0) as u8
         };
         let velocity_hit = |pos: egui::Pos2| -> Option<(usize, usize)> {
-            let mut best: Option<(f32, usize, usize)> = None;
+            // 先命中圆点/竖线（横向 8 点内），再命中其后的横线：横线只有 1.6 点粗，
+            // 用 4 点纵向容差，方便直接上下拖动横线改力度。
+            // Prefer the knob/stem (within 8 points horizontally), then its trailing bar: the bar
+            // is only 1.6 points thick, so a 4-point vertical tolerance lets it be dragged.
+            let mut stem: Option<(f32, usize, usize)> = None;
+            let mut bar: Option<(f32, f32, usize, usize)> = None;
             for (clip_index, clip) in &clips {
                 for (note_index, note) in clip.notes.iter().enumerate() {
                     let x = beat_to_x(clip.start + note.start);
                     let distance = (x - pos.x).abs();
                     if distance <= VELOCITY_HIT_W
-                        && best
+                        && stem
                             .map(|(closest, _, _)| distance < closest)
                             .unwrap_or(true)
                     {
-                        best = Some((distance, *clip_index, note_index));
+                        stem = Some((distance, *clip_index, note_index));
+                    }
+                    let y = velocity_to_y(note.velocity);
+                    let bar_end = beat_to_x(clip.start + note.end()).min(rect.right());
+                    let vertical = (y - pos.y).abs();
+                    if pos.x >= x - VELOCITY_HIT_W
+                        && pos.x <= bar_end
+                        && vertical <= VELOCITY_BAR_HIT_W
+                    {
+                        let better = bar
+                            .map(|(closest_y, closest_x, _, _)| {
+                                vertical < closest_y - 1e-3
+                                    || ((vertical - closest_y).abs() <= 1e-3
+                                        && distance < closest_x)
+                            })
+                            .unwrap_or(true);
+                        if better {
+                            bar = Some((vertical, distance, *clip_index, note_index));
+                        }
                     }
                 }
             }
-            best.map(|(_, clip_index, note_index)| (clip_index, note_index))
+            stem.map(|(_, clip_index, note_index)| (clip_index, note_index))
+                .or_else(|| bar.map(|(_, _, clip_index, note_index)| (clip_index, note_index)))
         };
         let mut lane_hover: Option<(u8, f32)> = None;
         if lane_h > 0.0 {
@@ -779,6 +803,25 @@ impl SurfingApp {
         let mut cut_note_hit: Option<(usize, usize, f64)> = None;
         if response.drag_started() && !pinching {
             if let Some(pos) = response.interact_pointer_pos() {
+                // 力度控制器：按下竖线或横线后锁定目标音符，拖动过程中即使指针离开
+                // 横线也持续按纵坐标改力度。命中必须用按下点：drag_started 触发时指针
+                // 已越过 egui 的拖动阈值，用当前位置会错过只有 4 点容差的横线。
+                // Velocity lane: lock the target note on press so dragging keeps changing its
+                // velocity even after the pointer leaves the bar. Hit-test the press origin,
+                // because by the time drag_started fires the pointer has already travelled past
+                // egui's drag threshold and would miss the 4-point bar tolerance.
+                let press = ui.input(|i| i.pointer.press_origin()).unwrap_or(pos);
+                if lane_h > 0.0 && press.y >= grid_bottom && press.x >= grid_left {
+                    if let Some((clip_index, note_index)) = velocity_hit(press) {
+                        self.piano_drag = PianoDrag::Velocity {
+                            clip: clip_index,
+                            note: note_index,
+                        };
+                        self.selected_note = Some((clip_index, note_index));
+                        self.selected_notes = vec![(clip_index, note_index)];
+                        self.selected_clip = Some(clip_index);
+                    }
+                }
                 if pos.x >= grid_left && pos.y >= grid_top && pos.y < grid_bottom {
                     let origin = ui.input(|i| i.pointer.press_origin()).unwrap_or(pos);
                     let pointer_beat = x_to_beat(origin.x);
@@ -1019,6 +1062,25 @@ impl SurfingApp {
                             ui.ctx().request_repaint();
                         }
                     }
+                    PianoDrag::Velocity { clip, note } => {
+                        let velocity = velocity_from_y(pos.y);
+                        let mut changed = false;
+                        if let Some(target) = self
+                            .project
+                            .tracks
+                            .get_mut(track_index)
+                            .and_then(|track| track.clips.get_mut(clip))
+                            .and_then(|clip| clip.notes.get_mut(note))
+                        {
+                            if target.velocity != velocity {
+                                target.velocity = velocity;
+                                changed = true;
+                            }
+                        }
+                        if changed {
+                            self.bump_clip_revision(track_index, clip);
+                        }
+                    }
                     PianoDrag::None => {}
                 }
             }
@@ -1105,15 +1167,22 @@ impl SurfingApp {
         }
 
         // ---- velocity lane interactions --------------------------------------
-        // 在力度控制器内按下/拖动：命中最近的音符起始位置并按其纵坐标改写力度。
-        // Press/drag inside the velocity lane: grab the nearest note start and set its velocity from
-        // the pointer's vertical position.
+        // 在力度控制器内按下/拖动：竖线与它后面的横线都能上下拖动，按纵坐标改写力度。
+        // Press/drag inside the velocity lane: both the stem and its trailing bar can be dragged
+        // vertically to set the velocity.
         if lane_h > 0.0 {
             let lane_pos = response
                 .interact_pointer_pos()
                 .filter(|pos| pos.y >= grid_bottom);
             if let Some(pos) = lane_pos {
-                if let Some((clip_index, note_index)) = velocity_hit(pos) {
+                // 拖动中沿用按下时锁定的音符；单击时按当前指针位置命中竖线或横线。
+                // While dragging, keep the note locked on press; a plain click hit-tests the
+                // stem or trailing bar under the pointer.
+                let target = match self.piano_drag {
+                    PianoDrag::Velocity { clip, note } => Some((clip, note)),
+                    _ => velocity_hit(pos),
+                };
+                if let Some((clip_index, note_index)) = target {
                     let velocity = velocity_from_y(pos.y);
                     let mut changed = false;
                     if let Some(note) = self
