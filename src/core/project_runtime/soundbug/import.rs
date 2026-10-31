@@ -183,6 +183,16 @@ mod tests {
             offset > 1.0,
             "expected a non-zero source offset, got {offset}"
         );
+        // 片段音量（SoundBug 以 dB 保存）必须换算成线性增益。
+        // Clip volume (stored in dB by SoundBug) must become a linear gain.
+        let non_unity_gains = project
+            .tracks
+            .iter()
+            .flat_map(|track| track.clips.iter())
+            .filter_map(|clip| clip.audio.as_ref())
+            .filter(|source| (source.gain - 1.0).abs() > 1e-6)
+            .count();
+        assert!(non_unity_gains > 0, "clip gains were not imported");
         assert!(
             project.length_beats > 400.0,
             "length={}",

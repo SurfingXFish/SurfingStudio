@@ -1645,6 +1645,9 @@ fn mix_audio_clips(
         };
         let limit = ((offset_samples + clip.length * samples_per_beat) as usize)
             .min(file.left.len().saturating_sub(1));
+        // 片段自身的增益（导入工程可带独立的 clip gain）。
+        // The clip's own gain (imported projects may carry a per-clip gain).
+        let clip_gain = source.gain;
         let frame_offset = if block_start < clip.start {
             (((clip.start - block_start) / bps).ceil() as usize).min(frames)
         } else {
@@ -1662,8 +1665,8 @@ fn mix_audio_clips(
             let frac = (index - base as f64) as f32;
             let l = file.left[base] * (1.0 - frac) + file.left[base + 1] * frac;
             let r = file.right[base] * (1.0 - frac) + file.right[base + 1] * frac;
-            let gl = l * gain_l;
-            let gr = r * gain_r;
+            let gl = l * clip_gain * gain_l;
+            let gr = r * clip_gain * gain_r;
             out_l[frame] += gl;
             out_r[frame] += gr;
             peak = peak.max(gl.abs()).max(gr.abs());

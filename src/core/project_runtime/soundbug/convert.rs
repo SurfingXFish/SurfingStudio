@@ -353,11 +353,20 @@ fn import_audio_clip(
 
     let clip_id = allocate_id(node.prop_u64("id"), used_clip_ids, next_clip_id);
     let mut clip = Clip::new(clip_id, name.clone(), start_beat, length_beats);
+    // SoundBug 的片段音量以 dB 记录（缺失时为 0 dB），转成线性增益后参与混音。
+    // SoundBug stores clip volume in dB (0 dB when absent); convert it to linear gain for mixing.
+    let gain = node
+        .prop_f64("gain")
+        .filter(|value| value.is_finite())
+        .map(|db| 10.0_f64.powf(db / 20.0) as f32)
+        .unwrap_or(1.0)
+        .clamp(0.0, 8.0);
     clip.audio = Some(AudioSource {
         path,
         name,
         length_seconds: source_length_seconds,
         offset_seconds,
+        gain,
     });
     clip.bump_revision();
     Some(clip)
@@ -389,17 +398,17 @@ fn parse_plugin(node: &Node) -> SoundBugPlugin {
         .unwrap_or_else(|| kind.clone());
     let path = node.prop_str("filename").map(PathBuf::from);
     let format = path.as_ref().and_then(|path| detect_format(path));
-    // 状态可能是二进制块（tag 3）或带 `.` 分隔的 Base64 文本，两者都是
-    // SoundBug 自己的编码，不保证是标准 VST3 状态。只保留数据，不自动恢复：
-    // Ample Sound 等插件在 load_state 收到这种数据时会直接触发 0xC0000005。
-    // State is either a binary blob (tag 3) or dot-separated Base64 text; both
-    // use SoundBug's own encoding and are not guaranteed to be standard VST3
-    // state. Preserve the data but never auto-restore it: plugins such as
-    // Ample Sound crash with 0xC0000005 when load_state receives such a blob.
-    let state = node.prop_bytes("state").or_else(|| {
-        node.prop_str("state")
-            .and_then(|text| decode_soundbug_state(&text))
-    });
+    // 状态可能是二进制块（tag 3）或文本：两者都是 `<长度>.<Base64>`（长度是解码后的字节数，
+    // `.` 是 Base64 字符，代替标准表里的 `/`）。解码结果仍是 SoundBug 自己的容器（带固定头部，
+    // 载荷不可直接交给插件），因此只保留数据、不自动恢复。
+    // State is either a binary blob (tag 3) or text; both are `<length>.<Base64>` where the number
+    // is the decoded byte count and `.` stands for the standard `/` symbol. The decoded payload is
+    // still SoundBug's own container (fixed header, opaque body), so it is preserved but never
+    // restored automatically.
+    let raw_state = node
+        .prop_bytes("state")
+        .or_else(|| node.prop_str("state").map(String::into_bytes));
+    let state = raw_state.and_then(|raw| decode_soundbug_state(&raw));
     SoundBugPlugin {
         kind,
         display_name,
@@ -516,7 +525,7 @@ fn detect_format(path: &Path) -> Option<PluginFormat> {
 /// - `uid`：SoundBug 的 uid；仅 32 位十六进制时作为 VST3 class id。
 ///
 /// 输出/副作用：返回 `PluginRef`；无效 uid 留空以使用插件默认类。
-/// 导入的状态只保留数据、不自动恢复（SoundBug 编码可能不是标准 VST3 状态）。
+/// SoundBug 的状态是其私有容器格式，只随工程保存，不标记为可恢复。
 ///
 /// 复杂度：时间 O(状态长度)，空间 O(状态长度)。
 ///
@@ -531,8 +540,8 @@ fn detect_format(path: &Path) -> Option<PluginFormat> {
 /// - `uid`: SoundBug uid; used as a VST3 class id only when it is 32 hex digits.
 ///
 /// Outputs / side effects: returns a `PluginRef`; invalid uids stay empty so the
-/// plugin's default class is loaded. Imported state is preserved but never
-/// auto-restored (SoundBug encoding may not be standard VST3 state).
+/// plugin's default class is loaded. SoundBug states use a private container
+/// format, so they are preserved with the project but never marked restorable.
 ///
 /// Complexity: O(state length) time and space.
 fn plugin_ref(
@@ -553,33 +562,63 @@ fn plugin_ref(
 }
 
 /// 所属模块：core / 工程运行时 / SoundBug 后端 / 转换
-/// 功能：解码 SoundBug 的插件状态文本（Base64，`.` 为分段符）。
-/// 输入：`text`：状态文本。
-/// 输出/副作用：返回解码字节；遇到非法字符时返回 `None`。
-/// 复杂度：时间 O(文本长度)，空间 O(解码长度)。
+/// 功能：解码 SoundBug 的插件状态（`<长度>.<Base64...>`；二进制块前带 5 字节头）。
+/// 输入：`raw`：状态原文，可能是文本字节或带二进制头的字节块。
+/// 输出/副作用：返回解码字节；无法解码时为 `None`。
+/// 复杂度：时间 O(字节数)，空间 O(解码长度)。
 ///
 /// Module: core / project runtime / SoundBug backend / conversion
-/// Purpose: Decode SoundBug's plugin state text (Base64 with `.` separators).
-/// Inputs: `text`: state text.
-/// Outputs / side effects: decoded bytes, or `None` on invalid characters.
-/// Complexity: O(text length) time and O(decoded length) space.
-fn decode_soundbug_state(text: &str) -> Option<Vec<u8>> {
+/// Purpose: Decode SoundBug plugin state (`<length>.<Base64...>`; binary blobs carry a
+/// 5-byte header before the same text form).
+/// Inputs: `raw`: raw state bytes, either text or a header-prefixed blob.
+/// Outputs / side effects: decoded bytes, or `None` when the payload cannot be decoded.
+/// Complexity: O(bytes) time and O(decoded length) space.
+fn decode_soundbug_state(raw: &[u8]) -> Option<Vec<u8>> {
     fn digit(byte: u8) -> Option<u8> {
         match byte {
             b'A'..=b'Z' => Some(byte - b'A'),
             b'a'..=b'z' => Some(byte - b'a' + 26),
             b'0'..=b'9' => Some(byte - b'0' + 52),
             b'+' => Some(62),
-            b'/' => Some(63),
+            b'/' | b'.' => Some(63),
             _ => None,
         }
     }
-    let mut output = Vec::with_capacity(text.len() * 3 / 4);
+    // 在前 32 字节内找 `<十进制长度>.`：二进制块前面有 5 字节非文本头。
+    // Find `<decimal length>.` within the first 32 bytes: binary blobs have a
+    // 5-byte non-text header before the text form.
+    let mut header: Option<usize> = None;
+    for index in 0..raw.len().min(32) {
+        if !raw[index].is_ascii_digit() {
+            continue;
+        }
+        let mut cursor = index;
+        let mut declared = 0usize;
+        while cursor < raw.len() && raw[cursor].is_ascii_digit() {
+            declared = declared.saturating_mul(10) + (raw[cursor] - b'0') as usize;
+            cursor += 1;
+            if cursor - index > 9 {
+                return None;
+            }
+        }
+        // 只把 `<十进制长度>.` 当作头部；数字后不是 `.` 时按没有头部处理。
+        // Only `<decimal length>.` is a header; anything else means "no header".
+        if cursor < raw.len() && raw[cursor] == b'.' && declared > 0 {
+            header = Some(cursor + 1);
+        }
+        break;
+    }
+    let start = header.unwrap_or(0);
+    let mut output = Vec::with_capacity(raw.len() * 3 / 4);
     let mut accumulator = 0u32;
     let mut bits = 0u32;
-    for byte in text
-        .bytes()
-        .filter(|byte| !byte.is_ascii_whitespace() && *byte != b'.')
+    // SoundBug 用 `.` 取代标准 Base64 的 `/`（值为 63），因此这里只跳过空白。
+    // SoundBug uses `.` in place of the standard Base64 `/` (value 63), so only whitespace is
+    // skipped here.
+    for byte in raw[start..]
+        .iter()
+        .copied()
+        .filter(|byte| !byte.is_ascii_whitespace())
     {
         if byte == b'=' {
             break;
@@ -592,7 +631,10 @@ fn decode_soundbug_state(text: &str) -> Option<Vec<u8>> {
             output.push((accumulator >> bits) as u8);
         }
     }
-    (!output.is_empty()).then_some(output)
+    if output.is_empty() {
+        return None;
+    }
+    Some(output)
 }
 
 /// 所属模块：core / 工程运行时 / SoundBug 后端 / 转换
@@ -814,13 +856,21 @@ mod tests {
         assert!((seconds_to_beats(1.0, 0.0) - (1.0 / 60.0)).abs() < 1e-9);
     }
 
-    /// 覆盖：SoundBug 状态文本的 `.` 分段 Base64 解码。
-    /// Covers: decoding SoundBug's dot-separated Base64 state text.
+    /// 覆盖：SoundBug 状态文本的 `<长度>.` 前缀与 `.` 作为 `/` 的 Base64 解码。
+    /// Covers: SoundBug's `<length>.` prefix and `.` used as Base64 `/`.
     #[test]
     fn decodes_soundbug_state_text() {
-        assert_eq!(decode_soundbug_state("TWFu"), Some(b"Man".to_vec()));
-        assert_eq!(decode_soundbug_state("TW.Fu"), Some(b"Man".to_vec()));
-        assert_eq!(decode_soundbug_state("TW!Fu"), None);
+        assert_eq!(decode_soundbug_state(b"TWFu"), Some(b"Man".to_vec()));
+        // `.` 等于标准 Base64 的 `/`（值 63），`//8=` 因此写作 `..8=`。
+        // `.` equals standard Base64 `/` (value 63), so `//8=` becomes `..8=`.
+        assert_eq!(decode_soundbug_state(b"..8="), Some(vec![0xFF, 0xFF]));
+        assert_eq!(decode_soundbug_state(b"TW!Fu"), None);
+        assert_eq!(decode_soundbug_state(b"3.TWFu"), Some(b"Man".to_vec()));
+        // 二进制块前的 5 字节头会被跳过。
+        // The 5-byte binary header is skipped.
+        let mut blob = vec![0x26, 0x4e, 0x01, 0x05];
+        blob.extend_from_slice(b"3...8A");
+        assert_eq!(decode_soundbug_state(&blob), Some(vec![0xFF, 0xFF, 0x00]));
     }
 
     /// 覆盖：AARRGGBB 颜色解析。

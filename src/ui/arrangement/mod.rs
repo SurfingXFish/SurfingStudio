@@ -2581,6 +2581,7 @@ impl SurfingApp {
                     name,
                     length_seconds: duration,
                     offset_seconds: 0.0,
+                    gain: 1.0,
                 });
                 if let Some(track) = self.project.tracks.get_mut(track_index) {
                     track.clips.push(clip);

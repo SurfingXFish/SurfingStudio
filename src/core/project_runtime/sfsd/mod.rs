@@ -350,6 +350,7 @@ mod tests {
             name: "loop".into(),
             length_seconds: 2.0,
             offset_seconds: 0.0,
+            gain: 1.0,
         });
         project
             .tracks

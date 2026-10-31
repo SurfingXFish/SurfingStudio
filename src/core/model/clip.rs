@@ -52,6 +52,17 @@ pub struct AudioSource {
     /// (for example SoundBug) use it to reference a later region of the same WAV.
     #[serde(default)]
     pub offset_seconds: f64,
+    /// 片段增益（线性）；1.0 为原始音量。SoundBug 的 `AUDIOCLIP.gain` 以 dB 保存，导入时换算。
+    /// Clip gain (linear); 1.0 is unity. SoundBug stores `AUDIOCLIP.gain` in dB and the importer
+    /// converts it.
+    #[serde(default = "default_audio_gain")]
+    pub gain: f32,
+}
+
+/// `AudioSource::gain` 的 serde 默认值：原始音量。
+/// serde default for `AudioSource::gain`: unity gain.
+fn default_audio_gain() -> f32 {
+    1.0
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
