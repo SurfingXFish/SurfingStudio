@@ -111,6 +111,38 @@ fn decode_log_command(args: &[String]) -> bool {
     }
 }
 
+/// 应用图标原始 RGBA 数据（256×256），由 `assets/icon.png` 导出；运行时不依赖图像解码库。
+/// Raw RGBA app icon pixels (256×256), exported from `assets/icon.png`; no image decoder is needed at
+/// runtime.
+#[cfg(not(target_os = "android"))]
+const APP_ICON_RGBA: &[u8] = include_bytes!("../assets/icon-256.rgba");
+/// 应用图标边长（像素）。
+/// App icon side length in pixels.
+#[cfg(not(target_os = "android"))]
+const APP_ICON_SIZE: u32 = 256;
+
+/// 所属模块：main / 窗口创建
+/// 功能：构造窗口图标数据；资源长度与声明尺寸不符时返回 `None`，让系统使用默认图标。
+/// 输入：无。
+/// 输出/副作用：返回 `IconData`；不修改全局状态。
+/// 复杂度：时间 O(图标字节数)，空间 O(图标字节数)。
+///
+/// Module: main / window creation
+/// Purpose: Build the window icon; returns `None` when the asset size does not match the declared
+/// dimensions so the OS falls back to its default icon.
+/// Inputs: none.
+/// Outputs / side effects: `IconData`; no global state change.
+/// Complexity: O(icon bytes) time and space.
+#[cfg(not(target_os = "android"))]
+fn app_icon() -> Option<eframe::egui::IconData> {
+    let expected = (APP_ICON_SIZE as usize) * (APP_ICON_SIZE as usize) * 4;
+    (APP_ICON_RGBA.len() == expected).then(|| eframe::egui::IconData {
+        rgba: APP_ICON_RGBA.to_vec(),
+        width: APP_ICON_SIZE,
+        height: APP_ICON_SIZE,
+    })
+}
+
 /// 所属模块：main / 窗口创建
 /// 功能：按设置选择渲染器：开启 GPU 加速、选择 DirectX 12 / Vulkan 且该 API 有可用 GPU 时使用
 /// wgpu，否则使用 OpenGL 兼容路径。
@@ -132,6 +164,9 @@ fn native_options(startup: GpuRenderStartup) -> (eframe::NativeOptions, bool) {
             .with_inner_size([1440.0, 900.0])
             .with_min_inner_size([1100.0, 700.0])
             .with_title("SurfingStudio")
+            // 窗口/任务栏图标使用仓库内的最新图标资源。
+            // The window/taskbar icon uses the newest icon asset shipped with the repository.
+            .with_icon(app_icon().unwrap_or_default())
             // 关闭系统标题栏，改用应用内自绘应用栏（图标、菜单、项目栏、窗口按钮）。
             // Disable the OS title bar; the app draws its own app bar instead.
             .with_decorations(false),
