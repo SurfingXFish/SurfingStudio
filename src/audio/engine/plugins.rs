@@ -221,6 +221,35 @@ impl Engine {
         }
     }
 
+    /// 所属模块：audio::engine / 插件生命周期
+    /// 功能：把单实例插件（VOCALOID / ACE Bridge 等）登记到进程级复用缓存。
+    /// 输入：`self`。
+    /// 输出/副作用：暂停引擎，缓存实例 Arc；其它插件忽略。
+    /// 复杂度：时间 O(轨道数 + 效果器数)，空间 O(1)。
+    ///
+    /// Module: audio::engine / plugin lifecycle
+    /// Purpose: Register single-instance plugins (VOCALOID / ACE Bridge, ...) in the process-wide
+    /// reusable cache.
+    /// Inputs: `self`.
+    /// Outputs / side effects: pauses the engine and caches instance Arcs; other plugins are ignored.
+    /// Complexity: O(tracks + effects) time and O(1) space.
+    pub fn stash_single_instance_plugins(&mut self) {
+        self.pause();
+        for track in &mut self.tracks {
+            if let InstrumentRuntime::Plugin(plugin) = &track.instrument {
+                crate::plugin::stash_reusable(plugin);
+            }
+            for effect in &track.effects {
+                if let EffectRuntime::Plugin(plugin) = effect {
+                    crate::plugin::stash_reusable(plugin);
+                }
+            }
+        }
+        if let Some(EffectRuntime::Plugin(plugin)) = &self.master_effect {
+            crate::plugin::stash_reusable(plugin);
+        }
+    }
+
     /// 所属模块：audio::engine / 插件编辑器
     /// 功能：丢弃一条轨道（或主输出）的插件运行时，强制下一次同步重建。
     /// 输入：`track_id` 轨道 id；`MASTER_TRACK_ID` 表示主效果器链。

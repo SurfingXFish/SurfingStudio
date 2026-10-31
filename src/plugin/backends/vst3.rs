@@ -131,6 +131,15 @@ pub(super) fn load(
     bpm: f64,
     time_sig: (u8, u8),
 ) -> Result<PluginRuntime, String> {
+    let path_key = path.to_string_lossy().to_lowercase();
+    // 单实例插件（VOCALOID / ACE Bridge 等）在上一个工程关闭时被保留；直接复用同一实例，
+    // 不再 createInstance，避免“已经有一个启动了”拒绝或卸载/重载崩溃。
+    // A single-instance plugin (VOCALOID / ACE Bridge, ...) retained from the previous project is
+    // reused directly: no `createInstance`, so it cannot be rejected as "already running" or crash
+    // on unload/reload.
+    if let Some(reused) = PluginRuntime::take_reusable(&path_key) {
+        return Ok(reused);
+    }
     let mut host = Vst3Host::builder()
         .sample_rate(sample_rate)
         .block_size(block_size)
@@ -181,6 +190,7 @@ pub(super) fn load(
         out_channels,
         has_editor,
         kind,
+        path_key,
         audio_buffers: None,
     }))
 }

@@ -775,9 +775,19 @@ impl SurfingApp {
                 "window.drop",
                 &[("phase", "plugin_windows_still_open")],
             );
-            return true;
         }
         if !terminate_components {
+            // 工程窗口关闭：不终止组件；把单实例插件登记到进程级复用缓存，下一个工程直接复用，
+            // 不再 createInstance，从而避开“已经有一个启动了”。
+            // Project-window close: do not terminate; register single-instance plugins in the
+            // process-wide reusable cache so the next project reuses them instead of calling
+            // createInstance again and being rejected as "already running".
+            if let Ok(mut engine) = self.engine.try_lock() {
+                engine.stash_single_instance_plugins();
+            }
+            return true;
+        }
+        if !all_closed {
             return true;
         }
         let deadline = Instant::now() + timeout;

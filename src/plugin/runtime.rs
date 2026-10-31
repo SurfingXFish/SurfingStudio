@@ -29,9 +29,150 @@ pub struct Vst3Runtime {
     pub out_channels: usize,
     pub has_editor: bool,
     pub kind: PluginKind,
+    /// 规范化的插件路径（小写），单实例插件复用缓存按此匹配。
+    /// Normalised plugin path (lower case) used to match the reusable single-instance cache.
+    pub path_key: String,
     /// 实时线程复用的处理缓冲；块大小变化时才重新分配。
     /// Processing buffers reused by the realtime thread; reallocated only when the block size changes.
     pub audio_buffers: Option<vst3_host::AudioBuffers>,
+}
+
+/// 单实例插件的可复用实例：关闭工程时不终止，下一个工程按路径取回同一实例，
+/// 避免 VOCALOID / ACE Bridge 再次拉起编辑器时被“已经有一个启动了”拒绝。
+/// Reusable single-instance plugin: kept alive when a project closes and handed to the next project
+/// with the same path, so VOCALOID / ACE Bridge do not refuse a second editor.
+struct ReusableVst3 {
+    path_key: String,
+    name: String,
+    params: Vec<ParamView>,
+    out_channels: usize,
+    has_editor: bool,
+    kind: PluginKind,
+    plugin: Arc<Mutex<Vst3Plugin>>,
+}
+
+static REUSABLE_VST3: std::sync::OnceLock<Mutex<Vec<ReusableVst3>>> = std::sync::OnceLock::new();
+
+fn reusable_vst3() -> &'static Mutex<Vec<ReusableVst3>> {
+    REUSABLE_VST3.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// 所属模块：plugin / 统一运行时
+/// 功能：判断插件是否属于单实例类型（VOCALOID / ACE Bridge / XStudio / Synthesizer V）。
+/// 输入：`name`：插件显示名。
+/// 输出/副作用：布尔值；不修改状态。
+/// 复杂度：时间 O(名称长度)，空间 O(1)。
+///
+/// Module: plugin / unified runtime
+/// Purpose: Whether the plugin is a single-instance type (VOCALOID / ACE Bridge / XStudio /
+/// Synthesizer V).
+/// Inputs: `name`: plugin display name.
+/// Outputs / side effects: a boolean; no state change.
+/// Complexity: O(name length) time and O(1) space.
+fn is_single_instance_name(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    ["vocaloid", "ace bridge", "xstudio", "synthesizer v"]
+        .iter()
+        .any(|keyword| lower.contains(keyword))
+}
+
+/// 所属模块：plugin / 统一运行时
+/// 功能：把单实例插件登记为可复用实例（关闭工程、不终止组件时调用）。
+/// 输入：`runtime`：插件运行时。
+/// 输出/副作用：关闭可能残留的编辑器视图，并把实例 Arc 放入进程级缓存；其它插件忽略。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: plugin / unified runtime
+/// Purpose: Register a single-instance plugin as reusable (called when closing a project without
+/// terminating components).
+/// Inputs: `runtime`: plugin runtime.
+/// Outputs / side effects: closes any leftover editor view and stores the instance Arc in the
+/// process-wide cache; other plugins are ignored.
+/// Complexity: O(1) time and space.
+pub(crate) fn stash_reusable(runtime: &PluginRuntime) {
+    let PluginRuntime::Vst3(v) = runtime else {
+        return;
+    };
+    if !is_single_instance_name(&v.name) {
+        return;
+    }
+    {
+        let mut plugin = v.plugin.lock().unwrap_or_else(|poison| poison.into_inner());
+        // 宿主编辑器视图（如果有）在工程关闭时已经关闭；这里确保插件内部状态一致。
+        // Any host editor view was closed with the project; make sure the plugin agrees.
+        let _ = plugin.close_editor();
+    }
+    let entry = ReusableVst3 {
+        path_key: v.path_key.clone(),
+        name: v.name.clone(),
+        params: v.params.clone(),
+        out_channels: v.out_channels,
+        has_editor: v.has_editor,
+        kind: v.kind,
+        plugin: v.plugin.clone(),
+    };
+    crate::diag::info(
+        "plugin.runtime",
+        "plugin.reuse",
+        &[("phase", "stash"), ("name", &v.name), ("path", &v.path_key)],
+    );
+    if let Ok(mut cache) = reusable_vst3().lock() {
+        // 同一路径可能有多份实例（例如工程里有 3 条 ACE Bridge 轨道），按出现顺序全部保留，
+        // 重新加载时逐个取回。
+        // A path may have several instances (for example three ACE Bridge tracks); keep them all in
+        // order and take them one by one when the project is reopened.
+        cache.push(entry);
+    }
+}
+
+impl PluginRuntime {
+    /// 所属模块：plugin / 统一运行时
+    /// 功能：按路径取回单实例插件的可复用实例；没有时返回 `None`。
+    /// 输入：`path_key`：规范化的插件路径。
+    /// 输出/副作用：从缓存移除并返回 `PluginRuntime::Vst3`；不创建新插件。
+    /// 复杂度：时间 O(缓存数)，空间 O(1)。
+    ///
+    /// Module: plugin / unified runtime
+    /// Purpose: Take the reusable single-instance instance for a path, if any.
+    /// Inputs: `path_key`: normalised plugin path.
+    /// Outputs / side effects: removes and returns `PluginRuntime::Vst3`; no new instance is created.
+    /// Complexity: O(cache size) time and O(1) space.
+    pub(crate) fn take_reusable(path_key: &str) -> Option<PluginRuntime> {
+        let entry = {
+            let mut cache = reusable_vst3().lock().ok()?;
+            let index = cache.iter().position(|item| item.path_key == path_key)?;
+            cache.remove(index)
+        };
+        {
+            let mut plugin = entry
+                .plugin
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            // 旧工程关闭时没有 terminate；这里重新确保处理已启动（已启动时错误可忽略）。
+            // The old project did not terminate it; make sure processing is running (errors are
+            // harmless when it already is).
+            let _ = plugin.start_processing();
+        }
+        crate::diag::info(
+            "plugin.runtime",
+            "plugin.reuse",
+            &[
+                ("phase", "take"),
+                ("name", &entry.name),
+                ("path", &entry.path_key),
+            ],
+        );
+        Some(PluginRuntime::Vst3(Vst3Runtime {
+            plugin: entry.plugin,
+            name: entry.name,
+            params: entry.params,
+            out_channels: entry.out_channels,
+            has_editor: entry.has_editor,
+            kind: entry.kind,
+            path_key: entry.path_key,
+            audio_buffers: None,
+        }))
+    }
 }
 
 pub struct Vst2Runtime {
