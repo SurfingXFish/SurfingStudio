@@ -21,6 +21,9 @@ const MAX_FULL_SCAN_PARAMS: usize = 512;
 /// Maximum editor-feedback entries formatted per frame: analyser/meter parameters may report
 /// hundreds of values every frame.
 const MAX_EDITOR_FEEDBACK_UPDATES: usize = 64;
+/// 本宿主 `save_state` 写出的状态块头；其它来源的字节不能安全地交给插件。
+/// Magic header written by this host's `save_state`; bytes from other sources are unsafe to apply.
+const VST3_STATE_MAGIC: &[u8; 16] = b"VST3HOST_STATE\0\0";
 
 pub struct Vst3Runtime {
     pub plugin: Arc<Mutex<Vst3Plugin>>,
@@ -398,11 +401,34 @@ impl PluginRuntime {
         }
     }
 
+    /// 所属模块：plugin / 统一运行时
+    /// 功能：恢复插件状态：VST3 只接受本宿主 `save_state` 写出的状态块，VST2 按参数快照恢复。
+    /// 输入：
+    /// - `state`：VST3 状态块字节。
+    /// - `params`：VST2 参数值快照。
+    /// 输出/副作用：可能修改插件参数并刷新参数缓存；来源不可信的状态块直接跳过，
+    /// 避免插件在 `setState` 内崩溃。
+    /// 复杂度：时间 O(状态长度 + 参数数)，空间 O(参数数)。
+    ///
+    /// Module: plugin / unified runtime
+    /// Purpose: Restore plugin state: VST3 accepts only blobs written by this host's `save_state`,
+    /// VST2 restores from a parameter snapshot.
+    /// Inputs:
+    /// - `state`: VST3 state blob.
+    /// - `params`: VST2 parameter snapshot.
+    /// Outputs / side effects: may change plugin parameters and refresh the parameter cache;
+    /// untrusted blobs are skipped so a plugin cannot crash inside `setState`.
+    /// Complexity: O(state length + parameter count) time and O(parameter count) space.
     pub fn restore_state(&mut self, state: &[u8], params: &[f32]) {
         let mut refresh = false;
         match self {
             PluginRuntime::Vst3(v) => {
-                if !state.is_empty() {
+                // 旧工程或外部导入的状态可能不是本宿主的封装格式；Ample Sound 这类插件
+                // 收到无法识别的字节会在 setState 内触发 0xC0000005，因此只恢复带宿主头的数据。
+                // Legacy or imported state may not use this host's envelope; plugins such as Ample
+                // Sound crash with 0xC0000005 in setState on unrecognised bytes, so only blobs with
+                // the host header are restored.
+                if !state.is_empty() && state.starts_with(VST3_STATE_MAGIC) {
                     let mut plugin = v.plugin.lock().unwrap_or_else(|p| p.into_inner());
                     let _ = plugin.load_state(state);
                     // 恢复状态后同步参数快照，否则加载完成后的首次全量扫描会把

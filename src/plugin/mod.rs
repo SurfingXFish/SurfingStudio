@@ -723,7 +723,11 @@ mod tests {
 
     #[test]
     #[ignore = "requires the bundled SoundBug example and a local TDR Nova VST3"]
-    fn restores_soundbug_plugin_state_in_a_vst3() {
+    fn skips_unverified_soundbug_state_in_a_vst3() {
+        // 覆盖：SoundBug 导入状态不带宿主头，restore_state 必须跳过且插件仍能导出自身状态。
+        // Covers: imported SoundBug state has no host header, so restore_state skips it and the
+        // plugin can still capture its own state.
+
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("examples")
             .join("光年外的流星_编曲工程")

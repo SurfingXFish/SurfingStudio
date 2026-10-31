@@ -160,7 +160,6 @@ pub(super) fn import_track(
                 &plugin.display_name,
                 plugin.state.clone(),
                 plugin.uid.clone(),
-                plugin.state_is_binary,
             )));
     }
 
@@ -390,15 +389,14 @@ fn parse_plugin(node: &Node) -> SoundBugPlugin {
         .unwrap_or_else(|| kind.clone());
     let path = node.prop_str("filename").map(PathBuf::from);
     let format = path.as_ref().and_then(|path| detect_format(path));
-    // 状态可能是二进制块（tag 3）或带 `.` 分隔的 Base64 文本。
-    // 文本形式是 SoundBug 自己的编码，不保证是标准 VST3 状态；只保留数据，
-    // 不自动恢复，避免让个别插件在 load_state 中崩溃。
-    // State is either a binary blob (tag 3) or dot-separated Base64 text.
-    // The text form is SoundBug's own encoding and may not be a standard VST3
-    // state; preserve it but do not auto-restore it.
-    let binary_state = node.prop_bytes("state");
-    let state_is_binary = binary_state.is_some();
-    let state = binary_state.or_else(|| {
+    // 状态可能是二进制块（tag 3）或带 `.` 分隔的 Base64 文本，两者都是
+    // SoundBug 自己的编码，不保证是标准 VST3 状态。只保留数据，不自动恢复：
+    // Ample Sound 等插件在 load_state 收到这种数据时会直接触发 0xC0000005。
+    // State is either a binary blob (tag 3) or dot-separated Base64 text; both
+    // use SoundBug's own encoding and are not guaranteed to be standard VST3
+    // state. Preserve the data but never auto-restore it: plugins such as
+    // Ample Sound crash with 0xC0000005 when load_state receives such a blob.
+    let state = node.prop_bytes("state").or_else(|| {
         node.prop_str("state")
             .and_then(|text| decode_soundbug_state(&text))
     });
@@ -408,7 +406,6 @@ fn parse_plugin(node: &Node) -> SoundBugPlugin {
         path,
         format,
         state,
-        state_is_binary,
         uid: node.prop_str("uid").unwrap_or_default(),
         enabled: node.prop_bool("enabled").unwrap_or(true),
         volume: node.prop_f64("volume").map(|value| value as f32),
@@ -458,7 +455,6 @@ fn instrument_for(
                     &plugin.display_name,
                     plugin.state.clone(),
                     plugin.uid.clone(),
-                    plugin.state_is_binary,
                 ));
             }
         } else {
@@ -520,6 +516,7 @@ fn detect_format(path: &Path) -> Option<PluginFormat> {
 /// - `uid`：SoundBug 的 uid；仅 32 位十六进制时作为 VST3 class id。
 ///
 /// 输出/副作用：返回 `PluginRef`；无效 uid 留空以使用插件默认类。
+/// 导入的状态只保留数据、不自动恢复（SoundBug 编码可能不是标准 VST3 状态）。
 ///
 /// 复杂度：时间 O(状态长度)，空间 O(状态长度)。
 ///
@@ -534,7 +531,8 @@ fn detect_format(path: &Path) -> Option<PluginFormat> {
 /// - `uid`: SoundBug uid; used as a VST3 class id only when it is 32 hex digits.
 ///
 /// Outputs / side effects: returns a `PluginRef`; invalid uids stay empty so the
-/// plugin's default class is loaded.
+/// plugin's default class is loaded. Imported state is preserved but never
+/// auto-restored (SoundBug encoding may not be standard VST3 state).
 ///
 /// Complexity: O(state length) time and space.
 fn plugin_ref(
@@ -543,7 +541,6 @@ fn plugin_ref(
     name: &str,
     state: Option<Vec<u8>>,
     uid: String,
-    restore_state: bool,
 ) -> PluginRef {
     let mut plugin = PluginRef::new(format, path, name.to_string());
     let valid_uid = uid.len() == 32 && uid.chars().all(|character| character.is_ascii_hexdigit());
@@ -551,7 +548,7 @@ fn plugin_ref(
         plugin.uid = uid;
     }
     plugin.state = state.unwrap_or_default().into();
-    plugin.restore_state = restore_state;
+    plugin.restore_state = false;
     plugin
 }
 
@@ -799,9 +796,6 @@ struct SoundBugPlugin {
     path: Option<PathBuf>,
     format: Option<PluginFormat>,
     state: Option<Vec<u8>>,
-    /// 状态来自二进制 tag 3（可作为 VST3 状态尝试恢复）。
-    /// State came from the binary tag 3 block (safe to try as a VST3 state).
-    state_is_binary: bool,
     uid: String,
     enabled: bool,
     volume: Option<f32>,
