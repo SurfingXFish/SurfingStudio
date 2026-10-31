@@ -454,7 +454,10 @@ pub struct SurfingApp {
     pub controller_tool: crate::ui::controller::Tool,
     pub controller_line_start: Option<AutomationPoint>,
     pub controller_selection: Vec<usize>,
-    pub controller_marquee_start: Option<egui::Pos2>,
+    /// 控制器框选锚点（拍, 屏幕 y）；横向滚动/缩放后选择框仍跟随指针。
+    /// Controller marquee anchor (beat, screen y); the band follows the pointer after
+    /// horizontal scroll or zoom.
+    pub controller_marquee_start: Option<(f64, f32)>,
     pub raw_window: Option<RawWindowHandle>,
     pub raw_display: Option<RawDisplayHandle>,
     /// 无边框窗口是否由应用接管为最大化（Windows 下铺满显示器工作区）。

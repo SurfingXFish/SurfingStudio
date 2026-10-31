@@ -902,7 +902,13 @@ impl SurfingApp {
                     } else {
                         self.selected_note = None;
                         self.selected_notes.clear();
-                        self.piano_drag = PianoDrag::Marquee { start: pos };
+                        // 锚点换算到内容坐标：视图滚动/缩放时选择框仍跟随指针。
+                        // Anchor in content space so the band follows the pointer when the view
+                        // scrolls or zooms.
+                        self.piano_drag = PianoDrag::Marquee {
+                            start_beat: x_to_beat(pos.x),
+                            start_row: (pos.y - grid_top) / note_h,
+                        };
                     }
                 }
             }
@@ -1022,7 +1028,14 @@ impl SurfingApp {
                             }
                         }
                     }
-                    PianoDrag::Marquee { start } => {
+                    PianoDrag::Marquee {
+                        start_beat,
+                        start_row,
+                    } => {
+                        // 用当前缩放/滚动把内容锚点换回屏幕坐标。
+                        // Map the content anchor back to screen space with the current zoom/scroll.
+                        let start =
+                            egui::pos2(beat_to_x(start_beat), grid_top + start_row * note_h);
                         let band = Rect::from_two_pos(start, pos).intersect(Rect::from_min_max(
                             egui::pos2(grid_left, grid_top),
                             egui::pos2(rect.right(), grid_bottom),
@@ -1197,9 +1210,14 @@ impl SurfingApp {
         }
 
         // Rubber-band selection overlay.
-        if let PianoDrag::Marquee { start } = &self.piano_drag {
+        if let PianoDrag::Marquee {
+            start_beat,
+            start_row,
+        } = &self.piano_drag
+        {
             if let Some(pos) = response.interact_pointer_pos() {
-                let band = Rect::from_two_pos(*start, pos).intersect(Rect::from_min_max(
+                let start = egui::pos2(beat_to_x(*start_beat), grid_top + *start_row * note_h);
+                let band = Rect::from_two_pos(start, pos).intersect(Rect::from_min_max(
                     egui::pos2(grid_left, grid_top),
                     egui::pos2(rect.right(), grid_bottom),
                 ));

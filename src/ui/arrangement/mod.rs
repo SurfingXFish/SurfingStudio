@@ -1873,7 +1873,13 @@ impl SurfingApp {
                                     } else {
                                         self.selected_clip = None;
                                         self.selected_clips.clear();
-                                        self.arr_drag = ArrangementDrag::Marquee { start: pos };
+                                        // 锚点换算到内容坐标：视图滚动/缩放时选择框仍跟随指针。
+                                        // Anchor in content space so the band follows the pointer
+                                        // when the view scrolls or zooms.
+                                        self.arr_drag = ArrangementDrag::Marquee {
+                                            start_beat: x_to_beat(pos.x),
+                                            start_offset: pos.y - lane_top + scroll,
+                                        };
                                     }
                                 }
                             }
@@ -2085,8 +2091,15 @@ impl SurfingApp {
                         }
                     }
                 }
-                ArrangementDrag::Marquee { start } => {
+                ArrangementDrag::Marquee {
+                    start_beat,
+                    start_offset,
+                } => {
                     if let Some(pos) = pointer {
+                        // 用当前缩放/滚动把内容锚点换回屏幕坐标。
+                        // Map the content anchor back to screen space with the current zoom/scroll.
+                        let start =
+                            egui::pos2(beat_to_x(start_beat), lane_top + start_offset - scroll);
                         let band = Rect::from_two_pos(start, pos);
                         // Cross-track selection: any clip intersecting the band.
                         let mut selected: Vec<(usize, usize)> = Vec::new();
@@ -2586,9 +2599,14 @@ impl SurfingApp {
         }
 
         // Rubber-band selection overlay.
-        if let ArrangementDrag::Marquee { start } = &self.arr_drag {
+        if let ArrangementDrag::Marquee {
+            start_beat,
+            start_offset,
+        } = &self.arr_drag
+        {
             if let Some(pos) = response.interact_pointer_pos() {
-                let band = Rect::from_two_pos(*start, pos).intersect(Rect::from_min_max(
+                let start = egui::pos2(beat_to_x(*start_beat), lane_top + *start_offset - scroll);
+                let band = Rect::from_two_pos(start, pos).intersect(Rect::from_min_max(
                     egui::pos2(lane_left, lane_top),
                     rect.max,
                 ));

@@ -345,7 +345,10 @@ impl SurfingApp {
                         && !near_point
                         && inner.contains(pos);
                     if marquee {
-                        self.controller_marquee_start = Some(pos);
+                        // 锚点记为（拍, 屏幕 y）：横向滚动/缩放后选择框仍跟随指针。
+                        // Anchor as (beat, screen y) so the band follows the pointer after
+                        // horizontal scroll or zoom.
+                        self.controller_marquee_start = Some((x_to_beat(pos.x), pos.y));
                         self.controller_selection.clear();
                     } else {
                         match tool {
@@ -375,8 +378,9 @@ impl SurfingApp {
                     }
                 }
             } else if response.dragged() {
-                if let Some(start) = self.controller_marquee_start {
+                if let Some((start_beat, start_y)) = self.controller_marquee_start {
                     if let Some(pos) = response.interact_pointer_pos() {
+                        let start = egui::pos2(beat_to_x(start_beat), start_y);
                         let band = egui::Rect::from_two_pos(start, pos).expand(3.0);
                         self.controller_selection = points
                             .iter()
@@ -459,8 +463,9 @@ impl SurfingApp {
         }
 
         // Rubber-band selection overlay.
-        if let Some(start) = self.controller_marquee_start {
+        if let Some((start_beat, start_y)) = self.controller_marquee_start {
             if let Some(pos) = response.interact_pointer_pos() {
+                let start = egui::pos2(beat_to_x(start_beat), start_y);
                 let band = egui::Rect::from_two_pos(start, pos).intersect(inner);
                 if band.width() > 1.0 && band.height() > 1.0 {
                     painter.rect_filled(

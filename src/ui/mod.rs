@@ -21,7 +21,6 @@ pub mod piano_roll;
 pub mod theme;
 
 use crate::core::model::{ControllerKind, TrackId};
-use eframe::egui;
 
 /// Which editor is shown in the bottom panel.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -161,8 +160,11 @@ pub enum ArrangementDrag {
         group: Vec<(usize, usize, f64, f64)>,
     },
     /// Selecting clips with a rubber band, across all tracks.
+    /// The anchor is stored in content space (`start_beat` plus the y offset from the lane top,
+    /// scroll removed) so the band keeps following the pointer when the view scrolls or zooms.
     Marquee {
-        start: egui::Pos2,
+        start_beat: f64,
+        start_offset: f32,
     },
     /// Dragging out a new clip with the draw tool.
     CreateClip {
@@ -195,8 +197,11 @@ pub enum PianoDrag {
         group: Vec<(usize, usize, f64, f64)>,
     },
     /// Rubber-band selection of notes.
+    /// The anchor is stored in content space (`start_beat` plus the row offset from the grid top)
+    /// so the band follows the pointer while the view scrolls or zooms.
     Marquee {
-        start: egui::Pos2,
+        start_beat: f64,
+        start_row: f32,
     },
     /// 上下拖动力度控制器中的竖线/横线，调整对应音符的力度。
     /// Drag a velocity stem/bar vertically to change that note's velocity.
