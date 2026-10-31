@@ -31,7 +31,8 @@ impl SurfingApp {
                 ui.label("• 拖动卷帘顶部工具条的空白处（按钮和滑块以外，或长按卷帘空白处拖动）可把卷帘拖出为独立窗口");
                 ui.label("• 独立卷帘支持多个、最小化/最大化、跨屏移动；再次双击同一轨道只会将其置顶");
                 ui.label(format!(
-                    "• {} 切换自动翻页（播放时视图跟随播放头）",
+                    "• {} 按当前编辑上下文全选；{} 切换自动翻页（播放时视图跟随播放头）",
+                    self.settings.shortcut_label(ShortcutAction::SelectAll),
                     self.settings.shortcut_label(ShortcutAction::ToggleAutoPage)
                 ));
                 ui.label(format!(

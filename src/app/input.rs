@@ -76,6 +76,12 @@ impl SurfingApp {
             if self.settings.shortcut_pressed(ctx, ShortcutAction::Paste) {
                 self.paste_clipboard();
             }
+            if self
+                .settings
+                .shortcut_pressed(ctx, ShortcutAction::SelectAll)
+            {
+                self.select_all();
+            }
             if self.settings.shortcut_pressed(ctx, ShortcutAction::Delete) {
                 self.delete_selection();
             }

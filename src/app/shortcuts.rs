@@ -85,6 +85,7 @@ pub enum ShortcutAction {
     Redo,
     Copy,
     Paste,
+    SelectAll,
     Delete,
     Cancel,
     Help,
@@ -107,7 +108,7 @@ pub enum ShortcutAction {
 }
 
 impl ShortcutAction {
-    pub const ALL: [ShortcutAction; 30] = [
+    pub const ALL: [ShortcutAction; 31] = [
         ShortcutAction::PlayPause,
         ShortcutAction::GoToStart,
         ShortcutAction::GoToEnd,
@@ -119,6 +120,7 @@ impl ShortcutAction {
         ShortcutAction::Redo,
         ShortcutAction::Copy,
         ShortcutAction::Paste,
+        ShortcutAction::SelectAll,
         ShortcutAction::Delete,
         ShortcutAction::Cancel,
         ShortcutAction::Help,
@@ -164,6 +166,7 @@ impl ShortcutAction {
             ShortcutAction::Redo => "redo",
             ShortcutAction::Copy => "copy",
             ShortcutAction::Paste => "paste",
+            ShortcutAction::SelectAll => "select_all",
             ShortcutAction::Delete => "delete",
             ShortcutAction::Cancel => "cancel",
             ShortcutAction::Help => "help",
@@ -210,6 +213,7 @@ impl ShortcutAction {
             ShortcutAction::Redo => "重做",
             ShortcutAction::Copy => "复制",
             ShortcutAction::Paste => "粘贴",
+            ShortcutAction::SelectAll => "全选",
             ShortcutAction::Delete => "删除选中",
             ShortcutAction::Cancel => "取消 / 关闭",
             ShortcutAction::Help => "帮助窗口",
@@ -256,6 +260,7 @@ impl ShortcutAction {
             | ShortcutAction::Redo
             | ShortcutAction::Copy
             | ShortcutAction::Paste
+            | ShortcutAction::SelectAll
             | ShortcutAction::Delete
             | ShortcutAction::Cancel => ShortcutGroup::FileEdit,
             ShortcutAction::Help
@@ -311,6 +316,7 @@ impl ShortcutAction {
             ],
             ShortcutAction::Copy => vec![Binding::new(Key::C, CTRL, NONE, NONE)],
             ShortcutAction::Paste => vec![Binding::new(Key::V, CTRL, NONE, NONE)],
+            ShortcutAction::SelectAll => vec![Binding::new(Key::A, CTRL, NONE, NONE)],
             ShortcutAction::Delete => vec![
                 Binding::new(Key::Delete, NONE, NONE, NONE),
                 Binding::new(Key::Backspace, NONE, NONE, NONE),

@@ -1,8 +1,164 @@
-//! Editing commands: delete, copy, paste and lane replacement.
+//! 所属模块：app / 编辑命令
+//! 文件用途：
+//! - 全选、删除、复制、粘贴与子轨覆盖替换。
+//! - 效果器/控制器子轨的增删与剪贴板应用。
+//!
+//! 函数清单：
+//! - `select_all`：按当前编辑上下文全选控制器点位、音符、效果器链或片段。
+//! - `delete_selection`：按优先级删除控制器点、音符、效果器、子轨或片段。
+//! - `remove_effect_at` / `add_native_effect` / `remove_controller`：效果器与控制器子轨增删。
+//! - `copy_child_lane_selection` / `lane_points` / `apply_lane_paste`：子轨复制与覆盖粘贴。
+//! - `copy_selection` / `paste_clipboard`：复制/粘贴入口。
+//! - `validate_selection`：结构变化后校正失效选择。
+//!
+//! Module: app / editing commands
+//! Purpose:
+//! - Select all, delete, copy, paste and child-lane replacement.
+//! - Add/remove effect and controller child lanes and apply lane clipboard data.
+//!
+//! Functions:
+//! - `select_all`: select controller points, notes, the effect chain or clips by context.
+//! - `delete_selection`: delete controller points, notes, effects, child lanes or clips in priority order.
+//! - `remove_effect_at` / `add_native_effect` / `remove_controller`: effect and controller lane editing.
+//! - `copy_child_lane_selection` / `lane_points` / `apply_lane_paste`: child-lane copy and overwrite paste.
+//! - `copy_selection` / `paste_clipboard`: copy/paste entry points.
+//! - `validate_selection`: fix stale selections after structural changes.
 
 use super::*;
 
 impl SurfingApp {
+    /// 所属模块：app / 编辑命令
+    /// 功能：Ctrl+A 全选当前编辑上下文：控制器点位、当前卷帘音符或编曲区全部片段。
+    /// 输入：`self`。
+    /// 输出/副作用：重写选择状态并更新状态栏；不修改工程内容。
+    /// 复杂度：时间 O(片段数 + 音符数 + 控制点数量)，空间 O(选中项)。
+    ///
+    /// Module: app / editing commands
+    /// Purpose: Ctrl+A selects everything in the current editing context: controller points, the
+    /// notes of the open roll, or every arrangement clip.
+    /// Inputs: `self`.
+    /// Outputs / side effects: replaces the selection and updates the status bar; the project is
+    /// untouched.
+    /// Complexity: O(clips + notes + controller points) time and O(selection) space.
+    pub fn select_all(&mut self) {
+        if self.bottom_open {
+            match self.bottom_view {
+                BottomView::Controller { track_id, kind } => {
+                    let len = if track_id == crate::core::model::MASTER_TRACK_ID {
+                        self.project.master_controllers.get(kind).len()
+                    } else {
+                        self.project
+                            .tracks
+                            .iter()
+                            .find(|track| track.id == track_id)
+                            .map(|track| track.controllers.get(kind).len())
+                            .unwrap_or(0)
+                    };
+                    if len > 0 {
+                        self.selected_track = self
+                            .project
+                            .tracks
+                            .iter()
+                            .position(|track| track.id == track_id)
+                            .unwrap_or(self.selected_track);
+                        self.selected_controller = Some((track_id, kind));
+                        self.selected_effects_lane = None;
+                        self.selected_effect = None;
+                        self.controller_selection = (0..len).collect();
+                        self.selected_note = None;
+                        self.selected_notes.clear();
+                        self.selected_clip = None;
+                        self.selected_clips.clear();
+                        self.status = format!("已全选 {} 个控制器节点", len);
+                        return;
+                    }
+                }
+                BottomView::PianoRoll => {
+                    let track_id = self.piano_track.or_else(|| self.current_track_id());
+                    let track_index = track_id
+                        .and_then(|id| self.project.tracks.iter().position(|track| track.id == id));
+                    if let Some(track_index) = track_index {
+                        let selected: Vec<(usize, usize)> = self.project.tracks[track_index]
+                            .clips
+                            .iter()
+                            .enumerate()
+                            .flat_map(|(clip_index, clip)| {
+                                (0..clip.notes.len())
+                                    .map(move |note_index| (clip_index, note_index))
+                            })
+                            .collect();
+                        if !selected.is_empty() {
+                            self.selected_track = track_index;
+                            self.selected_clip = selected.first().map(|(clip, _)| *clip);
+                            self.selected_note = selected.last().copied();
+                            self.selected_notes = selected;
+                            self.selected_controller = None;
+                            self.selected_effects_lane = None;
+                            self.selected_effect = None;
+                            self.controller_selection.clear();
+                            self.status = format!("已全选 {} 个音符", self.selected_notes.len());
+                            return;
+                        }
+                    }
+                }
+                BottomView::Effects { track_id } => {
+                    let has_effects = if track_id == crate::core::model::MASTER_TRACK_ID {
+                        self.project.master_effect.is_some()
+                    } else {
+                        self.project
+                            .tracks
+                            .iter()
+                            .find(|track| track.id == track_id)
+                            .map(|track| !track.effects.is_empty())
+                            .unwrap_or(false)
+                    };
+                    if has_effects {
+                        self.selected_track = self
+                            .project
+                            .tracks
+                            .iter()
+                            .position(|track| track.id == track_id)
+                            .unwrap_or(self.selected_track);
+                        self.selected_effects_lane = Some(track_id);
+                        self.selected_effect = None;
+                        self.selected_controller = None;
+                        self.controller_selection.clear();
+                        self.selected_note = None;
+                        self.selected_notes.clear();
+                        self.selected_clip = None;
+                        self.selected_clips.clear();
+                        self.status = "已全选效果器链".into();
+                        return;
+                    }
+                }
+            }
+        }
+
+        let all: Vec<(usize, usize)> = self
+            .project
+            .tracks
+            .iter()
+            .enumerate()
+            .flat_map(|(track_index, track)| {
+                (0..track.clips.len()).map(move |clip_index| (track_index, clip_index))
+            })
+            .collect();
+        if all.is_empty() {
+            self.status = "没有可全选的内容".into();
+            return;
+        }
+        self.selected_track = all[0].0;
+        self.selected_clip = Some(all[0].1);
+        self.selected_clips = all;
+        self.selected_note = None;
+        self.selected_notes.clear();
+        self.selected_effect = None;
+        self.selected_controller = None;
+        self.selected_effects_lane = None;
+        self.controller_selection.clear();
+        self.status = format!("已全选 {} 个片段", self.selected_clips.len());
+    }
+
     pub fn delete_selection(&mut self) {
         // 1. Controller points when the controller roll is open.
         if self.bottom_open {
