@@ -800,8 +800,9 @@ impl SurfingApp {
         use winapi::shared::windef::HWND;
         use winapi::um::winuser::{
             DispatchMessageW, EnumWindows, GetWindow, GetWindowTextLengthW, GetWindowTextW,
-            GetWindowThreadProcessId, MsgWaitForMultipleObjectsEx, PeekMessageW, PostMessageW,
-            TranslateMessage, GW_OWNER, MSG, MWMO_INPUTAVAILABLE, PM_REMOVE, QS_ALLINPUT, WM_CLOSE,
+            GetWindowThreadProcessId, IsWindowVisible, MsgWaitForMultipleObjectsEx, PeekMessageW,
+            PostMessageW, TranslateMessage, GW_OWNER, MSG, MWMO_INPUTAVAILABLE, PM_REMOVE,
+            QS_ALLINPUT, WM_CLOSE,
         };
 
         unsafe fn title_of(hwnd: HWND) -> Option<String> {
@@ -818,7 +819,11 @@ impl SurfingApp {
             let state = unsafe { &mut *(lparam as *mut (DWORD, Vec<HWND>)) };
             let mut pid: DWORD = 0;
             unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
-            if pid != state.0 {
+            // 只看可见窗口：winit/egui 会创建若干隐藏辅助窗口，它们不会响应 WM_CLOSE，
+            // 若把它们算进来，关闭工程时会永远“有窗口未关闭”而跳过 terminate。
+            // Only visible windows count: winit/egui create hidden helper windows that ignore
+            // WM_CLOSE; counting them would always report "windows still open" and skip terminate.
+            if pid != state.0 || unsafe { IsWindowVisible(hwnd) } == 0 {
                 return 1;
             }
             let Some(title) = (unsafe { title_of(hwnd) }) else {
@@ -852,6 +857,19 @@ impl SurfingApp {
         if state.1.is_empty() {
             return (0, true);
         }
+        let titles: Vec<String> = state
+            .1
+            .iter()
+            .filter_map(|hwnd| unsafe { title_of(*hwnd) })
+            .collect();
+        diag::info(
+            "app.window",
+            "window.drop",
+            &[
+                ("phase", "plugin_windows_visible"),
+                ("titles", &titles.join(" | ")),
+            ],
+        );
         let mut requested = 0;
         for hwnd in &state.1 {
             if unsafe { PostMessageW(*hwnd, WM_CLOSE, 0, 0) } != 0 {
