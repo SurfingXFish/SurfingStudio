@@ -205,6 +205,18 @@ pub fn apply_style(ctx: &egui::Context) {
 
     let mut style = (*ctx.global_style()).clone();
     style.visuals = visuals.clone();
+    // egui 在 debug 构建中默认开启“同一矩形在两帧间改变 id”的警告，并在下一帧绘制
+    // 2 点红色边框；页面/按钮重排时用户会看到红框一闪而过。这里关闭该调试叠加与
+    // 未对齐提示，避免把调试告警当成界面缺陷（Release 没有这些字段）。
+    // egui enables a debug-only warning when a rect changes id between frames and paints a
+    // 2-point red outline for one frame; page/button relayout made that flash visible. Disable
+    // that overlay and the unaligned hint so debug warnings never look like UI defects
+    // (release builds have no such fields).
+    #[cfg(debug_assertions)]
+    {
+        style.debug.warn_if_rect_changes_id = false;
+        style.debug.show_unaligned = false;
+    }
     style.spacing.item_spacing = Vec2::new(9.0, 6.0);
     style.spacing.button_padding = Vec2::new(10.0, 4.0);
     style.spacing.slider_width = 150.0;
@@ -229,6 +241,14 @@ pub fn apply_style(ctx: &egui::Context) {
     ctx.set_global_style(style);
     ctx.all_styles_mut(|style| {
         style.visuals = visuals.clone();
+        // 深/浅两套主题都关闭调试叠加，避免切换主题后又出现红色边框。
+        // Disable the debug overlay for both themes so switching themes cannot bring the red
+        // outline back.
+        #[cfg(debug_assertions)]
+        {
+            style.debug.warn_if_rect_changes_id = false;
+            style.debug.show_unaligned = false;
+        }
     });
 }
 
