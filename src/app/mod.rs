@@ -759,27 +759,38 @@ impl SurfingApp {
                 "window.drop",
                 &[("phase", "plugin_windows_still_open")],
             );
+            self.terminate_plugin_child_processes();
             return true;
         }
         let deadline = Instant::now() + timeout;
+        let mut acquired = false;
         loop {
             match self.engine.try_lock() {
                 Ok(mut engine) => {
                     engine.shutdown_plugins();
-                    return true;
+                    acquired = true;
+                    break;
                 }
                 Err(std::sync::TryLockError::Poisoned(poison)) => {
                     poison.into_inner().shutdown_plugins();
-                    return true;
+                    acquired = true;
+                    break;
                 }
                 Err(std::sync::TryLockError::WouldBlock) => {
                     if Instant::now() >= deadline {
-                        return false;
+                        break;
                     }
                     std::thread::yield_now();
                 }
             }
         }
+        // 插件终止后，清理它拉起的外部编辑应用（VOCALOID6.exe / ACE Studio 等）：
+        // 这些进程是「已经有一个启动了」单实例检测的真正来源，窗口关闭并不会结束它们。
+        // After termination, close the external editor apps spawned by plugins (VOCALOID6.exe,
+        // ACE Studio, ...): they are what the "already running" single-instance check detects, and
+        // closing the in-process window does not end them.
+        self.terminate_plugin_child_processes();
+        acquired
     }
 
     /// 所属模块：app / 插件生命周期
@@ -928,6 +939,117 @@ impl SurfingApp {
     fn close_plugin_owned_windows(&self, _timeout: Duration) -> (usize, bool) {
         (0, true)
     }
+
+    /// 所属模块：app / 插件生命周期
+    /// 功能：终止由本进程（含多级子进程）拉起的插件外部编辑应用。
+    /// 输入：`self`。
+    /// 输出/副作用：结束 VOCALOID6 / ACE Studio 等编辑进程；写 `plugin_editor_processes_terminated` 日志。
+    /// 复杂度：时间 O(进程数)，空间 O(进程数)。
+    ///
+    /// Module: app / plugin lifecycle
+    /// Purpose: Terminate plugin-spawned external editor apps that descend from this process.
+    /// Inputs: `self`.
+    /// Outputs / side effects: ends VOCALOID6 / ACE Studio editor processes and logs
+    /// `plugin_editor_processes_terminated`.
+    /// Complexity: O(process count) time and space.
+    #[cfg(target_os = "windows")]
+    fn terminate_plugin_child_processes(&self) {
+        use std::collections::{HashMap, HashSet, VecDeque};
+        use winapi::shared::minwindef::DWORD;
+        use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
+        use winapi::um::processthreadsapi::{GetCurrentProcessId, OpenProcess, TerminateProcess};
+        use winapi::um::tlhelp32::{
+            CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+            TH32CS_SNAPPROCESS,
+        };
+        use winapi::um::winnt::PROCESS_TERMINATE;
+
+        // 只结束本进程启动的编辑器，避免误杀用户单独打开的 VOCALOID / ACE Studio。
+        // Only end editors started by this process, never a standalone app the user opened.
+        const EDITOR_APPS: [&str; 7] = [
+            "vocaloid6.exe",
+            "vocaloid5.exe",
+            "vocaloid4.exe",
+            "ace studio.exe",
+            "acestudio.exe",
+            "xstudio.exe",
+            "synthesizerv.exe",
+        ];
+
+        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+        if snapshot == INVALID_HANDLE_VALUE {
+            return;
+        }
+        let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        let mut children: HashMap<DWORD, Vec<(DWORD, String)>> = HashMap::new();
+        let mut more = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
+        while more {
+            let end = entry
+                .szExeFile
+                .iter()
+                .position(|value| *value == 0)
+                .unwrap_or(entry.szExeFile.len());
+            let name = String::from_utf16_lossy(&entry.szExeFile[..end]);
+            children
+                .entry(entry.th32ParentProcessID)
+                .or_default()
+                .push((entry.th32ProcessID, name));
+            more = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
+        }
+        unsafe { CloseHandle(snapshot) };
+
+        let me = unsafe { GetCurrentProcessId() };
+        let mut queue = VecDeque::from([me]);
+        let mut seen: HashSet<DWORD> = HashSet::new();
+        let mut killed: Vec<String> = Vec::new();
+        while let Some(parent) = queue.pop_front() {
+            let Some(list) = children.get(&parent) else {
+                continue;
+            };
+            for (pid, name) in list {
+                if !seen.insert(*pid) {
+                    continue;
+                }
+                let lower = name.to_ascii_lowercase();
+                if EDITOR_APPS.iter().any(|app| lower == *app) {
+                    let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, *pid) };
+                    if !handle.is_null() {
+                        if unsafe { TerminateProcess(handle, 0) } != 0 {
+                            killed.push(name.clone());
+                        }
+                        unsafe { CloseHandle(handle) };
+                    }
+                } else {
+                    queue.push_back(*pid);
+                }
+            }
+        }
+        if !killed.is_empty() {
+            diag::info(
+                "app.window",
+                "window.drop",
+                &[
+                    ("phase", "plugin_editor_processes_terminated"),
+                    ("names", &killed.join(" | ")),
+                ],
+            );
+        }
+    }
+
+    /// 所属模块：app / 插件生命周期
+    /// 功能：非 Windows 平台没有插件外部编辑进程。
+    /// 输入：`self`。
+    /// 输出/副作用：无。
+    /// 复杂度：时间 O(1)，空间 O(1)。
+    ///
+    /// Module: app / plugin lifecycle
+    /// Purpose: No plugin-spawned external editor processes exist off Windows.
+    /// Inputs: `self`.
+    /// Outputs / side effects: none.
+    /// Complexity: O(1) time and space.
+    #[cfg(not(target_os = "windows"))]
+    fn terminate_plugin_child_processes(&self) {}
 }
 
 /// 工程窗口的初始内容。

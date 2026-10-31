@@ -4,8 +4,7 @@ use super::backends::{make_vst2_cc, send_vst2_events, send_vst2_gates, Vst2Host}
 use super::{ParamView, PluginKind};
 use crate::audio::synth::{GateKind, SynthEvent};
 use std::collections::HashMap;
-use std::sync::{mpsc, Arc, Mutex};
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
 use vst::plugin::Plugin as VstPluginTrait;
 use vst3_host::midi::{MidiChannel, MidiEvent as Vst3MidiEvent};
 use vst3_host::Plugin as Vst3Plugin;
@@ -202,19 +201,19 @@ impl PluginRuntime {
     /// 所属模块：plugin / 统一运行时
     /// 功能：终止插件组件但保留 Rust 实例，用于关闭工程时释放插件拉起的外部应用窗口。
     /// 输入：`self`。
-    /// 输出/副作用：VST3 调用 `shutdown_component`，随后把自身替换为 `Failed`，并把最后一份
-    /// 强引用交给后台线程释放；已终止实例的 `Drop` 直接返回，只会释放 COM 引用并卸载模块。
+    /// 输出/副作用：VST3 调用 `shutdown_component`，随后把自身替换为 `Failed` 并泄漏一份
+    /// `Plugin` 强引用，避免在 UI 线程运行插件析构；外部编辑进程由应用层单独清理。
     /// VST2/失败态不做处理。
-    /// 复杂度：时间 O(1 + 插件终止)，空间 O(1)。
+    /// 复杂度：时间 O(1 + 插件终止)，空间 O(1)（泄漏一个实例）。
     ///
     /// Module: plugin / unified runtime
-    /// Purpose: Terminate the plugin component and hand the last strong reference to a worker thread
-    /// for destruction, so the VST3 module is actually unloaded and process-wide single-instance
-    /// locks (VOCALOID) are released without running the plugin destructor on the UI thread.
+    /// Purpose: Terminate the plugin component while keeping the Rust instance alive, so closing a
+    /// project releases plugin-spawned external app windows without running the destructor on the
+    /// UI thread; the app layer separately terminates the plugin's external editor process.
     /// Inputs: `self`.
     /// Outputs / side effects: VST3 calls `shutdown_component`, then replaces itself with `Failed`
-    /// and releases the instance on a worker thread; VST2/failed runtimes are untouched.
-    /// Complexity: O(1 + plugin termination) time and O(1) space.
+    /// and leaks one strong `Plugin` reference; VST2/failed runtimes are untouched.
+    /// Complexity: O(1 + plugin termination) time and O(1) space (one leaked instance).
     pub fn shutdown(&mut self) {
         let PluginRuntime::Vst3(v) = self else {
             return;
@@ -231,30 +230,15 @@ impl PluginRuntime {
             );
         }
         drop(plugin);
-        // 不能像以前一样永久泄漏：`PluginImpl::Drop` 在已终止时会跳过 teardown，但会释放
-        // COM 引用并卸载 VST3 模块；只有真正卸载模块，VOCALOID 等插件的进程级单实例锁才会
-        // 释放，关闭工程后才能再次加载同一插件。放到后台线程释放，避免模块卸载/DllMain 卡住 UI。
-        // Do not leak forever: `PluginImpl::Drop` skips teardown when already terminated but still
-        // releases COM references and unloads the VST3 module. Only unloading the module releases
-        // process-wide single-instance locks such as VOCALOID's, so the same plugin can load again
-        // after a project closes. Release it on a worker thread so module unload/DllMain cannot
-        // block the UI.
-        let released = v.plugin.clone();
-        // VOCALOID / ACE Bridge 依赖进程级单实例：等它们的模块真正卸载后再返回，
-        // 否则紧接着重新打开工程仍会看到“已经有一个启动了”。
-        // VOCALOID / ACE Bridge rely on a process-wide single instance: wait for their module to
-        // unload so reopening the project immediately afterwards does not report "already running".
-        let name = v.name.to_lowercase();
-        let wait_for_unload = name.contains("vocaloid") || name.contains("ace bridge");
+        // 不在这里析构：VOCALOID / ACE Bridge 的析构会等待 UI 消息循环；模块也保持加载，
+        // 避免部分插件不支持「卸载后在同一进程重新加载」。单实例由应用层终止其外部编辑进程解决。
+        // Do not destroy here: VOCALOID / ACE Bridge destructors wait for the UI message loop, and
+        // keeping the module loaded avoids plugins that cannot be unloaded and reloaded in the same
+        // process. The app layer resolves the single-instance conflict by terminating the external
+        // editor process.
+        let leaked = v.plugin.clone();
         *self = PluginRuntime::Failed("插件已关闭".into());
-        let (done_tx, done_rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            drop(released);
-            let _ = done_tx.send(());
-        });
-        if wait_for_unload {
-            let _ = done_rx.recv_timeout(Duration::from_millis(800));
-        }
+        std::mem::forget(leaked);
     }
 
     /// Capture state blob and parameter snapshot for project persistence.

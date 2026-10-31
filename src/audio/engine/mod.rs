@@ -412,6 +412,19 @@ impl TrackEngine {
                     sample_rate as f32,
                 )),
                 InstrumentRef::Plugin(pref) => {
+                    // 逐插件记录加载开始/结束：插件在加载中崩溃时，最后一条 begin 就是现场。
+                    // Log each instrument load: when a plugin crashes while loading, the last begin
+                    // record identifies it.
+                    let path_text = pref.path.display().to_string();
+                    let span = crate::diag::Span::start_logged(
+                        "app.engine",
+                        "engine.instrument.load",
+                        &[
+                            ("name", &pref.name),
+                            ("path", &path_text),
+                            ("track", &track.name),
+                        ],
+                    );
                     match PluginHost::load_plugin(
                         pref.format,
                         &pref.path,
@@ -427,9 +440,11 @@ impl TrackEngine {
                             if pref.restore_state {
                                 runtime.restore_state(&pref.state, &pref.params);
                             }
+                            span.end(&[("status", "ok")]);
                             InstrumentRuntime::Plugin(runtime)
                         }
                         Err(error) => {
+                            span.end(&[("status", "error"), ("error", &error)]);
                             warnings.push(format!("{}: {}", track.name, error));
                             InstrumentRuntime::Failed(error)
                         }
