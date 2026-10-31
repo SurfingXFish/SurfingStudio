@@ -180,7 +180,10 @@ impl SurfingApp {
                         }
                     });
                 });
-                ui.add_space(6.0);
+                // 顶栏与分隔线之间不再额外加 6 点空白：外层 item_spacing 已提供间距，
+                // 再叠加会让工具栏下方的留白明显大于上方，看起来上下不对等。
+                // No extra 6-point gap above the separator: the outer item spacing already provides
+                // breathing room, and stacking both made the header look top-heavy.
                 ui.separator();
 
                 let body_height = (ui.available_height() - 4.0).max(120.0);
