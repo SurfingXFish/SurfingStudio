@@ -180,6 +180,20 @@ pub struct PluginWindow {
     /// Whether the inline editor supports content scaling; otherwise fall back to `onSize`.
     #[cfg(target_os = "windows")]
     embedded_scalable: bool,
+    /// 最近一次应用的窗口矩形（物理像素，屏幕坐标）；避免每帧重复 `SetWindowPos`。
+    /// Last applied window rectangle (physical pixels, screen coordinates); avoids calling
+    /// `SetWindowPos` every frame.
+    #[cfg(target_os = "windows")]
+    embedded_bounds: std::cell::Cell<Option<(i32, i32, i32, i32)>>,
+    /// 最近一次应用的裁剪区域（窗口局部坐标）；避免每帧重复 `SetWindowRgn`。
+    /// Last applied clip region (window-local coordinates); avoids calling `SetWindowRgn` every
+    /// frame.
+    #[cfg(target_os = "windows")]
+    embedded_clip: std::cell::Cell<Option<(i32, i32, i32, i32)>>,
+    /// 内嵌窗口当前是否可见；避免每帧重复 `ShowWindow`。
+    /// Whether the inline window is currently visible; avoids calling `ShowWindow` every frame.
+    #[cfg(target_os = "windows")]
+    embedded_visible: std::cell::Cell<bool>,
     #[cfg(target_os = "linux")]
     native_window: Option<XcbWindowState>,
     #[cfg(target_os = "android")]
@@ -212,6 +226,12 @@ impl PluginWindow {
             embedded_size: None,
             #[cfg(target_os = "windows")]
             embedded_scalable: false,
+            #[cfg(target_os = "windows")]
+            embedded_bounds: std::cell::Cell::new(None),
+            #[cfg(target_os = "windows")]
+            embedded_clip: std::cell::Cell::new(None),
+            #[cfg(target_os = "windows")]
+            embedded_visible: std::cell::Cell::new(false),
             #[cfg(target_os = "macos")]
             container_view: None,
         }
@@ -263,6 +283,9 @@ impl PluginWindow {
             self.embedded_base_size = None;
             self.embedded_size = None;
             self.embedded_scalable = false;
+            self.embedded_bounds.set(None);
+            self.embedded_clip.set(None);
+            self.embedded_visible.set(false);
         }
 
         // Get plugin info for window title
@@ -719,6 +742,9 @@ impl PluginWindow {
             self.embedded_size = size_at_scale;
             self.embedded_base_size = size_at_scale
                 .map(|(width, height)| (width as f32 / host_scale, height as f32 / host_scale));
+            self.embedded_bounds.set(None);
+            self.embedded_clip.set(None);
+            self.embedded_visible.set(false);
         }
         Ok(())
     }
@@ -745,13 +771,15 @@ impl PluginWindow {
     /// 功能：移动并缩放内嵌编辑器窗口（物理像素，相对宿主客户区）。
     /// 输入：`x` / `y` / `width` / `height` 目标矩形。
     /// 输出/副作用：把客户区坐标换算为屏幕坐标后调用 `SetWindowPos`；不影响普通顶层窗口。
+    /// 矩形未变化时不调用，避免每帧窗口移动打断插件的悬停/菜单计时。
     /// 复杂度：时间 O(1)，空间 O(1)。
     ///
     /// Module: vst3-host / editor window
     /// Purpose: Move and resize the inline editor (physical pixels in the host client area).
     /// Inputs: `x` / `y` / `width` / `height` — target rectangle.
     /// Outputs / side effects: maps client coordinates to the screen and calls `SetWindowPos`;
-    /// standalone windows are unaffected.
+    /// standalone windows are unaffected. Unchanged rectangles are skipped so per-frame window
+    /// moves cannot interrupt the plugin's hover/menu timers.
     /// Complexity: O(1) time and space.
     pub fn set_embedded_bounds(&self, x: i32, y: i32, width: i32, height: i32) {
         #[cfg(target_os = "windows")]
@@ -765,15 +793,25 @@ impl PluginWindow {
                     }
                     let mut origin = POINT { x, y };
                     ClientToScreen(parent, &mut origin);
-                    SetWindowPos(
-                        hwnd,
-                        std::ptr::null_mut(),
+                    let bounds = (
                         origin.x,
                         origin.y,
                         width.max(1),
                         height.max(1),
+                    );
+                    if self.embedded_bounds.get() == Some(bounds) {
+                        return;
+                    }
+                    SetWindowPos(
+                        hwnd,
+                        std::ptr::null_mut(),
+                        bounds.0,
+                        bounds.1,
+                        bounds.2,
+                        bounds.3,
                         SWP_NOACTIVATE | SWP_NOZORDER,
                     );
+                    self.embedded_bounds.set(Some(bounds));
                 }
             }
         }
@@ -870,24 +908,30 @@ impl PluginWindow {
     /// 功能：按可见交集裁剪内嵌编辑器（子窗口局部坐标，物理像素）。
     /// 输入：`left` / `top` / `right` / `bottom` 裁剪矩形。
     /// 输出/副作用：调用 `SetWindowRgn`；窗口区域外的鼠标事件穿透到宿主。
+    /// 裁剪区域未变化时不调用，避免每帧重设窗口区域导致插件重绘/悬停状态被打断。
     /// 复杂度：时间 O(1)，空间 O(1)。
     ///
     /// Module: vst3-host / editor window
     /// Purpose: Clip the inline editor to the visible intersection (child-local physical pixels).
     /// Inputs: `left` / `top` / `right` / `bottom` — clip rectangle.
     /// Outputs / side effects: calls `SetWindowRgn`; mouse events outside the region fall
-    /// through to the host.
+    /// through to the host. Unchanged regions are skipped so per-frame region changes cannot
+    /// interrupt the plugin's repaint/hover state.
     /// Complexity: O(1) time and space.
     pub fn set_embedded_clip(&self, left: i32, top: i32, right: i32, bottom: i32) {
         #[cfg(target_os = "windows")]
         if self.embedded {
             if let Some(hwnd) = self.native_window {
+                if self.embedded_clip.get() == Some((left, top, right, bottom)) {
+                    return;
+                }
                 unsafe {
                     let region = CreateRectRgn(left, top, right, bottom);
                     // `SetWindowRgn` 接管区域所有权，成功后不能再删除。
                     // `SetWindowRgn` takes ownership of the region on success.
                     SetWindowRgn(hwnd, region, 1);
                 }
+                self.embedded_clip.set(Some((left, top, right, bottom)));
             }
         }
         #[cfg(not(target_os = "windows"))]
@@ -897,21 +941,26 @@ impl PluginWindow {
     /// 所属模块：vst3-host / 编辑器窗口
     /// 功能：显示或隐藏内嵌编辑器窗口。
     /// 输入：`visible` 是否显示。
-    /// 输出/副作用：调用 `ShowWindow`；不改变插件视图。
+    /// 输出/副作用：调用 `ShowWindow`；状态未变化时不重复调用，避免每帧的显示状态抖动打断插件交互。
     /// 复杂度：时间 O(1)，空间 O(1)。
     ///
     /// Module: vst3-host / editor window
     /// Purpose: Show or hide the inline editor window.
     /// Inputs: `visible` — whether to show it.
-    /// Outputs / side effects: calls `ShowWindow`; the plugin view is unchanged.
+    /// Outputs / side effects: calls `ShowWindow`; repeated calls with the same state are skipped so
+    /// per-frame visibility churn cannot interrupt plugin interaction.
     /// Complexity: O(1) time and space.
     pub fn set_embedded_visible(&self, visible: bool) {
         #[cfg(target_os = "windows")]
         if self.embedded {
             if let Some(hwnd) = self.native_window {
+                if self.embedded_visible.get() == visible {
+                    return;
+                }
                 unsafe {
                     ShowWindow(hwnd, if visible { SW_SHOWNOACTIVATE } else { SW_HIDE });
                 }
+                self.embedded_visible.set(visible);
             }
         }
         #[cfg(not(target_os = "windows"))]
@@ -1144,6 +1193,9 @@ impl PluginWindow {
                 }
                 self.embedded = false;
                 self.embedded_parent = None;
+                self.embedded_bounds.set(None);
+                self.embedded_clip.set(None);
+                self.embedded_visible.set(false);
             }
         }
         #[cfg(target_os = "macos")]
@@ -1206,6 +1258,9 @@ impl PluginWindow {
                 }
                 self.embedded = false;
                 self.embedded_parent = None;
+                self.embedded_bounds.set(None);
+                self.embedded_clip.set(None);
+                self.embedded_visible.set(false);
             }
         }
 

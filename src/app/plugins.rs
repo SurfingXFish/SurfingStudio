@@ -647,6 +647,8 @@ impl SurfingApp {
     /// 功能：如果槽位的实例由后台同步线程创建，先在 UI 线程重建该轨道（或主输出）的插件。
     /// 输入：`track_id` / `slot`。
     /// 输出/副作用：把实时状态写回工程，丢弃旧运行时，再同步重建；不改工程内容。
+    /// 返回 `false` 表示重建被推迟（已有后台同步在跑或正在导出），调用方应下一帧再试，
+    /// 不能拿后台线程创建的实例去开 GUI，否则插件的悬停菜单/二级菜单不会响应。
     /// 复杂度：时间 O(该轨道插件加载)，空间 O(1)。
     ///
     /// Module: app / plugin editor
@@ -654,11 +656,13 @@ impl SurfingApp {
     /// that track's (or the master chain's) plugins on the UI thread first.
     /// Inputs: `track_id` / `slot`.
     /// Outputs / side effects: captures live state into the project, drops the old runtimes and
-    /// syncs again; the project content is unchanged.
+    /// syncs again; the project content is unchanged. Returns `false` when the rebuild had to be
+    /// deferred (another background sync or an export is running): callers must retry next frame
+    /// instead of opening a GUI on a worker-thread instance, whose hover/submenus never respond.
     /// Complexity: O(plugin load of that track) time and O(1) space.
-    fn ensure_ui_thread_instance(&mut self, track_id: TrackId, slot: SlotKind) {
+    fn ensure_ui_thread_instance(&mut self, track_id: TrackId, slot: SlotKind) -> bool {
         if !self.background_synced.contains(&(track_id, slot)) {
-            return;
+            return true;
         }
         // VST3 的编辑器视图必须与插件实例在同一线程创建；后台同步线程创建的实例
         // 在 UI 线程打开 GUI 会让 Auto-Tune 这类插件死锁。
@@ -704,7 +708,6 @@ impl SurfingApp {
                 }
             }
         }
-        self.background_synced.remove(&(track_id, slot));
         {
             let engine = self.engine.clone();
             if let Ok(mut guard) = engine.lock() {
@@ -713,6 +716,14 @@ impl SurfingApp {
         }
         self.status = "正在重建插件实例…".into();
         self.sync_engine();
+        // 同步被推迟时保留标记：下一帧再重建，绝不用后台线程实例开 GUI。
+        // Keep the marker when the sync was deferred: retry next frame instead of opening a GUI on
+        // a worker-thread instance.
+        if self.engine_sync_rx.is_some() || self.needs_sync {
+            return false;
+        }
+        self.background_synced.remove(&(track_id, slot));
+        true
     }
 
     /// 所属模块：app / 插件编辑器
@@ -738,7 +749,12 @@ impl SurfingApp {
         if self.engine_sync_pending() {
             return false;
         }
-        self.ensure_ui_thread_instance(track_id, slot);
+        if !self.ensure_ui_thread_instance(track_id, slot) {
+            // 实例重建被推迟：下一帧再试，避免在后台线程实例上创建视图。
+            // The rebuild was deferred: retry next frame instead of creating a view on a
+            // worker-thread instance.
+            return false;
+        }
         // 主窗口句柄要到第一帧之后才可用；拿不到时下一帧再试，不记为失败。
         // The main handle only exists after the first frame; retry later instead of
         // recording a permanent failure.
@@ -843,7 +859,6 @@ impl SurfingApp {
             self.status = "正在加载插件，请稍候…".into();
             return;
         }
-        self.ensure_ui_thread_instance(track_id, slot);
         // 独立窗口与内嵌窗口互斥。
         // Standalone and inline editors are mutually exclusive.
         self.editors.retain(|(key, window)| {
@@ -860,6 +875,11 @@ impl SurfingApp {
                 Ok(()) => self.status = "已切换到插件编辑器".into(),
                 Err(error) => self.status = format!("打开编辑器失败: {error}"),
             }
+            return;
+        }
+        if !self.ensure_ui_thread_instance(track_id, slot) {
+            // 重建被推迟：状态栏已提示，用户可再次打开。
+            // The rebuild was deferred; the status bar already explains it and the user can retry.
             return;
         }
         // 绝不在 UI 线程阻塞等待引擎锁：同步线程加载插件时可能持有数秒。
