@@ -36,14 +36,15 @@
 mod plugins;
 mod render;
 
-pub use render::OfflineRender;
+pub use render::{OfflineRender, OfflineRenderOptions, OfflineRenderSession, RenderRange};
 
 use crate::audio::fx::NativeEffectProcessor;
+use crate::audio::gpu::GpuRenderConfig;
 use crate::audio::io::{AudioFile, AudioRuntime};
 use crate::audio::synth::{DrumKit, GateKind, ModeledInstrument, PolySynth, SynthEvent};
 use crate::core::model::{
-    evaluate_automation, ControllerKind, ControllerLanes, EffectRef, InstrumentRef, Project, Track,
-    TrackId,
+    evaluate_automation, ChannelLayout, ControllerKind, ControllerLanes, EffectRef, InstrumentRef,
+    Project, Track, TrackId,
 };
 use crate::plugin::{ParamView, PluginHost, PluginKind, PluginRuntime};
 use std::collections::{HashMap, HashSet};
@@ -103,14 +104,41 @@ pub struct Engine {
     audio_scratch_r: Vec<f32>,
     wet_scratch_l: Vec<f32>,
     wet_scratch_r: Vec<f32>,
-    master_scratch_l: Vec<f32>,
-    master_scratch_r: Vec<f32>,
+    /// 主效果器的湿缓冲（与轨道效果器分开，避免每块互换后丢失 scratch）。
+    /// Master-effect wet buffers, kept separate from track effects so scratch is never lost.
+    master_wet_scratch_l: Vec<f32>,
+    master_wet_scratch_r: Vec<f32>,
+    /// 主总线按工程声道布局渲染的声道缓冲；`sync_project` 按布局调整数量。
+    /// Master-bus channel buffers rendered in the project layout; `sync_project` sizes them.
+    master_channels: Vec<Vec<f32>>,
+    /// 立体声便捷入口（`process`）使用的两声道缓冲。
+    /// Two-channel buffers used by the stereo convenience entry (`process`).
+    stereo_scratch: Vec<Vec<f32>>,
+    /// GPU 实时限幅的交错上传/回读缓冲。
+    /// Interleaved upload/read-back buffer for the realtime GPU limiter.
+    gpu_interleave_scratch: Vec<f32>,
+    /// 实时 GPU 主总线软限幅；`None` 表示使用 CPU。
+    /// Realtime GPU master-bus limiter; `None` means the CPU path.
+    gpu_realtime: Option<crate::audio::gpu::GpuRealtimeLimiter>,
+    /// 当前实时 GPU 配置；与设置比较，避免每次同步都重建设备。
+    /// Current realtime GPU config; compared with the settings so devices are not rebuilt every sync.
+    gpu_realtime_config: Option<GpuRenderConfig>,
+    /// 最近一次实时 GPU 限幅失败原因；由 UI 取走后清空。
+    /// Last realtime GPU limiter failure; cleared once the UI takes it.
+    gpu_realtime_warning: Option<String>,
     /// Reused MIDI gate buffer for direct (live) playback.
     gates_scratch: Vec<SynthEvent>,
+    /// 工程输出声道布局。
+    /// Project output channel layout.
+    output_layout: ChannelLayout,
     /// 离线渲染时把主总线软限幅推迟到 GPU：仅导出路径使用，实时回调始终为 `false`。
     /// Offline rendering defers the master soft limiter to the GPU; export-only and always `false`
     /// for the realtime callback.
     defer_master_clip: bool,
+    /// 逐帧推进的导出会话；存在时实时回调输出静音，导出步骤直接驱动渲染。
+    /// Step-driven export session; while present the realtime callback outputs silence and export
+    /// steps drive rendering directly.
+    offline: Option<render::OfflineRenderSession>,
 }
 
 /// 乐器插件实例化的时间片预算：一次同步只新建时间片内的插件，其余留到下一次调用。
@@ -384,6 +412,19 @@ impl TrackEngine {
                     sample_rate as f32,
                 )),
                 InstrumentRef::Plugin(pref) => {
+                    // 逐插件记录加载开始/结束：插件在加载中崩溃时，最后一条 begin 就是现场。
+                    // Log each instrument load: when a plugin crashes while loading, the last begin
+                    // record identifies it.
+                    let path_text = pref.path.display().to_string();
+                    let span = crate::diag::Span::start_logged(
+                        "app.engine",
+                        "engine.instrument.load",
+                        &[
+                            ("name", &pref.name),
+                            ("path", &path_text),
+                            ("track", &track.name),
+                        ],
+                    );
                     match PluginHost::load_plugin(
                         pref.format,
                         &pref.path,
@@ -399,9 +440,11 @@ impl TrackEngine {
                             if pref.restore_state {
                                 runtime.restore_state(&pref.state, &pref.params);
                             }
+                            span.end(&[("status", "ok")]);
                             InstrumentRuntime::Plugin(runtime)
                         }
                         Err(error) => {
+                            span.end(&[("status", "error"), ("error", &error)]);
                             warnings.push(format!("{}: {}", track.name, error));
                             InstrumentRuntime::Failed(error)
                         }
@@ -652,10 +695,18 @@ impl Engine {
             audio_scratch_r: Vec::new(),
             wet_scratch_l: Vec::new(),
             wet_scratch_r: Vec::new(),
-            master_scratch_l: Vec::new(),
-            master_scratch_r: Vec::new(),
+            master_wet_scratch_l: Vec::new(),
+            master_wet_scratch_r: Vec::new(),
+            master_channels: vec![Vec::new(), Vec::new()],
+            stereo_scratch: vec![Vec::new(), Vec::new()],
+            gpu_interleave_scratch: Vec::new(),
+            gpu_realtime: None,
+            gpu_realtime_config: None,
+            gpu_realtime_warning: None,
             gates_scratch: Vec::new(),
+            output_layout: ChannelLayout::Stereo,
             defer_master_clip: false,
+            offline: None,
         }
     }
 
@@ -675,6 +726,144 @@ impl Engine {
             self.sample_rate = sample_rate;
             self.plugins_sample_rate = 0.0;
         }
+    }
+
+    /// 所属模块：audio::engine / 插件生命周期
+    /// 功能：关闭工程前终止所有 VST3 插件组件，让 VOCALOID / ACE Bridge 等插件关闭它们拉起的外部应用
+    /// 窗口；实例本身被泄漏而不是析构，避免在 UI 线程等待插件消息循环。
+    /// 输入：`self`。
+    /// 输出/副作用：停止处理、关闭编辑器视图并调用 `IComponent::terminate`；引擎之后不可再用于渲染。
+    /// 复杂度：时间 O(插件数量 + 终止耗时)，空间 O(1)。
+    ///
+    /// Module: audio::engine / plugin lifecycle
+    /// Purpose: Terminate every VST3 component before a project closes, letting plugins such as
+    /// VOCALOID / ACE Bridge close the external app windows they spawned; instances are leaked
+    /// instead of dropped so the UI thread never waits for a plugin message loop.
+    /// Inputs: `self`.
+    /// Outputs / side effects: stops processing, closes editor views and calls `IComponent::terminate`;
+    /// the engine must not render afterwards.
+    /// Complexity: O(plugin count + termination) time and O(1) space.
+    pub fn shutdown_plugins(&mut self) {
+        self.pause();
+        for track in &mut self.tracks {
+            let track_label = track.id.to_string();
+            if let InstrumentRuntime::Plugin(plugin) = &mut track.instrument {
+                Self::shutdown_plugin_logged(plugin, &track_label, "instrument");
+            }
+            // 清空身份键：已终止的实例只剩 `Failed` 外壳，下一次同步必须重建，
+            // 否则重新打开同一工程时插件不会重新加载。
+            // Clear the identity keys: a terminated instance is only a `Failed` shell, so the next
+            // sync must rebuild it; otherwise reopening the same project would never reload it.
+            track.instrument_key.clear();
+            for (index, effect) in track.effects.iter_mut().enumerate() {
+                if let EffectRuntime::Plugin(plugin) = effect {
+                    let slot = index.to_string();
+                    Self::shutdown_plugin_logged(plugin, &track_label, &slot);
+                }
+            }
+            track.effect_keys.clear();
+        }
+        if let Some(EffectRuntime::Plugin(plugin)) = &mut self.master_effect {
+            Self::shutdown_plugin_logged(plugin, "MASTER", "master");
+        }
+        self.master_effect_key = None;
+    }
+
+    /// 所属模块：audio::engine / 插件生命周期
+    /// 功能：记录单个插件终止的开始/结束，插件在 terminate 中崩溃时最后一条 begin 即现场。
+    /// 输入：`plugin`：插件运行时；`track` / `slot`：所属轨道与槽位。
+    /// 输出/副作用：调用 `PluginRuntime::shutdown` 并写 `engine.plugin.shutdown` 日志。
+    /// 复杂度：时间 O(1 + 插件终止)。
+    ///
+    /// Module: audio::engine / plugin lifecycle
+    /// Purpose: Log one plugin termination; if it crashes, the last begin record identifies it.
+    /// Inputs: `plugin`; `track` / `slot`: owning track and slot.
+    /// Outputs / side effects: calls `PluginRuntime::shutdown` and writes
+    /// `engine.plugin.shutdown`.
+    /// Complexity: O(1 + termination) time.
+    fn shutdown_plugin_logged(plugin: &mut PluginRuntime, track: &str, slot: &str) {
+        let name = plugin.display_name().to_string();
+        let span = crate::diag::Span::start_logged(
+            "app.engine",
+            "engine.plugin.shutdown",
+            &[("name", &name), ("track", track), ("slot", slot)],
+        );
+        plugin.shutdown();
+        span.end(&[("status", "ok")]);
+    }
+
+    /// 所属模块：audio::engine / GPU 实时渲染
+    /// 功能：按设置启用或关闭实时主总线 GPU 软限幅；配置未变化时不重建设备。
+    /// 输入：`config`：GPU 设备/驱动/API 选择；`None` 表示关闭并回到 CPU。
+    /// 输出/副作用：可能创建 GPU 设备并把失败原因存入 `gpu_realtime_warning`；
+    /// 成功后实时回调在 `GPU_REALTIME_TIMEOUT_MS` 内等待结果，超时自动回退 CPU。
+    /// 复杂度：时间 O(GPU 设备创建)（配置变化时），空间 O(1)。
+    ///
+    /// Module: audio::engine / GPU realtime rendering
+    /// Purpose: Enable or disable the realtime master-bus GPU soft limiter from the settings; an
+    /// unchanged config never rebuilds the device.
+    /// Inputs: `config`: GPU device/driver/API selection; `None` disables and returns to the CPU.
+    /// Outputs / side effects: may create a GPU device and store a failure reason in
+    /// `gpu_realtime_warning`; on success the callback waits at most `GPU_REALTIME_TIMEOUT_MS` and
+    /// falls back to the CPU on timeout.
+    /// Complexity: O(GPU device creation) time when the config changes, O(1) space.
+    pub fn configure_gpu_realtime(&mut self, config: Option<GpuRenderConfig>) {
+        // 配置相同即返回：失败后不会在每次同步时反复创建设备；用户切换设置可触发重试。
+        // Return on an unchanged config: a failure never rebuilds the device on every sync; toggling
+        // the setting retries.
+        if config == self.gpu_realtime_config {
+            return;
+        }
+        self.gpu_realtime = None;
+        self.gpu_realtime_config = config.clone();
+        let Some(config) = config else {
+            return;
+        };
+        match crate::audio::gpu::GpuRealtimeLimiter::open(&config) {
+            Ok(limiter) => {
+                self.gpu_realtime = Some(limiter);
+                // 预先分配最大块（8 声道 × 4096 帧）的交错缓冲，避免首次回调内扩容。
+                // Preallocate the largest block (8 channels × 4096 frames) so the first callback never
+                // grows the buffer.
+                self.gpu_interleave_scratch = vec![0.0; 8 * 4096];
+                self.gpu_realtime_warning = None;
+            }
+            Err(error) => {
+                self.gpu_realtime_warning =
+                    Some(format!("实时 GPU 加速不可用，已回退 CPU：{error}"));
+            }
+        }
+    }
+
+    /// 所属模块：audio::engine / GPU 实时渲染
+    /// 功能：返回实时 GPU 限幅是否处于可用状态。
+    /// 输入：`self`。
+    /// 输出/副作用：布尔值；不修改状态。
+    /// 复杂度：时间 O(1)，空间 O(1)。
+    ///
+    /// Module: audio::engine / GPU realtime rendering
+    /// Purpose: Return whether the realtime GPU limiter is available.
+    /// Inputs: `self`.
+    /// Outputs / side effects: a boolean; no state change.
+    /// Complexity: O(1) time and space.
+    pub fn gpu_realtime_active(&self) -> bool {
+        self.gpu_realtime.is_some()
+    }
+
+    /// 所属模块：audio::engine / GPU 实时渲染
+    /// 功能：取走最近一次实时 GPU 失败原因（取后清空，避免状态栏重复提示）。
+    /// 输入：`self`。
+    /// 输出/副作用：`Option<String>`；清空内部字段。
+    /// 复杂度：时间 O(1)，空间 O(1)。
+    ///
+    /// Module: audio::engine / GPU realtime rendering
+    /// Purpose: Take the last realtime GPU failure (cleared afterwards so the status bar does not
+    /// repeat it).
+    /// Inputs: `self`.
+    /// Outputs / side effects: `Option<String>`; clears the field.
+    /// Complexity: O(1) time and space.
+    pub fn take_gpu_realtime_warning(&mut self) -> Option<String> {
+        self.gpu_realtime_warning.take()
     }
 
     /// 所属模块：audio::engine / 工程同步
@@ -787,6 +976,11 @@ impl Engine {
         self.last_tempo = project.bpm;
 
         self.project = project.clone();
+        // 布局变化时按新声道数扩展主总线缓冲；不重建已有内容，下一块会自动清零复用。
+        // A layout change resizes the master buffers; existing contents are simply cleared next block.
+        self.output_layout = project.output_layout;
+        self.master_channels
+            .resize_with(project.output_layout.channels(), Vec::new);
         self.any_solo = project.any_solo();
         let auto_stop = project.auto_stop_beat();
         self.auto_stop_at = (auto_stop > 0.0).then_some(auto_stop);

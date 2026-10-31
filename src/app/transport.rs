@@ -347,6 +347,12 @@ impl SurfingApp {
     /// plugin instances are created on the UI thread.
     /// Complexity: O(tracks + clips + plugin load) time and O(project) space.
     pub fn sync_engine(&mut self) {
+        // 导出会话独占引擎的工程/走带状态；期间禁止任何同步覆盖它。
+        // The export session owns the engine's project/transport; no sync may overwrite it meanwhile.
+        if self.export.is_rendering() {
+            self.needs_sync = true;
+            return;
+        }
         if self.engine_sync_rx.is_some() {
             self.needs_sync = true;
             return;
@@ -367,6 +373,9 @@ impl SurfingApp {
         let engine = self.engine.clone();
         let (warnings, requests) = match engine.lock() {
             Ok(mut guard) => {
+                // 同步时顺带应用实时 GPU 配置；配置未变化时不会重建设备。
+                // Also apply the realtime GPU config during sync; an unchanged config keeps the device.
+                guard.configure_gpu_realtime(self.settings.gpu_realtime_config());
                 let warnings = guard.sync_project(&self.project);
                 (warnings, guard.take_audio_requests())
             }
@@ -715,6 +724,12 @@ impl SurfingApp {
     }
 
     fn finish_sync(&mut self, warnings: Vec<String>, requests: Vec<PathBuf>) {
+        // 后台同步不会读取 UI 设置，这里补一次实时 GPU 配置（未变化时开销为一次比较）。
+        // The background sync never reads UI settings, so apply the realtime GPU config here (a
+        // single comparison when unchanged).
+        if let Ok(mut engine) = self.engine.try_lock() {
+            engine.configure_gpu_realtime(self.settings.gpu_realtime_config());
+        }
         if !requests.is_empty() {
             spawn_audio_loads(Arc::downgrade(&self.engine), requests);
             self.ui_audio_loading = true;
@@ -771,6 +786,9 @@ impl SurfingApp {
         if !audio_warnings.is_empty() {
             self.status = audio_warnings.join(" · ");
         }
+        if let Some(warning) = engine.take_gpu_realtime_warning() {
+            self.status = warning;
+        }
         changed
     }
 
@@ -780,6 +798,10 @@ impl SurfingApp {
     }
 
     pub fn toggle_play(&mut self) {
+        if self.export.is_rendering() {
+            self.status = "正在导出音频，传输已锁定".into();
+            return;
+        }
         if self.engine_sync_rx.is_some() || self.instrument_load_pending {
             self.status = "正在加载插件，请稍候…".into();
             return;
@@ -815,6 +837,9 @@ impl SurfingApp {
         // so two projects never mix on one device.
         self.shared.audio.activate(&self.engine);
         if let Ok(mut engine) = self.engine.lock() {
+            // 播放前应用实时 GPU 配置：用户刚切换设置后也能在本次播放生效。
+            // Apply the realtime GPU config before playback so a just-changed setting takes effect.
+            engine.configure_gpu_realtime(self.settings.gpu_realtime_config());
             engine.play();
         }
         self.ui_playing = true;

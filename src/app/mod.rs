@@ -50,6 +50,7 @@ use vst3_host::PluginWindow;
 mod autosave;
 mod backup;
 mod edit;
+mod export;
 mod files;
 mod heartbeat;
 mod history;
@@ -70,6 +71,7 @@ mod transport;
 use transport::PendingAudition;
 mod window_chrome;
 
+pub use export::{ExportChannels, ExportFormat, ExportState};
 pub use plugins::EditorWindow;
 pub use settings::{gpu_render_startup, GpuRenderApi, GpuRenderStartup};
 pub use shared::SharedServices;
@@ -81,6 +83,12 @@ pub use state::*;
 /// Repaint interval while a plugin editor is open: keeps plugin timers, paints and
 /// `idle` calls serviced.
 const EDITOR_REPAINT_INTERVAL: Duration = Duration::from_millis(16);
+/// 插件编辑器不在前台时的强制重绘间隔：插件自身通常有绘制循环，宿主只做低频兜底，
+/// 每帧 `RedrawWindow` 会与 Kontakt 8 的 Qt Quick 绘制互相拖住。
+/// Forced repaint interval for a background plugin editor: plugins normally run their own paint
+/// loop, so the host only nudges them at a low rate; a per-frame `RedrawWindow` fights Kontakt 8's
+/// Qt Quick painter.
+const EDITOR_REPAINT_BACKGROUND_INTERVAL: Duration = Duration::from_millis(200);
 /// 窗口关闭时等待音频/后台线程释放引擎引用的最长时间。
 /// Maximum time spent waiting for the audio/background threads to release the engine on close.
 const ENGINE_RELEASE_WAIT: Duration = Duration::from_millis(200);
@@ -337,6 +345,12 @@ pub struct SurfingApp {
     /// Background copy of a project/WAV snapshot to a public folder (SAF or save-as); the result
     /// only feeds the status bar.
     public_copy_rx: Option<Receiver<Result<Option<String>, String>>>,
+    /// 独立导出窗口的状态（格式、参数、路径与后台任务）。
+    /// Standalone export-window state (format, options, path and background job).
+    pub export: ExportState,
+    /// 后台选择导出路径的对话框结果。
+    /// Background destination picker for the export window.
+    export_dialog_rx: Option<Receiver<Option<PathBuf>>>,
     /// 后台插件同步：加载工程时在独立线程构建插件运行时，避免 UI 冻结。
     /// Background plugin sync used when loading a project; keeps the UI responsive.
     engine_sync_rx: Option<Receiver<(Vec<String>, Vec<PathBuf>)>>,
@@ -381,6 +395,11 @@ pub struct SurfingApp {
     last_engine_sync: Instant,
 
     pub editors: Vec<((TrackId, SlotKind), EditorWindow)>,
+    /// 上一次强制重绘插件编辑器的时刻；限制后台编辑器的 `RedrawWindow` 频率，避免与
+    /// Kontakt 等插件自身的绘制循环互相拖住。
+    /// Last forced repaint of each plugin editor; throttles `RedrawWindow` for background editors
+    /// so it never fights a plugin's own paint loop (Kontakt).
+    editor_repaint: HashMap<(TrackId, SlotKind), Instant>,
     /// 本帧已摆放的内嵌插件编辑器槽位；帧末未摆放的会被隐藏。
     /// Slots whose inline editor was placed this frame; unplaced ones are hidden at frame end.
     inline_placed: HashSet<(TrackId, SlotKind)>,
@@ -487,6 +506,11 @@ impl Drop for SurfingApp {
         let started = Instant::now();
         let window_text = self.window_id.to_string();
         let tid_text = diag::thread_id().to_string();
+        // 窗口在导出期间关闭：先取消会话，恢复引擎状态并释放插件视图。
+        // The window closed during an export: cancel the session and restore the engine first.
+        if self.export.is_rendering() {
+            self.cancel_export();
+        }
         let instrument_count = self
             .project
             .tracks
@@ -575,10 +599,35 @@ impl Drop for SurfingApp {
             "window.drop",
             &[("phase", "workers_stopped"), ("tid", &tid_text)],
         );
-        // 退出时先直接隐藏并销毁编辑器窗口，让 GUI 立即消失；但不再 detach 插件视图：
-        // 部分插件会在 removed() 中等待已停止的消息循环，导致关闭卡死。
-        // Destroy the editor windows first so their GUIs disappear immediately, but skip the
-        // plugin's `removed()`: some plugins wait for a message loop that no longer runs.
+        // 先终止 VST3 组件，再销毁可能仍附加着的编辑器窗口：VOCALOID / ACE Bridge 等插件
+        // 拉起的独立应用窗口会随 `IComponent::terminate` 关闭；`close_editor` 也在窗口仍有效时
+        // 执行，避免 `removed()` 访问已销毁的原生窗口。
+        // Terminate VST3 components before destroying any editor window that is still attached:
+        // plugins such as VOCALOID / ACE Bridge close their spawned app windows on
+        // `IComponent::terminate`, and `close_editor` runs while the native window is still valid.
+        // 工程窗口关闭时不调用 `IComponent::terminate`：VOCALOID / ACE Bridge 在编辑器
+        // 关闭后终止组件偶发 0xC0000005（1.1.5a 实测），而外部编辑进程已经在上一步结束。
+        // 引擎外壳会被保留，实例与模块留到进程退出由系统回收。
+        // Do not call `IComponent::terminate` when closing a project window: VOCALOID / ACE Bridge
+        // occasionally raise 0xC0000005 when terminated after their editor closed (observed in
+        // 1.1.5a), while their external editor processes are already ended above. The engine shell
+        // is retained and the OS reclaims instances/modules at process exit.
+        if !self.terminate_engine_plugins(Duration::from_millis(200), false) {
+            diag::warn(
+                "app.window",
+                "window.drop",
+                &[("phase", "plugins_terminate_timeout"), ("tid", &tid_text)],
+            );
+        }
+        diag::info(
+            "app.window",
+            "window.drop",
+            &[
+                ("phase", "plugins_terminated"),
+                ("terminated", "false"),
+                ("tid", &tid_text),
+            ],
+        );
         let editor_count = self.editors.len().to_string();
         for (_, mut window) in self.editors.drain(..) {
             window.destroy_for_exit();
@@ -673,6 +722,356 @@ impl Drop for SurfingApp {
             );
         }
     }
+}
+
+impl SurfingApp {
+    /// 所属模块：app / 插件生命周期
+    /// 功能：关闭插件自建窗口与外部编辑进程；可选地终止 VST3 组件。
+    /// 输入：
+    /// - `timeout`：等待引擎锁的上限。
+    /// - `terminate_components`：是否调用 `IComponent::terminate`；工程窗口关闭时传 `false`，
+    ///   避免 VOCALOID / ACE Bridge 的 terminate 在编辑器关闭后偶发 0xC0000005。
+    /// 输出/副作用：关闭插件窗口、结束外部编辑进程；按需终止组件并清空身份键。
+    /// 复杂度：时间 O(等待 + 插件终止)，空间 O(1)。
+    ///
+    /// Module: app / plugin lifecycle
+    /// Purpose: Close plugin-created windows and external editor processes, optionally terminating
+    /// VST3 components.
+    /// Inputs:
+    /// - `timeout`: maximum wait for the engine lock.
+    /// - `terminate_components`: whether to call `IComponent::terminate`; the project-window close
+    ///   path passes `false` because VOCALOID / ACE Bridge terminate can raise 0xC0000005 after
+    ///   their editor window has closed.
+    /// Outputs / side effects: closes plugin windows and external editor processes; optionally
+    /// terminates components and clears identity keys.
+    /// Complexity: O(wait + plugin termination) time and O(1) space.
+    fn terminate_engine_plugins(&mut self, timeout: Duration, terminate_components: bool) -> bool {
+        // 先请求插件自己拉起的顶层窗口（VOCALOID6 Editor 等）关闭：这是插件的正常关闭路径，
+        // 不会像 `IComponent::terminate` 那样在 WPF 的 OnClosing 里抛空引用异常并卡住 UI。
+        // First ask plugin-spawned top-level windows (VOCALOID6 Editor etc.) to close: this is the
+        // plugin's normal close path and avoids the WPF `OnClosing` null-reference exception that
+        // `IComponent::terminate` triggers on the UI thread.
+        let (closed_windows, all_closed) = self.close_plugin_owned_windows(Duration::from_secs(3));
+        if closed_windows > 0 {
+            diag::info(
+                "app.window",
+                "window.drop",
+                &[
+                    ("phase", "plugin_windows_closed"),
+                    ("windows", &closed_windows.to_string()),
+                    ("all_closed", if all_closed { "true" } else { "false" }),
+                ],
+            );
+        }
+        // 外部编辑进程（VOCALOID6.exe / ACE Studio 等）是单实例检测的真正来源，也应在
+        // terminate 之前结束，避免插件在 terminate 中访问已关闭的编辑应用而崩溃。
+        // External editor apps (VOCALOID6.exe, ACE Studio, ...) are what the single-instance check
+        // detects, and ending them before terminate avoids plugins touching a closed editor app
+        // during teardown.
+        self.terminate_plugin_child_processes();
+        if !all_closed {
+            diag::warn(
+                "app.window",
+                "window.drop",
+                &[("phase", "plugin_windows_still_open")],
+            );
+        }
+        if !terminate_components {
+            // 工程窗口关闭：不终止组件；把单实例插件登记到进程级复用缓存，下一个工程直接复用，
+            // 不再 createInstance，从而避开“已经有一个启动了”。
+            // Project-window close: do not terminate; register single-instance plugins in the
+            // process-wide reusable cache so the next project reuses them instead of calling
+            // createInstance again and being rejected as "already running".
+            if let Ok(mut engine) = self.engine.try_lock() {
+                engine.stash_single_instance_plugins();
+            }
+            return true;
+        }
+        if !all_closed {
+            return true;
+        }
+        let deadline = Instant::now() + timeout;
+        let mut acquired = false;
+        loop {
+            match self.engine.try_lock() {
+                Ok(mut engine) => {
+                    engine.shutdown_plugins();
+                    acquired = true;
+                    break;
+                }
+                Err(std::sync::TryLockError::Poisoned(poison)) => {
+                    poison.into_inner().shutdown_plugins();
+                    acquired = true;
+                    break;
+                }
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    if Instant::now() >= deadline {
+                        break;
+                    }
+                    std::thread::yield_now();
+                }
+            }
+        }
+        acquired
+    }
+
+    /// 所属模块：app / 插件生命周期
+    /// 功能：向本进程内由插件创建的可见顶层窗口发送 `WM_CLOSE`，并泵消息等待它们关闭。
+    /// 输入：`timeout`：最长等待时间。
+    /// 输出/副作用：关闭插件窗口；返回（已发送关闭请求的窗口数，是否全部关闭）。
+    /// 复杂度：时间 O(窗口数 × 等待迭代)，空间 O(窗口数)。
+    ///
+    /// Module: app / plugin lifecycle
+    /// Purpose: Send `WM_CLOSE` to visible top-level windows created by plugins in this process and
+    /// pump messages until they close.
+    /// Inputs: `timeout`: maximum wait.
+    /// Outputs / side effects: closes plugin windows; returns (close requests sent, all closed).
+    /// Complexity: O(windows × wait iterations) time and O(windows) space.
+    #[cfg(target_os = "windows")]
+    fn close_plugin_owned_windows(&self, timeout: Duration) -> (usize, bool) {
+        use winapi::shared::minwindef::{BOOL, DWORD, LPARAM};
+        use winapi::shared::windef::HWND;
+        use winapi::um::winuser::{
+            DispatchMessageW, EnumWindows, GetWindow, GetWindowTextLengthW, GetWindowTextW,
+            GetWindowThreadProcessId, IsWindowVisible, MsgWaitForMultipleObjectsEx, PeekMessageW,
+            PostMessageW, TranslateMessage, GW_OWNER, MSG, MWMO_INPUTAVAILABLE, PM_REMOVE,
+            QS_ALLINPUT, WM_CLOSE,
+        };
+
+        unsafe fn title_of(hwnd: HWND) -> Option<String> {
+            let length = unsafe { GetWindowTextLengthW(hwnd) };
+            if length <= 0 {
+                return None;
+            }
+            let mut buffer = vec![0u16; length as usize + 1];
+            let written = unsafe { GetWindowTextW(hwnd, buffer.as_mut_ptr(), buffer.len() as i32) };
+            (written > 0).then(|| String::from_utf16_lossy(&buffer[..written as usize]))
+        }
+
+        unsafe extern "system" fn collect(hwnd: HWND, lparam: LPARAM) -> BOOL {
+            let state = unsafe { &mut *(lparam as *mut (DWORD, Vec<HWND>)) };
+            let mut pid: DWORD = 0;
+            unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+            // 只看可见窗口：winit/egui 会创建若干隐藏辅助窗口，它们不会响应 WM_CLOSE，
+            // 若把它们算进来，关闭工程时会永远“有窗口未关闭”而跳过 terminate。
+            // Only visible windows count: winit/egui create hidden helper windows that ignore
+            // WM_CLOSE; counting them would always report "windows still open" and skip terminate.
+            if pid != state.0 || unsafe { IsWindowVisible(hwnd) } == 0 {
+                return 1;
+            }
+            let Some(title) = (unsafe { title_of(hwnd) }) else {
+                return 1;
+            };
+            // 跳过宿主自己的窗口：标题统一带 SurfingStudio。宿主创建的插件编辑器窗口以工程
+            // 窗口为 owner（标题同样带 SurfingStudio），也一并跳过，避免多窗口时关掉其它
+            // 工程的编辑器；插件自建窗口的 owner 是插件的隐藏窗口，仍会被关闭。
+            // Skip the host's own windows: their titles contain SurfingStudio. Host-created plugin
+            // editors are owned by a project window (whose title also contains SurfingStudio) and
+            // are skipped, so closing one project never closes another project's editor. A
+            // plugin-created window is owned by the plugin's hidden window and is still targeted.
+            if title.contains("SurfingStudio") {
+                return 1;
+            }
+            let owner = unsafe { GetWindow(hwnd, GW_OWNER) };
+            if !owner.is_null() {
+                if let Some(owner_title) = unsafe { title_of(owner) } {
+                    if owner_title.contains("SurfingStudio") {
+                        return 1;
+                    }
+                }
+            }
+            state.1.push(hwnd);
+            1
+        }
+
+        let pid = unsafe { winapi::um::processthreadsapi::GetCurrentProcessId() };
+        let mut state: (DWORD, Vec<HWND>) = (pid, Vec::new());
+        unsafe { EnumWindows(Some(collect), &mut state as *mut _ as LPARAM) };
+        if state.1.is_empty() {
+            return (0, true);
+        }
+        let titles: Vec<String> = state
+            .1
+            .iter()
+            .filter_map(|hwnd| unsafe { title_of(*hwnd) })
+            .collect();
+        diag::info(
+            "app.window",
+            "window.drop",
+            &[
+                ("phase", "plugin_windows_visible"),
+                ("titles", &titles.join(" | ")),
+            ],
+        );
+        let mut requested = 0;
+        for hwnd in &state.1 {
+            if unsafe { PostMessageW(*hwnd, WM_CLOSE, 0, 0) } != 0 {
+                requested += 1;
+            }
+        }
+        if requested == 0 {
+            // 无法投递关闭请求：按“未关闭”处理，避免随后 terminate 卡住 UI。
+            // Could not post a close request: treat as not closed so `terminate` cannot hang the UI.
+            return (0, false);
+        }
+        // 插件（尤其 WPF）需要本线程继续分发消息才能完成关闭。
+        // Plugins (notably WPF) need this thread to keep dispatching messages to finish closing.
+        let deadline = Instant::now() + timeout;
+        let mut remaining_count = state.1.len();
+        while Instant::now() < deadline {
+            unsafe {
+                MsgWaitForMultipleObjectsEx(
+                    0,
+                    std::ptr::null(),
+                    16,
+                    QS_ALLINPUT,
+                    MWMO_INPUTAVAILABLE,
+                );
+            }
+            let mut message: MSG = unsafe { std::mem::zeroed() };
+            while unsafe { PeekMessageW(&mut message, std::ptr::null_mut(), 0, 0, PM_REMOVE) } != 0
+            {
+                unsafe {
+                    TranslateMessage(&message);
+                    DispatchMessageW(&message);
+                }
+            }
+            let mut remaining: (DWORD, Vec<HWND>) = (pid, Vec::new());
+            unsafe { EnumWindows(Some(collect), &mut remaining as *mut _ as LPARAM) };
+            remaining_count = remaining.1.len();
+            if remaining_count == 0 {
+                break;
+            }
+        }
+        (requested, remaining_count == 0)
+    }
+
+    /// 所属模块：app / 插件生命周期
+    /// 功能：非 Windows 平台没有插件自建的 Win32 顶层窗口。
+    /// 输入：`_timeout`。
+    /// 输出/副作用：恒为（0，true）。
+    /// 复杂度：时间 O(1)，空间 O(1)。
+    ///
+    /// Module: app / plugin lifecycle
+    /// Purpose: No plugin-created Win32 top-level windows exist off Windows.
+    /// Inputs: `_timeout`.
+    /// Outputs / side effects: always `(0, true)`.
+    /// Complexity: O(1) time and space.
+    #[cfg(not(target_os = "windows"))]
+    fn close_plugin_owned_windows(&self, _timeout: Duration) -> (usize, bool) {
+        (0, true)
+    }
+
+    /// 所属模块：app / 插件生命周期
+    /// 功能：终止由本进程（含多级子进程）拉起的插件外部编辑应用。
+    /// 输入：`self`。
+    /// 输出/副作用：结束 VOCALOID6 / ACE Studio 等编辑进程；写 `plugin_editor_processes_terminated` 日志。
+    /// 复杂度：时间 O(进程数)，空间 O(进程数)。
+    ///
+    /// Module: app / plugin lifecycle
+    /// Purpose: Terminate plugin-spawned external editor apps that descend from this process.
+    /// Inputs: `self`.
+    /// Outputs / side effects: ends VOCALOID6 / ACE Studio editor processes and logs
+    /// `plugin_editor_processes_terminated`.
+    /// Complexity: O(process count) time and space.
+    #[cfg(target_os = "windows")]
+    fn terminate_plugin_child_processes(&self) {
+        use std::collections::{HashMap, HashSet, VecDeque};
+        use winapi::shared::minwindef::DWORD;
+        use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
+        use winapi::um::processthreadsapi::{GetCurrentProcessId, OpenProcess, TerminateProcess};
+        use winapi::um::tlhelp32::{
+            CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+            TH32CS_SNAPPROCESS,
+        };
+        use winapi::um::winnt::PROCESS_TERMINATE;
+
+        // 只结束本进程启动的编辑器，避免误杀用户单独打开的 VOCALOID / ACE Studio。
+        // Only end editors started by this process, never a standalone app the user opened.
+        const EDITOR_APPS: [&str; 7] = [
+            "vocaloid6.exe",
+            "vocaloid5.exe",
+            "vocaloid4.exe",
+            "ace studio.exe",
+            "acestudio.exe",
+            "xstudio.exe",
+            "synthesizerv.exe",
+        ];
+
+        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+        if snapshot == INVALID_HANDLE_VALUE {
+            return;
+        }
+        let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        let mut children: HashMap<DWORD, Vec<(DWORD, String)>> = HashMap::new();
+        let mut more = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
+        while more {
+            let end = entry
+                .szExeFile
+                .iter()
+                .position(|value| *value == 0)
+                .unwrap_or(entry.szExeFile.len());
+            let name = String::from_utf16_lossy(&entry.szExeFile[..end]);
+            children
+                .entry(entry.th32ParentProcessID)
+                .or_default()
+                .push((entry.th32ProcessID, name));
+            more = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
+        }
+        unsafe { CloseHandle(snapshot) };
+
+        let me = unsafe { GetCurrentProcessId() };
+        let mut queue = VecDeque::from([me]);
+        let mut seen: HashSet<DWORD> = HashSet::new();
+        let mut killed: Vec<String> = Vec::new();
+        while let Some(parent) = queue.pop_front() {
+            let Some(list) = children.get(&parent) else {
+                continue;
+            };
+            for (pid, name) in list {
+                if !seen.insert(*pid) {
+                    continue;
+                }
+                let lower = name.to_ascii_lowercase();
+                if EDITOR_APPS.iter().any(|app| lower == *app) {
+                    let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, *pid) };
+                    if !handle.is_null() {
+                        if unsafe { TerminateProcess(handle, 0) } != 0 {
+                            killed.push(name.clone());
+                        }
+                        unsafe { CloseHandle(handle) };
+                    }
+                } else {
+                    queue.push_back(*pid);
+                }
+            }
+        }
+        if !killed.is_empty() {
+            diag::info(
+                "app.window",
+                "window.drop",
+                &[
+                    ("phase", "plugin_editor_processes_terminated"),
+                    ("names", &killed.join(" | ")),
+                ],
+            );
+        }
+    }
+
+    /// 所属模块：app / 插件生命周期
+    /// 功能：非 Windows 平台没有插件外部编辑进程。
+    /// 输入：`self`。
+    /// 输出/副作用：无。
+    /// 复杂度：时间 O(1)，空间 O(1)。
+    ///
+    /// Module: app / plugin lifecycle
+    /// Purpose: No plugin-spawned external editor processes exist off Windows.
+    /// Inputs: `self`.
+    /// Outputs / side effects: none.
+    /// Complexity: O(1) time and space.
+    #[cfg(not(target_os = "windows"))]
+    fn terminate_plugin_child_processes(&self) {}
 }
 
 /// 工程窗口的初始内容。
@@ -901,6 +1300,8 @@ impl SurfingApp {
             loaded_project: None,
             save_rx: None,
             public_copy_rx: None,
+            export: ExportState::default(),
+            export_dialog_rx: None,
             engine_sync_rx: None,
             engine_sync_tx: None,
             sync_in_background: false,
@@ -917,6 +1318,7 @@ impl SurfingApp {
             pending_play: false,
             last_engine_sync: Instant::now(),
             editors: Vec::new(),
+            editor_repaint: HashMap::new(),
             inline_placed: HashSet::new(),
             inline_failed: HashMap::new(),
             effect_editor_flags: HashMap::new(),
@@ -1347,6 +1749,8 @@ impl SurfingApp {
         self.poll_load_project();
         self.poll_save_project();
         self.poll_public_copy();
+        self.poll_export_dialog();
+        self.poll_export();
         self.poll_autosave();
         self.poll_engine_sync();
         // 加载/插件同步结束、关闭请求得以继续时，本帧发送关闭。
@@ -1529,6 +1933,7 @@ impl SurfingApp {
         self.ui_instrument_picker(ctx);
         self.ui_help(ctx);
         self.ui_settings_window(ctx);
+        self.ui_export_window(ctx);
         // 未保存关闭确认绘制在所有面板之上；确认期间窗口保持打开。
         // The unsaved-changes confirmation is painted above every panel; the window stays open
         // while it is shown.
@@ -1584,7 +1989,7 @@ impl SurfingApp {
             // Keep the loading spinner and the responsive UI animating while
             // plugins load on the background thread.
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
-        } else if playing || !self.editors.is_empty() {
+        } else if playing || !self.editors.is_empty() || self.export.busy {
             // 插件 GUI 依赖本线程持续分发窗口消息与 idle；编辑器打开时保持 60 FPS 轮询。
             // Plugin GUIs rely on this thread dispatching window messages and idle calls;
             // keep a 60 FPS tick while an editor is open.

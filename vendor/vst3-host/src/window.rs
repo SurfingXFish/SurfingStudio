@@ -21,10 +21,10 @@ use winapi::{
     um::libloaderapi::GetModuleHandleW,
     um::wingdi::CreateRectRgn,
     um::winuser::{
-        ClientToScreen, CreateWindowExW, DefWindowProcW, DestroyWindow, IsWindow, LoadCursorW,
-        RedrawWindow, RegisterClassExW, SetFocus, SetForegroundWindow, SetWindowPos, SetWindowRgn,
-        ShowWindow, UpdateWindow, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, IDC_ARROW,
-        RDW_ALLCHILDREN, RDW_INVALIDATE, SIZE_MINIMIZED, SWP_NOACTIVATE, SWP_NOMOVE,
+        ClientToScreen, CreateWindowExW, DefWindowProcW, DestroyWindow, GetForegroundWindow,
+        IsWindow, LoadCursorW, RedrawWindow, RegisterClassExW, SetFocus, SetForegroundWindow,
+        SetWindowPos, SetWindowRgn, ShowWindow, UpdateWindow, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT,
+        IDC_ARROW, RDW_ALLCHILDREN, RDW_INVALIDATE, SIZE_MINIMIZED, SWP_NOACTIVATE, SWP_NOMOVE,
         SWP_NOZORDER, SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE, WM_CLOSE, WM_DPICHANGED, WM_SIZE,
         WNDCLASSEXW, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_EX_TOOLWINDOW, WS_OVERLAPPEDWINDOW,
         WS_POPUP,
@@ -1280,6 +1280,28 @@ impl PluginWindow {
                 );
             }
         }
+    }
+
+    /// 所属模块：vst3-host / 编辑器窗口
+    /// 功能：判断插件编辑器窗口是否已经是系统前台窗口。
+    /// 输入：`self`。
+    /// 输出/副作用：返回布尔值；非 Windows 恒为 `false`。
+    /// 复杂度：时间 O(1)，空间 O(1)。
+    ///
+    /// Module: vst3-host / editor window
+    /// Purpose: Whether the plugin editor window is currently the foreground window.
+    /// Inputs: `self`.
+    /// Outputs / side effects: a boolean; always `false` off Windows.
+    /// Complexity: O(1) time and space.
+    pub fn is_foreground(&self) -> bool {
+        #[cfg(target_os = "windows")]
+        {
+            if let Some(hwnd) = self.native_window {
+                // SAFETY: `GetForegroundWindow` has no preconditions and the handle is owned by us.
+                return unsafe { GetForegroundWindow() == hwnd };
+            }
+        }
+        false
     }
 
     /// Platform probe behind [`Self::closed_by_user`].

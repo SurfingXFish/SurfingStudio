@@ -4,7 +4,7 @@ members = ["tools/vst2-fixture", "platforms/android"]
 
 [package]
 name = "surfing-studio"
-version = "1.0.0"
+version = "1.1.7-a"
 edition = "2021"
 rust-version = "1.85"
 description = "SurfingStudio - a MIDI-centric music production workstation written in Rust"
@@ -24,6 +24,26 @@ midir = "0.11"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 hound = "3.5"
+# 主流压缩音频导入（MP3 / FLAC / AAC·M4A / OGG Vorbis / AIFF / CAF / ALAC / MKV·WebM 音频轨）。
+# 选择纯 Rust 解码器，避免引入 C 库与额外运行时；MPL-2.0 与本项目 GPL-3.0 兼容。
+# Mainstream compressed-audio import (MP3 / FLAC / AAC·M4A / OGG Vorbis / AIFF / CAF / ALAC).
+# Pure-Rust decoders avoid C libraries and extra runtime dependencies; MPL-2.0 is GPL-3.0 compatible.
+symphonia = { version = "0.6", default-features = false, features = [
+    "aac",
+    "aiff",
+    "alac",
+    "all-meta",
+    "caf",
+    "flac",
+    "isomp4",
+    "mkv",
+    "mp3",
+    "ogg",
+    "opt-simd",
+    "pcm",
+    "vorbis",
+    "wav",
+] }
 vst3-host = { version = "0.10", default-features = false, features = ["egui-widgets"] }
 raw-window-handle = "0.6"
 vst = "0.4"

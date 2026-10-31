@@ -238,7 +238,7 @@ impl SurfingApp {
                         .color(theme::TEXT),
                 );
                 ui.label(
-                    egui::RichText::new(env!("CARGO_PKG_VERSION"))
+                    egui::RichText::new(crate::version_label())
                         .size(10.0)
                         .color(theme::TEXT_FAINT),
                 );

@@ -43,6 +43,13 @@ pub struct Track {
     /// Whether the controller/effect child lanes are expanded in the arrangement.
     #[serde(default)]
     pub expanded: bool,
+    /// 输出通道对下标：0 = 前左/前右，1 = 中置/低频，2 = 环绕左/环绕右，3 = 后左/后右。
+    /// Output channel-pair index: 0 = front L/R, 1 = centre/LFE, 2 = surround L/R, 3 = back L/R.
+    /// 工程为立体声布局时只有 0 有效；越界值由引擎夹取。放在结构结尾以便旧工程按默认值解码。
+    /// Only 0 is valid for a stereo project; the engine clamps out-of-range values. Kept at the end
+    /// so older projects decode through the default.
+    #[serde(default)]
+    pub output_pair: u8,
     /// Incremented whenever the instrument, effects or controller content changes.
     #[serde(skip, default = "default_revision")]
     pub revision: u64,
@@ -64,6 +71,7 @@ impl Track {
             pan: 0.0,
             muted: false,
             solo: false,
+            output_pair: 0,
             expanded: false,
             revision: 1,
         }

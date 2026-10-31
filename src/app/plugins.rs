@@ -234,15 +234,29 @@ pub(super) struct PendingPluginApply {
 }
 
 impl EditorWindow {
-    pub(super) fn service(&mut self) {
+    /// 所属模块：app / 插件编辑器窗口
+    /// 功能：分发平台消息，并按需低频重绘 VST3 编辑器。
+    /// 输入：`repaint`：本帧是否允许强制重绘（调用方已按时间限流）。
+    /// 输出/副作用：处理插件消息窗口；可能调用 `RedrawWindow`。
+    /// 复杂度：时间 O(插件消息数)，空间 O(1)。
+    ///
+    /// Module: app / plugin editor window
+    /// Purpose: Service platform messages and optionally repaint a VST3 editor.
+    /// Inputs: `repaint`: whether a forced repaint is allowed this frame (the caller throttles it).
+    /// Outputs / side effects: dispatches plugin messages; may call `RedrawWindow`.
+    /// Complexity: O(plugin messages) time and O(1) space.
+    pub(super) fn service(&mut self, repaint: bool) {
         match self {
             EditorWindow::Vst3(window) => {
                 let _ = window.service_platform_events();
-                // 独立乐器/效果器窗口在宿主主窗口聚焦时可能被系统判定为不活跃而停止重绘；
-                // 每帧请求一次子窗口重绘，分析器与动态界面才会继续变化。
-                // Standalone editors may be treated as inactive when the host window is focused;
-                // invalidating their children every frame keeps analysers and animated GUIs alive.
-                window.refresh_repaint();
+                // 只在插件窗口不是系统前台窗口时低频强制重绘：Kontakt 8 的 Qt Quick 界面在前台时
+                // 会自行刷新，宿主每帧 RedrawWindow 反而可能与其绘制循环互相拖住。
+                // Repaint a background editor only at a low rate: Kontakt 8's Qt Quick UI paints
+                // itself while focused, and a host-side RedrawWindow every frame can fight its paint
+                // loop.
+                if repaint && !window.is_foreground() {
+                    window.refresh_repaint();
+                }
             }
             EditorWindow::Vst3Inline(window) => {
                 let _ = window.service_platform_events();
@@ -533,10 +547,20 @@ impl SurfingApp {
 
     pub fn service_editors(&mut self) {
         diag::set_activity("plugin.editors");
-        for (_, window) in &mut self.editors {
-            window.service();
+        let now = Instant::now();
+        for (key, window) in &mut self.editors {
+            let repaint = self
+                .editor_repaint
+                .get(key)
+                .is_none_or(|last| now.duration_since(*last) >= EDITOR_REPAINT_BACKGROUND_INTERVAL);
+            if repaint {
+                self.editor_repaint.insert(*key, now);
+            }
+            window.service(repaint);
         }
         self.editors.retain(|(_, window)| !window.closed_by_user());
+        self.editor_repaint
+            .retain(|key, _| self.editors.iter().any(|(candidate, _)| candidate == key));
         if self.editors.is_empty() {
             return;
         }
@@ -960,10 +984,12 @@ impl SurfingApp {
 
     pub fn close_editor(&mut self, track_id: TrackId, slot: SlotKind) {
         self.editors.retain(|(key, _)| *key != (track_id, slot));
+        self.editor_repaint.remove(&(track_id, slot));
     }
 
     pub fn close_all_editors(&mut self) {
         self.editors.clear();
+        self.editor_repaint.clear();
         // 工程/插件已变化，允许重新尝试内嵌。
         // The project or plugins changed; allow embedding attempts again.
         self.inline_failed.clear();

@@ -283,6 +283,202 @@ impl GpuBackend for WgpuComputeBackend {
     }
 }
 
+/// 实时 GPU 限幅的缓冲容量：最多 8 声道 × 4096 帧。
+/// Realtime GPU limiter capacity: up to 8 channels × 4096 frames.
+const REALTIME_CAPACITY_SAMPLES: usize = 8 * 4096;
+
+/// 常驻的实时 GPU 主总线软限幅器：设备、管线与缓冲只创建一次。
+/// Persistent realtime GPU master-bus limiter: the device, pipeline and buffers are created once.
+pub struct WgpuRealtimeLimiter {
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    pipeline: wgpu::ComputePipeline,
+    bind_group: wgpu::BindGroup,
+    storage: wgpu::Buffer,
+    staging: wgpu::Buffer,
+    upload: Vec<u8>,
+    capacity_samples: usize,
+}
+
+impl WgpuRealtimeLimiter {
+    /// 所属模块：audio::gpu / wgpu 计算后端
+    /// 功能：按配置创建设备、着色器管线与固定容量的存储/回读缓冲。
+    /// 输入：`config`：设备/驱动/API 选择。
+    /// 输出/副作用：创建 GPU 资源；失败返回中文原因（调用方回退 CPU）。
+    /// 复杂度：时间 O(GPU 设备创建)，空间 O(缓冲容量)。
+    ///
+    /// Module: audio::gpu / wgpu compute backend
+    /// Purpose: Create the device, shader pipeline and fixed-capacity storage/read-back buffers.
+    /// Inputs: `config`: device/driver/API selection.
+    /// Outputs / side effects: GPU resources; a Chinese reason on failure (the caller falls back to
+    /// the CPU).
+    /// Complexity: O(GPU device creation) time and O(buffer capacity) space.
+    pub fn open(config: &GpuRenderConfig) -> Result<Self, String> {
+        let instance = create_instance(config.api);
+        let backends = match config.api {
+            Some(api) => backends_for_api(api),
+            None => host_backends(),
+        };
+        let adapters = pollster::block_on(instance.enumerate_adapters(backends));
+        if adapters.is_empty() {
+            return Err("未找到可用的 GPU 适配器".to_string());
+        }
+        let adapter = select_adapter(&adapters, config)
+            .ok_or_else(|| "未找到设置中指定的 GPU 设备".to_string())?;
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("SurfingStudio realtime GPU audio"),
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::downlevel_defaults(),
+            ..Default::default()
+        }))
+        .map_err(|error| format!("创建 GPU 设备失败: {error:?}"))?;
+
+        let error_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("realtime master limiter"),
+            source: wgpu::ShaderSource::Wgsl(LIMITER_SHADER.into()),
+        });
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("realtime master limiter pipeline"),
+            layout: None,
+            module: &module,
+            entry_point: Some("main"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+        if let Some(error) = pollster::block_on(error_scope.pop()) {
+            return Err(format!("GPU 着色器校验失败: {error}"));
+        }
+        let layout = pipeline.get_bind_group_layout(0);
+        let byte_len = (REALTIME_CAPACITY_SAMPLES * std::mem::size_of::<f32>()) as u64;
+        let storage = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("realtime limiter samples"),
+            size: byte_len,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let staging = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("realtime limiter readback"),
+            size: byte_len,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("realtime limiter bind group"),
+            layout: &layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: storage.as_entire_binding(),
+            }],
+        });
+        Ok(Self {
+            device,
+            queue,
+            pipeline,
+            bind_group,
+            storage,
+            staging,
+            upload: Vec::with_capacity(byte_len as usize),
+            capacity_samples: REALTIME_CAPACITY_SAMPLES,
+        })
+    }
+
+    /// 所属模块：audio::gpu / wgpu 计算后端
+    /// 功能：在限定时间内对一段交错样本执行主总线软限幅；超时或失败即返回错误。
+    /// 输入：
+    /// - `samples`：交错多声道样本；不超过 `REALTIME_CAPACITY_SAMPLES`。
+    /// - `timeout`：等待 GPU 完成的上限。
+    /// 输出/副作用：成功时原地改写 `samples`；失败时内容未定义，调用方必须回退 CPU 并丢弃本实例。
+    /// 复杂度：时间 O(样本数)，空间 O(样本数)（上传字节缓冲）。
+    ///
+    /// Module: audio::gpu / wgpu compute backend
+    /// Purpose: Apply the master soft limiter to interleaved samples within a deadline; timeout or
+    /// failure returns an error.
+    /// Inputs:
+    /// - `samples`: interleaved multichannel samples, no more than `REALTIME_CAPACITY_SAMPLES`.
+    /// - `timeout`: upper bound for waiting on the GPU.
+    /// Outputs / side effects: rewrites `samples` in place on success; contents are undefined on
+    /// failure, so the caller must fall back to the CPU and drop this limiter.
+    /// Complexity: O(samples) time and O(samples) space (upload byte buffer).
+    pub fn process(
+        &mut self,
+        samples: &mut [f32],
+        timeout: std::time::Duration,
+    ) -> Result<(), String> {
+        if samples.is_empty() {
+            return Ok(());
+        }
+        if samples.len() > self.capacity_samples {
+            return Err("实时 GPU 缓冲超出上限".to_string());
+        }
+        let started = std::time::Instant::now();
+        self.upload.clear();
+        for sample in samples.iter() {
+            self.upload.extend_from_slice(&sample.to_le_bytes());
+        }
+        self.queue.write_buffer(&self.storage, 0, &self.upload);
+        let byte_len = (samples.len() * std::mem::size_of::<f32>()) as u64;
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("realtime master limiter encoder"),
+            });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("realtime master limiter pass"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &self.bind_group, &[]);
+            let groups = (samples.len() as u64).div_ceil(64) as u32;
+            pass.dispatch_workgroups(groups.max(1), 1, 1);
+        }
+        encoder.copy_buffer_to_buffer(&self.storage, 0, &self.staging, 0, byte_len);
+        let submission = self.queue.submit(Some(encoder.finish()));
+        match self.device.poll(wgpu::PollType::Wait {
+            submission_index: Some(submission),
+            timeout: Some(timeout),
+        }) {
+            Ok(_) => {}
+            Err(wgpu::PollError::Timeout) => return Err("等待 GPU 限幅超时".to_string()),
+            Err(error) => return Err(format!("等待 GPU 完成失败: {error:?}")),
+        }
+
+        let slice = self.staging.slice(0..byte_len);
+        let (tx, rx) = channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = tx.send(result);
+        });
+        // 映射回调依赖一次 poll；此时计算与拷贝都已完成，正常只需极短时间。
+        // 使用剩余预算保证整块等待不超过 `timeout`。
+        // Mapping callbacks need a poll; compute and copy are already done, so this is normally
+        // extremely short. The remaining budget keeps the total wait inside `timeout`.
+        let remaining = timeout.saturating_sub(started.elapsed());
+        let _ = self.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: Some(remaining),
+        });
+        match rx.try_recv() {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => return Err(format!("读取 GPU 结果失败: {error:?}")),
+            Err(_) => return Err("读取 GPU 结果超时".to_string()),
+        }
+        {
+            let data = slice.get_mapped_range();
+            for (index, bytes) in data.chunks_exact(4).enumerate() {
+                if index >= samples.len() {
+                    break;
+                }
+                samples[index] = f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+            }
+        }
+        self.staging.unmap();
+        Ok(())
+    }
+}
+
 /// 所属模块：audio::gpu / wgpu 计算后端
 /// 功能：按 API 创建 wgpu 实例；`None` 表示全部原生后端。
 /// 输入：`api`：指定图形 API（可选）。

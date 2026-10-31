@@ -965,6 +965,12 @@ pub(crate) trait PluginInternal: Send {
     fn has_editor(&self) -> bool;
     fn open_editor(&mut self, parent: *mut std::ffi::c_void) -> Result<()>;
     fn close_editor(&mut self) -> Result<()>;
+    /// 终止组件但保留 Rust 对象本身，供宿主关闭工程时释放插件拉起的子进程/窗口。
+    /// Terminate the component while keeping the Rust object alive, so a host closing a project can
+    /// release plugin-spawned child processes/windows without dropping the instance.
+    fn shutdown_component(&mut self) -> Result<()> {
+        Ok(())
+    }
     fn get_editor_size(&self) -> Result<(i32, i32)>;
     /// 已打开编辑器在 attach 前声明的尺寸；未打开、或插件在 attach 前拒绝 `getSize` 时为空。
     /// Size the opened editor declared before attaching; empty when no editor is open or the
@@ -2219,6 +2225,21 @@ impl Plugin {
             .as_mut()
             .ok_or_else(|| Error::Other("Plugin not initialized".to_string()))?
             .close_editor()
+    }
+
+    /// Terminate the component without dropping the plugin object.
+    ///
+    /// Hosts that keep plugin instances alive until process exit can call this when a project closes:
+    /// `terminate()` is what tells plugins such as VOCALOID / ACE Bridge to close their external app
+    /// windows. The object must not be used for processing afterwards; callers leak the instance
+    /// instead of dropping it when the plugin's destructor is known to wait for the UI message loop.
+    ///
+    /// Terminate the component without dropping the plugin object.
+    pub fn shutdown_component(&mut self) -> Result<()> {
+        self.internal
+            .as_mut()
+            .ok_or_else(|| Error::Other("Plugin not initialized".to_string()))?
+            .shutdown_component()
     }
 
     /// Get the preferred editor size.

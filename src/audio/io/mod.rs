@@ -2,38 +2,55 @@
 //! 文件用途：
 //! - 提供类似 JVM 的音频 I/O 运行时：应用层只调用 `AudioRuntime`。
 //! - 维护音频格式后端（`AudioCodec`）注册表，负责导入、时长查询与导出。
-//! - WAV 作为后端实现具体编解码，其他格式可按同一接口扩展。
+//! - WAV / Symphonia（MP3、FLAC、AAC·M4A、OGG Vorbis、AIFF、CAF、ALAC）负责导入，
+//!   WAV / AIFF 负责导出；新增格式只需实现 `AudioCodec` 并注册。
+//! - 统一提供峰值包络生成与多声道下混，避免各后端重复实现。
 //!
 //! 函数清单：
 //! - `AudioRuntime::new` / `standard` / `Default::default`：运行时构造与后端注册。
-//! - `AudioRuntime::formats` / `codec_for` / `writer_for`：后端查询。
-//! - `AudioRuntime::import` / `duration_seconds` / `export`：框架核心方法。
-//! - `AudioRuntime::import_audio` / `audio_duration_seconds` / `export_audio` / `export_project` /
-//!   `export_project_with_gpu`：进程级入口。
+//! - `AudioRuntime::formats` / `codec_for` / `writer_for` / `supports_import`：后端查询。
+//! - `AudioRuntime::import` / `duration_seconds` / `export` / `export_with_options`：框架核心方法。
+//! - `AudioRuntime::export_project` / `export_project_with_gpu` / `export_project_with_options`：
+//!   离线渲染并导出。
+//! - `AudioRuntime::import_audio` / `audio_duration_seconds` / `export_audio`：进程级入口。
+//! - `build_peaks` / `split_stereo`：波形峰值与多声道下混辅助。
 //!
 //! Module: audio / audio I/O runtime framework
 //! Purpose:
 //! - Provide a JVM-like audio I/O runtime: the app only calls `AudioRuntime`.
 //! - Maintain a registry of audio format backends (`AudioCodec`) for import, duration
 //!   queries and export.
-//! - WAV is one backend; other formats can follow the same interface.
+//! - WAV / Symphonia (MP3, FLAC, AAC·M4A, OGG Vorbis, AIFF, CAF, ALAC) handle import;
+//!   WAV / AIFF handle export. New formats only need an `AudioCodec` implementation.
+//! - Share peak-envelope and multichannel downmix helpers so backends never duplicate them.
 //!
 //! Functions:
 //! - `AudioRuntime::new` / `standard` / `Default::default`: runtime construction and
 //!   backend registration.
-//! - `AudioRuntime::formats` / `codec_for` / `writer_for`: backend queries.
-//! - `AudioRuntime::import` / `duration_seconds` / `export`: core framework methods.
-//! - `AudioRuntime::import_audio` / `audio_duration_seconds` / `export_audio` /
-//!   `export_project` / `export_project_with_gpu`: process-wide entries.
+//! - `AudioRuntime::formats` / `codec_for` / `writer_for` / `supports_import`: backend queries.
+//! - `AudioRuntime::import` / `duration_seconds` / `export` / `export_with_options`: core methods.
+//! - `AudioRuntime::export_project` / `export_project_with_gpu` / `export_project_with_options`:
+//!   offline render and export.
+//! - `AudioRuntime::import_audio` / `audio_duration_seconds` / `export_audio`: process-wide entries.
+//! - `build_peaks` / `split_stereo`: waveform-envelope and multichannel downmix helpers.
 
+pub mod aiff;
+pub mod symphonia;
 pub mod wav;
 
+pub use aiff::AiffCodec;
+pub use symphonia::SymphoniaCodec;
 pub use wav::WavCodec;
 
+use crate::audio::engine::OfflineRenderOptions;
 use crate::audio::gpu::GpuRenderConfig;
 use crate::core::model::Project;
 use std::path::Path;
 use std::sync::OnceLock;
+
+/// 波形峰值 bin 数；后端与持久化峰值条共用。
+/// Number of waveform peak bins; shared by backends and persisted peak entries.
+pub const PEAK_BINS: usize = 512;
 
 /// 解码后的音频：左右声道与波形峰值。
 /// Decoded audio: left/right channels and waveform peaks.
@@ -45,6 +62,138 @@ pub struct AudioFile {
     /// 编曲区预览使用的粗略绝对峰值包络。
     /// Coarse absolute-peak envelope used by the arrangement preview.
     pub peaks: Vec<f32>,
+}
+
+/// 导出位深：16-bit PCM / 24-bit PCM / 32-bit 浮点。
+/// Export bit depth: 16-bit PCM / 24-bit PCM / 32-bit float.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AudioBitDepth {
+    #[default]
+    Int16,
+    Int24,
+    Float32,
+}
+
+impl AudioBitDepth {
+    /// 全部可导出的位深；导出窗口按此顺序展示。
+    /// Every exportable bit depth; the export window lists them in this order.
+    pub const ALL: [AudioBitDepth; 3] = [
+        AudioBitDepth::Int16,
+        AudioBitDepth::Int24,
+        AudioBitDepth::Float32,
+    ];
+
+    /// 所属模块：audio / 音频 I/O 运行时 / 导出参数
+    /// 功能：返回持久化与展示用的稳定标识。
+    /// 输入：`self`。
+    /// 输出/副作用：静态字符串；不修改状态。
+    /// 复杂度：时间 O(1)，空间 O(1)。
+    ///
+    /// Module: audio / audio I/O runtime / encode options
+    /// Purpose: Return the stable id used for persistence and display.
+    /// Inputs: `self`.
+    /// Outputs / side effects: static text; no state change.
+    /// Complexity: O(1) time and space.
+    pub fn id(self) -> &'static str {
+        match self {
+            AudioBitDepth::Int16 => "int16",
+            AudioBitDepth::Int24 => "int24",
+            AudioBitDepth::Float32 => "float32",
+        }
+    }
+
+    /// 所属模块：audio / 音频 I/O 运行时 / 导出参数
+    /// 功能：返回面向用户的位深名称。
+    /// 输入：`self`。
+    /// 输出/副作用：静态文本；不修改状态。
+    /// 复杂度：时间 O(1)，空间 O(1)。
+    ///
+    /// Module: audio / audio I/O runtime / encode options
+    /// Purpose: Return the user-facing bit-depth label.
+    /// Inputs: `self`.
+    /// Outputs / side effects: static text; no state change.
+    /// Complexity: O(1) time and space.
+    pub fn label(self) -> &'static str {
+        match self {
+            AudioBitDepth::Int16 => "16-bit PCM",
+            AudioBitDepth::Int24 => "24-bit PCM",
+            AudioBitDepth::Float32 => "32-bit 浮点",
+        }
+    }
+
+    /// 所属模块：audio / 音频 I/O 运行时 / 导出参数
+    /// 功能：把持久化标识还原为位深；未知标识回退 16-bit PCM。
+    /// 输入：`id`：设置中的标识。
+    /// 输出/副作用：位深；不修改状态。
+    /// 复杂度：时间 O(1)，空间 O(1)。
+    ///
+    /// Module: audio / audio I/O runtime / encode options
+    /// Purpose: Restore a bit depth from its persisted id; unknown ids fall back to 16-bit PCM.
+    /// Inputs: `id`: the stored id.
+    /// Outputs / side effects: the bit depth; no state change.
+    /// Complexity: O(1) time and space.
+    pub fn from_id(id: &str) -> Self {
+        match id {
+            "int24" => AudioBitDepth::Int24,
+            "float32" => AudioBitDepth::Float32,
+            _ => AudioBitDepth::Int16,
+        }
+    }
+
+    /// 所属模块：audio / 音频 I/O 运行时 / 导出参数
+    /// 功能：返回该位深在文件头中声明的位数。
+    /// 输入：`self`。
+    /// 输出/副作用：16 / 24 / 32；不修改状态。
+    /// 复杂度：时间 O(1)，空间 O(1)。
+    ///
+    /// Module: audio / audio I/O runtime / encode options
+    /// Purpose: Return the header bit count of this depth.
+    /// Inputs: `self`.
+    /// Outputs / side effects: 16 / 24 / 32; no state change.
+    /// Complexity: O(1) time and space.
+    pub fn bits(self) -> u16 {
+        match self {
+            AudioBitDepth::Int16 => 16,
+            AudioBitDepth::Int24 => 24,
+            AudioBitDepth::Float32 => 32,
+        }
+    }
+}
+
+/// 导出参数：采样率、声道数与位深。
+/// Export options: sample rate, channel count and bit depth.
+#[derive(Clone, Copy, Debug)]
+pub struct AudioEncodeOptions {
+    /// 采样率（Hz）。
+    /// Sample rate in Hz.
+    pub sample_rate: f64,
+    /// 声道数；样本按交错顺序提供。
+    /// Channel count; samples are supplied interleaved.
+    pub channels: usize,
+    /// 位深。
+    /// Bit depth.
+    pub bit_depth: AudioBitDepth,
+}
+
+impl Default for AudioEncodeOptions {
+    /// 所属模块：audio / 音频 I/O 运行时 / 导出参数
+    /// 功能：返回默认导出参数：48 kHz、立体声、16-bit PCM。
+    /// 输入：无。
+    /// 输出/副作用：导出参数；不修改状态。
+    /// 复杂度：时间 O(1)，空间 O(1)。
+    ///
+    /// Module: audio / audio I/O runtime / encode options
+    /// Purpose: Return the default options: 48 kHz, stereo, 16-bit PCM.
+    /// Inputs: none.
+    /// Outputs / side effects: the options; no state change.
+    /// Complexity: O(1) time and space.
+    fn default() -> Self {
+        Self {
+            sample_rate: 48_000.0,
+            channels: 2,
+            bit_depth: AudioBitDepth::Int16,
+        }
+    }
 }
 
 /// 音频后端能力描述。
@@ -182,6 +331,37 @@ pub trait AudioCodec: Send + Sync {
     fn encode(&self, _path: &Path, _samples: &[f32], _sample_rate: f64) -> Result<(), String> {
         Err(format!("{} 不支持写入", self.info().label))
     }
+
+    /// 所属模块：audio / 音频 I/O 运行时 / 后端接口
+    /// 功能：按导出参数写出音频；默认退化为固定 16-bit 立体声编码。
+    /// 输入：
+    /// - `path`：目标文件路径。
+    /// - `samples`：交错多声道采样。
+    /// - `options`：采样率、声道数与位深。
+    ///
+    /// 输出/副作用：写入文件；不支持写入时返回错误。
+    ///
+    /// 复杂度：默认 O(采样数)；具体后端为 O(采样数)。
+    ///
+    /// Module: audio / audio I/O runtime / backend interface
+    /// Purpose: Encode audio with the requested options; the default falls back to fixed 16-bit
+    /// stereo encoding.
+    /// Inputs:
+    /// - `path`: destination path.
+    /// - `samples`: interleaved multichannel samples.
+    /// - `options`: sample rate, channel count and bit depth.
+    ///
+    /// Outputs / side effects: writes the file; returns an error when unsupported.
+    ///
+    /// Complexity: O(sample count) by default and in concrete backends.
+    fn encode_with(
+        &self,
+        path: &Path,
+        samples: &[f32],
+        options: &AudioEncodeOptions,
+    ) -> Result<(), String> {
+        self.encode(path, samples, options.sample_rate)
+    }
 }
 
 /// 音频 I/O 运行时框架：持有格式后端注册表并暴露统一操作。
@@ -211,7 +391,7 @@ impl AudioRuntime {
     }
 
     /// 所属模块：audio / 音频 I/O 运行时 / 构造
-    /// 功能：创建标准运行时：注册 `WavCodec`。
+    /// 功能：创建标准运行时：注册 `WavCodec`、`SymphoniaCodec` 与 `AiffCodec`。
     /// 输入：无。
     ///
     /// 输出/副作用：返回标准运行时。
@@ -219,14 +399,21 @@ impl AudioRuntime {
     /// 复杂度：时间 O(1)，空间 O(1)。
     ///
     /// Module: audio / audio I/O runtime / construction
-    /// Purpose: Create the standard runtime with `WavCodec`.
+    /// Purpose: Create the standard runtime with `WavCodec`, `SymphoniaCodec` and `AiffCodec`.
     /// Inputs: none.
     ///
     /// Outputs / side effects: returns the standard runtime.
     ///
     /// Complexity: O(1) time and space.
     pub fn standard() -> Self {
-        Self::new(vec![Box::new(WavCodec)])
+        // 注册顺序即读取分派顺序：WAV 优先走专用后端；其余压缩/容器格式交给 Symphonia。
+        // The registration order is the read dispatch order: WAV uses its dedicated backend and
+        // every other compressed/container format goes to Symphonia.
+        Self::new(vec![
+            Box::new(WavCodec),
+            Box::new(SymphoniaCodec),
+            Box::new(AiffCodec),
+        ])
     }
 
     /// 所属模块：audio / 音频 I/O 运行时 / 查询
@@ -348,8 +535,27 @@ impl AudioRuntime {
             .map_err(|error| format!("{} 读取时长失败: {error}", codec.info().label))
     }
 
+    /// 所属模块：audio / 音频 I/O 运行时 / 查询
+    /// 功能：判断路径是否可导入（存在负责读取的后端）。
+    /// 输入：`path` 音频文件路径。
+    ///
+    /// 输出/副作用：返回布尔值；不修改状态。
+    ///
+    /// 复杂度：时间 O(后端数量)，空间 O(1)。
+    ///
+    /// Module: audio / audio I/O runtime / query
+    /// Purpose: Check whether a path is importable (some backend can read it).
+    /// Inputs: `path` — audio file path.
+    ///
+    /// Outputs / side effects: a boolean; no state change.
+    ///
+    /// Complexity: O(backend count) time and O(1) space.
+    pub fn supports_import(&self, path: &Path) -> bool {
+        self.codec_for(path).is_some()
+    }
+
     /// 所属模块：audio / 音频 I/O 运行时 / 导出
-    /// 功能：把交错立体声编码为目标扩展名对应的音频格式。
+    /// 功能：把交错立体声编码为目标扩展名对应的音频格式（16-bit PCM 默认参数）。
     /// 输入：
     /// - `path`：目标文件路径。
     /// - `samples`：交错立体声采样。
@@ -360,7 +566,8 @@ impl AudioRuntime {
     /// 复杂度：时间 O(采样数)，空间 O(1)。
     ///
     /// Module: audio / audio I/O runtime / export
-    /// Purpose: Encode interleaved stereo samples into the format matching the extension.
+    /// Purpose: Encode interleaved stereo samples into the format matching the extension with the
+    /// default 16-bit PCM options.
     /// Inputs:
     /// - `path`: destination path.
     /// - `samples`: interleaved stereo samples.
@@ -370,6 +577,46 @@ impl AudioRuntime {
     ///
     /// Complexity: O(sample count) time and O(1) space.
     pub fn export(&self, path: &Path, samples: &[f32], sample_rate: f64) -> Result<(), String> {
+        let options = AudioEncodeOptions {
+            sample_rate,
+            channels: 2,
+            bit_depth: AudioBitDepth::Int16,
+        };
+        self.export_with_options(path, samples, &options)
+    }
+
+    /// 所属模块：audio / 音频 I/O 运行时 / 导出
+    /// 功能：按指定采样率、声道数与位深编码为目标扩展名对应的音频格式。
+    /// 输入：
+    /// - `path`：目标文件路径。
+    /// - `samples`：交错多声道采样。
+    /// - `options`：导出参数。
+    ///
+    /// 输出/副作用：写入目标文件；无可用后端或参数非法时返回错误。
+    ///
+    /// 复杂度：时间 O(采样数)，空间 O(1)。
+    ///
+    /// Module: audio / audio I/O runtime / export
+    /// Purpose: Encode interleaved samples with the requested rate, channel count and bit depth into
+    /// the format matching the extension.
+    /// Inputs:
+    /// - `path`: destination path.
+    /// - `samples`: interleaved multichannel samples.
+    /// - `options`: export options.
+    ///
+    /// Outputs / side effects: writes the destination; errors on unsupported formats or invalid
+    /// options.
+    ///
+    /// Complexity: O(sample count) time and O(1) space.
+    pub fn export_with_options(
+        &self,
+        path: &Path,
+        samples: &[f32],
+        options: &AudioEncodeOptions,
+    ) -> Result<(), String> {
+        if options.channels == 0 {
+            return Err("导出声道数必须大于 0".into());
+        }
         let Some(codec) = self.writer_for(path) else {
             return Err(format!(
                 "不支持导出为 {}（可写格式：{}）",
@@ -378,7 +625,7 @@ impl AudioRuntime {
             ));
         };
         codec
-            .encode(path, samples, sample_rate)
+            .encode_with(path, samples, options)
             .map_err(|error| format!("{} 编码失败: {error}", codec.info().label))
     }
 
@@ -454,6 +701,25 @@ impl AudioRuntime {
     /// Complexity: O(sample count) time and space.
     pub fn import_audio(path: &Path) -> Result<AudioFile, String> {
         standard_runtime().import(path)
+    }
+
+    /// 所属模块：audio / 音频 I/O 运行时 / 进程级入口
+    /// 功能：使用进程级默认运行时判断路径是否可导入。
+    /// 输入：`path` 音频文件路径。
+    ///
+    /// 输出/副作用：返回布尔值；不修改状态。
+    ///
+    /// 复杂度：时间 O(后端数量)，空间 O(1)。
+    ///
+    /// Module: audio / audio I/O runtime / process-wide entry
+    /// Purpose: Check whether a path is importable through the process-wide default runtime.
+    /// Inputs: `path` — audio file path.
+    ///
+    /// Outputs / side effects: a boolean; no state change.
+    ///
+    /// Complexity: O(backend count) time and O(1) space.
+    pub fn accepts_audio_file(path: &Path) -> bool {
+        standard_runtime().supports_import(path)
     }
 
     /// 所属模块：audio / 音频 I/O 运行时 / 进程级入口
@@ -547,9 +813,163 @@ impl AudioRuntime {
         gpu: Option<&GpuRenderConfig>,
     ) -> Result<Option<String>, String> {
         let render = crate::audio::engine::Engine::render_offline_with(project, sample_rate, gpu)?;
-        Self::export_audio(path, &render.samples, sample_rate)?;
+        // 兼容入口按工程布局渲染，编码声道数必须与渲染结果一致，避免把环绕样本写进立体声文件头。
+        // The legacy entry renders in the project layout, so the encoder channel count must match the
+        // render; otherwise surround samples would be written under a stereo header.
+        let encode = AudioEncodeOptions {
+            sample_rate,
+            channels: render.channels,
+            bit_depth: AudioBitDepth::Int16,
+        };
+        standard_runtime().export_with_options(path, &render.samples, &encode)?;
         Ok(render.warning)
     }
+
+    /// 所属模块：audio / 音频 I/O 运行时 / 进程级入口
+    /// 功能：按完整渲染/导出参数离线渲染工程并写出目标音频文件。
+    /// 输入：
+    /// - `project`：要渲染的工程。
+    /// - `path`：目标文件路径。
+    /// - `render`：渲染参数（采样率、声道布局、范围、尾长、GPU）。
+    /// - `encode`：编码参数（采样率、声道数、位深）；采样率必须与渲染一致。
+    ///
+    /// 输出/副作用：写入目标文件；返回可选的 GPU 回退提示；不修改工程。
+    ///
+    /// 复杂度：时间 O(渲染帧数 × 轨道数 + 样本数)，空间 O(样本数)。
+    ///
+    /// Module: audio / audio I/O runtime / process-wide entry
+    /// Purpose: Render the project offline with full render options and write the target audio file.
+    /// Inputs:
+    /// - `project`: project to render.
+    /// - `path`: destination path.
+    /// - `render`: render options (sample rate, channel layout, range, tail, GPU).
+    /// - `encode`: encode options (rate, channels, bit depth); the rate must match the render.
+    ///
+    /// Outputs / side effects: writes the destination; returns an optional GPU fallback warning; the
+    /// project is unchanged.
+    ///
+    /// Complexity: O(rendered frames × tracks + samples) time and O(samples) space.
+    pub fn export_project_with_options(
+        project: &Project,
+        path: &Path,
+        render: &OfflineRenderOptions,
+        encode: &AudioEncodeOptions,
+    ) -> Result<Option<String>, String> {
+        let rendered = crate::audio::engine::Engine::render_offline_options(project, render)?;
+        if encode.channels != rendered.channels {
+            return Err(format!(
+                "导出声道数（{}）与渲染声道数（{}）不一致",
+                encode.channels, rendered.channels
+            ));
+        }
+        if (encode.sample_rate - rendered.sample_rate).abs() > 0.5 {
+            return Err(format!(
+                "导出采样率（{} Hz）与渲染采样率（{} Hz）不一致",
+                encode.sample_rate, rendered.sample_rate
+            ));
+        }
+        standard_runtime().export_with_options(path, &rendered.samples, encode)?;
+        Ok(rendered.warning)
+    }
+}
+
+/// 所属模块：audio / 音频 I/O 运行时 / 波形
+/// 功能：由左右声道生成固定 bin 数的绝对峰值包络。
+/// 输入：
+/// - `left` / `right`：等长声道采样。
+/// 输出/副作用：返回峰值包络；不修改输入。
+/// 复杂度：时间 O(采样数)，空间 O(PEAK_BINS)。
+///
+/// Module: audio / audio I/O runtime / waveform
+/// Purpose: Build a fixed-bin absolute peak envelope from the left/right channels.
+/// Inputs:
+/// - `left` / `right`: equal-length channel samples.
+/// Outputs / side effects: the peak envelope; inputs are unchanged.
+/// Complexity: O(sample count) time and O(PEAK_BINS) space.
+pub fn build_peaks(left: &[f32], right: &[f32]) -> Vec<f32> {
+    let frames = left.len().min(right.len());
+    if frames == 0 {
+        return Vec::new();
+    }
+    let bins = PEAK_BINS.min(frames);
+    let mut peaks = vec![0.0_f32; bins];
+    for (frame, (l, r)) in left.iter().zip(right.iter()).enumerate() {
+        let bin = (frame * bins / frames).min(bins - 1);
+        peaks[bin] = peaks[bin].max(l.abs()).max(r.abs());
+    }
+    peaks
+}
+
+/// 所属模块：audio / 音频 I/O 运行时 / 声道
+/// 功能：把交错多声道采样拆为左右声道；多声道按标准电影顺序下混，单声道复制到两侧。
+/// 输入：
+/// - `interleaved`：交错采样。
+/// - `channels`：每帧声道数（至少 1）。
+/// 输出/副作用：返回 `(left, right)`；不修改输入。
+/// 复杂度：时间 O(帧数 × 声道数)，空间 O(帧数 × 2)。
+///
+/// Module: audio / audio I/O runtime / channels
+/// Purpose: Split interleaved multichannel samples into left/right; multichannel sources are
+/// downmixed in standard film order and mono is duplicated to both sides.
+/// Inputs:
+/// - `interleaved`: interleaved samples.
+/// - `channels`: channels per frame (at least 1).
+/// Outputs / side effects: `(left, right)`; inputs are unchanged.
+/// Complexity: O(frames × channels) time and O(frames × 2) space.
+pub fn split_stereo(interleaved: &[f32], channels: usize) -> (Vec<f32>, Vec<f32>) {
+    let channels = channels.max(1);
+    let frames = interleaved.len() / channels;
+    let mut left = Vec::with_capacity(frames);
+    let mut right = Vec::with_capacity(frames);
+    if channels == 1 {
+        for sample in interleaved.iter().take(frames) {
+            left.push(*sample);
+            right.push(*sample);
+        }
+        return (left, right);
+    }
+    if channels == 2 {
+        for frame in 0..frames {
+            left.push(interleaved[frame * 2]);
+            right.push(interleaved[frame * 2 + 1]);
+        }
+        return (left, right);
+    }
+    // 5.1 / 7.1 等布局使用 ITU 下混系数：中置与环绕 -3 dB，后环绕 -6 dB，LFE -6 dB。
+    // 5.1 / 7.1 layouts use ITU downmix coefficients: centre and surround at -3 dB, back surround
+    // and LFE at -6 dB.
+    const CENTER: f32 = std::f32::consts::FRAC_1_SQRT_2;
+    const SURROUND: f32 = std::f32::consts::FRAC_1_SQRT_2;
+    const BACK: f32 = 0.5;
+    const LFE: f32 = 0.5;
+    for frame in 0..frames {
+        let base = frame * channels;
+        let mut l = interleaved[base];
+        let mut r = interleaved[base + 1];
+        if channels >= 3 {
+            l += interleaved[base + 2] * CENTER;
+            r += interleaved[base + 2] * CENTER;
+        }
+        if channels >= 4 {
+            l += interleaved[base + 3] * LFE;
+            r += interleaved[base + 3] * LFE;
+        }
+        if channels >= 5 {
+            l += interleaved[base + 4] * SURROUND;
+        }
+        if channels >= 6 {
+            r += interleaved[base + 5] * SURROUND;
+        }
+        if channels >= 7 {
+            l += interleaved[base + 6] * BACK;
+        }
+        if channels >= 8 {
+            r += interleaved[base + 7] * BACK;
+        }
+        left.push(l);
+        right.push(r);
+    }
+    (left, right)
 }
 
 impl Default for AudioRuntime {
@@ -598,10 +1018,11 @@ fn standard_runtime() -> &'static AudioRuntime {
 mod tests {
     use super::*;
 
-    /// 覆盖：标准运行时识别 `.wav` 并支持读写。
-    /// Covers: the standard runtime recognizes `.wav` and supports read/write.
+    /// 覆盖：标准运行时识别 WAV 与主流压缩格式，并只把 WAV/AIFF 视为可写。
+    /// Covers: the standard runtime recognizes WAV plus mainstream compressed formats and only
+    /// treats WAV/AIFF as writable.
     #[test]
-    fn standard_runtime_recognizes_wav() {
+    fn standard_runtime_recognizes_mainstream_formats() {
         let runtime = AudioRuntime::standard();
         assert_eq!(
             runtime
@@ -610,7 +1031,55 @@ mod tests {
             Some("wav")
         );
         assert!(runtime.writer_for(Path::new("a.wav")).is_some());
-        assert!(runtime.codec_for(Path::new("a.mp3")).is_none());
+        assert_eq!(
+            runtime
+                .codec_for(Path::new("a.mp3"))
+                .map(|codec| codec.info().id),
+            Some("symphonia")
+        );
+        assert_eq!(
+            runtime
+                .codec_for(Path::new("a.flac"))
+                .map(|codec| codec.info().id),
+            Some("symphonia")
+        );
+        assert!(runtime.writer_for(Path::new("a.aiff")).is_some());
+        assert!(runtime.codec_for(Path::new("a.xyz")).is_none());
+    }
+
+    /// 覆盖：5.1 交错采样按 ITU 系数下混到左右声道。
+    /// Covers: 5.1 interleaved samples downmix to left/right with ITU coefficients.
+    #[test]
+    fn split_stereo_downmixes_surround_channels() {
+        let interleaved = [0.0_f32, 0.0, 1.0, 0.0, 0.0, 0.0];
+        let (left, right) = split_stereo(&interleaved, 6);
+        let expected = std::f32::consts::FRAC_1_SQRT_2;
+        assert!((left[0] - expected).abs() < 1e-6, "left={}", left[0]);
+        assert!((right[0] - expected).abs() < 1e-6, "right={}", right[0]);
+    }
+
+    /// 覆盖：24-bit 5.1 WAV 导出写入正确的声道数与位深。
+    /// Covers: 24-bit 5.1 WAV export writes the requested channel count and bit depth.
+    #[test]
+    fn exports_multichannel_24bit_wav() {
+        let path = std::env::temp_dir().join("surfing_studio_surround_24bit.wav");
+        let samples: Vec<f32> = (0..600)
+            .map(|index| (index as f32 * 0.02).sin() * 0.2)
+            .collect();
+        let options = AudioEncodeOptions {
+            sample_rate: 48_000.0,
+            channels: 6,
+            bit_depth: AudioBitDepth::Int24,
+        };
+        AudioRuntime::standard()
+            .export_with_options(&path, &samples, &options)
+            .expect("export surround wav");
+        let reader = hound::WavReader::open(&path).expect("read wav");
+        assert_eq!(reader.spec().channels, 6);
+        assert_eq!(reader.spec().bits_per_sample, 24);
+        assert_eq!(reader.spec().sample_rate, 48_000);
+        assert_eq!(reader.len() as usize, samples.len());
+        let _ = std::fs::remove_file(path);
     }
 
     /// 覆盖：工程可离线渲染并导出为有效 WAV。

@@ -142,6 +142,10 @@ pub struct AudioOptions {
     /// 期望缓冲帧数；`None` 使用默认值。
     /// Requested buffer size in frames; `None` uses the default.
     pub buffer_frames: Option<u32>,
+    /// 期望输出声道数（2 / 6 / 8）；`None` 或设备不支持时使用设备默认配置。
+    /// Requested output channel count (2 / 6 / 8); `None` or an unsupported device falls back to the
+    /// device default.
+    pub output_channels: Option<u16>,
 }
 
 /// 输出流的后端句柄：cpal 流或 ASIO 流。
@@ -633,15 +637,33 @@ fn start_cpal(
     // 优先使用请求的采样率；未指定时沿用 48 kHz 的 DAW 常用值。
     // Prefer the requested rate; otherwise keep the DAW-friendly 48 kHz default.
     let requested_rate = options.sample_rate.unwrap_or(DEFAULT_SAMPLE_RATE as u32);
+    // 环绕声输出优先匹配设置中的声道数（2 / 6 / 8）；设备不支持时退回任意 >= 2 声道的配置。
+    // Surround output prefers the requested channel count (2 / 6 / 8); devices without it fall back
+    // to any configuration with at least two channels.
+    let requested_channels = options.output_channels.filter(|channels| *channels >= 2);
     if let Ok(ranges) = device.supported_output_configs() {
+        let mut fallback: Option<cpal::SupportedStreamConfigRange> = None;
+        let mut matched = false;
         for range in ranges {
-            if range.channels() >= 2
-                && range.sample_format() == cpal::SampleFormat::F32
-                && range.min_sample_rate() <= requested_rate
-                && range.max_sample_rate() >= requested_rate
+            if range.sample_format() != cpal::SampleFormat::F32
+                || range.min_sample_rate() > requested_rate
+                || range.max_sample_rate() < requested_rate
+                || range.channels() < 2
             {
+                continue;
+            }
+            if requested_channels.is_none_or(|channels| range.channels() == channels) {
                 supported = range.with_sample_rate(requested_rate);
+                matched = true;
                 break;
+            }
+            if fallback.is_none() {
+                fallback = Some(range);
+            }
+        }
+        if !matched {
+            if let Some(range) = fallback {
+                supported = range.with_sample_rate(requested_rate);
             }
         }
     }
@@ -726,8 +748,10 @@ fn build<T>(
 where
     T: cpal::SizedSample + cpal::FromSample<f32>,
 {
-    let mut left = Vec::<f32>::new();
-    let mut right = Vec::<f32>::new();
+    // 每个设备声道一个缓冲：工程布局与设备声道数不同时由引擎完成下混或补零。
+    // One buffer per device channel: the engine downmixes or pads when the project layout differs.
+    let mut buffers: Vec<Vec<f32>> = (0..channels.max(1)).map(|_| Vec::new()).collect();
+    let mut last: Vec<f32> = vec![0.0; channels.max(1)];
     // 回调缓存当前激活引擎，路由锁忙时继续使用上一次的引擎，避免实时线程等待。
     // Cache the active engine: when the router lock is busy, keep rendering the previous engine
     // instead of waiting on a lock inside the real-time callback.
@@ -736,17 +760,19 @@ where
     // heard as a click/crackle ("破音") when another thread briefly holds the
     // engine lock. `lock_engine` first spins for a couple of milliseconds so a
     // short background sync never turns into an audible dropout.
-    let mut last_l = 0.0_f32;
-    let mut last_r = 0.0_f32;
     let mut recovering = false;
     device
         .build_output_stream(
             *config,
             move |data: &mut [T], _info: &cpal::OutputCallbackInfo| {
                 let frames = data.len() / channels.max(1);
-                if left.len() != frames {
-                    left.resize(frames, 0.0);
-                    right.resize(frames, 0.0);
+                if frames == 0 {
+                    return;
+                }
+                for buffer in buffers.iter_mut() {
+                    if buffer.len() != frames {
+                        buffer.resize(frames, 0.0);
+                    }
                 }
                 // 外层 None 表示路由锁忙：沿用上一块缓存的引擎；内层 None 表示没有激活工程，
                 // 释放缓存，避免已关闭窗口的引擎与插件实例被回调长期占用。
@@ -758,7 +784,7 @@ where
                 let mut ok = false;
                 if let Some(engine) = &active {
                     if let Some(mut engine) = lock_engine(engine) {
-                        engine.process(&mut left, &mut right);
+                        engine.process_output(&mut buffers);
                         ok = true;
                     }
                 }
@@ -768,38 +794,41 @@ where
                         // Fade back in after a missed block.
                         for frame in 0..frames {
                             let gain = (frame as f32 / fade).min(1.0);
-                            left[frame] *= gain;
-                            right[frame] *= gain;
+                            for buffer in buffers.iter_mut() {
+                                buffer[frame] *= gain;
+                            }
                         }
                         recovering = false;
                     }
-                    last_l = left[frames.saturating_sub(1)];
-                    last_r = right[frames.saturating_sub(1)];
+                    for (channel, buffer) in buffers.iter().enumerate() {
+                        last[channel] = buffer[frames.saturating_sub(1)];
+                    }
                 } else {
-                    // Fall back to a short fade-out from the last sample.
-                    let start_l = last_l;
-                    let start_r = last_r;
+                    // Fall back to a short fade-out from the last sample of every channel.
+                    // 取走 `last` 避免在回调中克隆分配；淡出后重新填充为零。
+                    // Move `last` out to avoid a clone allocation in the callback; refill with zeros.
+                    let start = std::mem::take(&mut last);
                     for frame in 0..frames {
                         let gain = (1.0 - frame as f32 / fade).max(0.0);
-                        left[frame] = start_l * gain;
-                        right[frame] = start_r * gain;
+                        for (channel, buffer) in buffers.iter_mut().enumerate() {
+                            buffer[frame] = start.get(channel).copied().unwrap_or(0.0) * gain;
+                        }
                     }
-                    last_l = 0.0;
-                    last_r = 0.0;
+                    last = start;
+                    for sample in &mut last {
+                        *sample = 0.0;
+                    }
                     recovering = true;
                 }
                 if channels == 1 {
                     for frame in 0..frames {
-                        let value = (left[frame] + right[frame]) * 0.5;
-                        data[frame] = T::from_sample(value);
+                        data[frame] = T::from_sample(buffers[0][frame]);
                     }
                 } else {
                     for frame in 0..frames {
                         let base = frame * channels;
-                        data[base] = T::from_sample(left[frame]);
-                        data[base + 1] = T::from_sample(right[frame]);
-                        for extra in 2..channels {
-                            data[base + extra] = T::EQUILIBRIUM;
+                        for channel in 0..channels {
+                            data[base + channel] = T::from_sample(buffers[channel][frame]);
                         }
                     }
                 }

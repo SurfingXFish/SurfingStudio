@@ -36,6 +36,7 @@ pub use backend::{PluginBackend, PluginBackendInfo};
 pub use catalog::{lookup as lookup_catalog, CatalogEntry};
 pub use editor::Vst2EditorWindow;
 pub use host::PluginHost;
+pub(crate) use runtime::stash_reusable;
 pub use runtime::{PluginRuntime, Vst2Runtime, Vst3Runtime};
 pub use scan::list_plugin_files;
 pub use scan::scan_vst3_paths;

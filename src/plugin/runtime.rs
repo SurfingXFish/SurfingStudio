@@ -3,10 +3,24 @@
 use super::backends::{make_vst2_cc, send_vst2_events, send_vst2_gates, Vst2Host};
 use super::{ParamView, PluginKind};
 use crate::audio::synth::{GateKind, SynthEvent};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use vst::plugin::Plugin as VstPluginTrait;
 use vst3_host::midi::{MidiChannel, MidiEvent as Vst3MidiEvent};
 use vst3_host::Plugin as Vst3Plugin;
+
+/// 全量参数比对的参数数量上限：Kontakt 等采样器有数千个参数，逐个调用控制器会让 UI 线程
+/// 卡住数秒并长期占用引擎锁（音频回调拿不到锁，表现为没有声音）；超过上限时只依赖插件主动
+/// 上报的编辑手势日志。
+/// Upper bound for a full parameter comparison: samplers such as Kontakt expose thousands of
+/// parameters, and querying each one freezes the UI for seconds while it holds the engine lock
+/// (the audio callback then times out, heard as silence). Above this bound only the plugin's own
+/// edit-gesture log is used.
+const MAX_FULL_SCAN_PARAMS: usize = 512;
+/// 每帧最多格式化的编辑器反馈条数：分析器/电平类参数可能每帧上报数百条。
+/// Maximum editor-feedback entries formatted per frame: analyser/meter parameters may report
+/// hundreds of values every frame.
+const MAX_EDITOR_FEEDBACK_UPDATES: usize = 64;
 
 pub struct Vst3Runtime {
     pub plugin: Arc<Mutex<Vst3Plugin>>,
@@ -15,9 +29,150 @@ pub struct Vst3Runtime {
     pub out_channels: usize,
     pub has_editor: bool,
     pub kind: PluginKind,
+    /// 规范化的插件路径（小写），单实例插件复用缓存按此匹配。
+    /// Normalised plugin path (lower case) used to match the reusable single-instance cache.
+    pub path_key: String,
     /// 实时线程复用的处理缓冲；块大小变化时才重新分配。
     /// Processing buffers reused by the realtime thread; reallocated only when the block size changes.
     pub audio_buffers: Option<vst3_host::AudioBuffers>,
+}
+
+/// 单实例插件的可复用实例：关闭工程时不终止，下一个工程按路径取回同一实例，
+/// 避免 VOCALOID / ACE Bridge 再次拉起编辑器时被“已经有一个启动了”拒绝。
+/// Reusable single-instance plugin: kept alive when a project closes and handed to the next project
+/// with the same path, so VOCALOID / ACE Bridge do not refuse a second editor.
+struct ReusableVst3 {
+    path_key: String,
+    name: String,
+    params: Vec<ParamView>,
+    out_channels: usize,
+    has_editor: bool,
+    kind: PluginKind,
+    plugin: Arc<Mutex<Vst3Plugin>>,
+}
+
+static REUSABLE_VST3: std::sync::OnceLock<Mutex<Vec<ReusableVst3>>> = std::sync::OnceLock::new();
+
+fn reusable_vst3() -> &'static Mutex<Vec<ReusableVst3>> {
+    REUSABLE_VST3.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// 所属模块：plugin / 统一运行时
+/// 功能：判断插件是否属于单实例类型（VOCALOID / ACE Bridge / XStudio / Synthesizer V）。
+/// 输入：`name`：插件显示名。
+/// 输出/副作用：布尔值；不修改状态。
+/// 复杂度：时间 O(名称长度)，空间 O(1)。
+///
+/// Module: plugin / unified runtime
+/// Purpose: Whether the plugin is a single-instance type (VOCALOID / ACE Bridge / XStudio /
+/// Synthesizer V).
+/// Inputs: `name`: plugin display name.
+/// Outputs / side effects: a boolean; no state change.
+/// Complexity: O(name length) time and O(1) space.
+fn is_single_instance_name(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    ["vocaloid", "ace bridge", "xstudio", "synthesizer v"]
+        .iter()
+        .any(|keyword| lower.contains(keyword))
+}
+
+/// 所属模块：plugin / 统一运行时
+/// 功能：把单实例插件登记为可复用实例（关闭工程、不终止组件时调用）。
+/// 输入：`runtime`：插件运行时。
+/// 输出/副作用：关闭可能残留的编辑器视图，并把实例 Arc 放入进程级缓存；其它插件忽略。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: plugin / unified runtime
+/// Purpose: Register a single-instance plugin as reusable (called when closing a project without
+/// terminating components).
+/// Inputs: `runtime`: plugin runtime.
+/// Outputs / side effects: closes any leftover editor view and stores the instance Arc in the
+/// process-wide cache; other plugins are ignored.
+/// Complexity: O(1) time and space.
+pub(crate) fn stash_reusable(runtime: &PluginRuntime) {
+    let PluginRuntime::Vst3(v) = runtime else {
+        return;
+    };
+    if !is_single_instance_name(&v.name) {
+        return;
+    }
+    {
+        let mut plugin = v.plugin.lock().unwrap_or_else(|poison| poison.into_inner());
+        // 宿主编辑器视图（如果有）在工程关闭时已经关闭；这里确保插件内部状态一致。
+        // Any host editor view was closed with the project; make sure the plugin agrees.
+        let _ = plugin.close_editor();
+    }
+    let entry = ReusableVst3 {
+        path_key: v.path_key.clone(),
+        name: v.name.clone(),
+        params: v.params.clone(),
+        out_channels: v.out_channels,
+        has_editor: v.has_editor,
+        kind: v.kind,
+        plugin: v.plugin.clone(),
+    };
+    crate::diag::info(
+        "plugin.runtime",
+        "plugin.reuse",
+        &[("phase", "stash"), ("name", &v.name), ("path", &v.path_key)],
+    );
+    if let Ok(mut cache) = reusable_vst3().lock() {
+        // 同一路径可能有多份实例（例如工程里有 3 条 ACE Bridge 轨道），按出现顺序全部保留，
+        // 重新加载时逐个取回。
+        // A path may have several instances (for example three ACE Bridge tracks); keep them all in
+        // order and take them one by one when the project is reopened.
+        cache.push(entry);
+    }
+}
+
+impl PluginRuntime {
+    /// 所属模块：plugin / 统一运行时
+    /// 功能：按路径取回单实例插件的可复用实例；没有时返回 `None`。
+    /// 输入：`path_key`：规范化的插件路径。
+    /// 输出/副作用：从缓存移除并返回 `PluginRuntime::Vst3`；不创建新插件。
+    /// 复杂度：时间 O(缓存数)，空间 O(1)。
+    ///
+    /// Module: plugin / unified runtime
+    /// Purpose: Take the reusable single-instance instance for a path, if any.
+    /// Inputs: `path_key`: normalised plugin path.
+    /// Outputs / side effects: removes and returns `PluginRuntime::Vst3`; no new instance is created.
+    /// Complexity: O(cache size) time and O(1) space.
+    pub(crate) fn take_reusable(path_key: &str) -> Option<PluginRuntime> {
+        let entry = {
+            let mut cache = reusable_vst3().lock().ok()?;
+            let index = cache.iter().position(|item| item.path_key == path_key)?;
+            cache.remove(index)
+        };
+        {
+            let mut plugin = entry
+                .plugin
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            // 旧工程关闭时没有 terminate；这里重新确保处理已启动（已启动时错误可忽略）。
+            // The old project did not terminate it; make sure processing is running (errors are
+            // harmless when it already is).
+            let _ = plugin.start_processing();
+        }
+        crate::diag::info(
+            "plugin.runtime",
+            "plugin.reuse",
+            &[
+                ("phase", "take"),
+                ("name", &entry.name),
+                ("path", &entry.path_key),
+            ],
+        );
+        Some(PluginRuntime::Vst3(Vst3Runtime {
+            plugin: entry.plugin,
+            name: entry.name,
+            params: entry.params,
+            out_channels: entry.out_channels,
+            has_editor: entry.has_editor,
+            kind: entry.kind,
+            path_key: entry.path_key,
+            audio_buffers: None,
+        }))
+    }
 }
 
 pub struct Vst2Runtime {
@@ -184,6 +339,49 @@ impl PluginRuntime {
         }
     }
 
+    /// 所属模块：plugin / 统一运行时
+    /// 功能：终止插件组件但保留 Rust 实例，用于关闭工程时释放插件拉起的外部应用窗口。
+    /// 输入：`self`。
+    /// 输出/副作用：VST3 调用 `shutdown_component`，随后把自身替换为 `Failed` 并泄漏一份
+    /// `Plugin` 强引用，避免在 UI 线程运行插件析构；外部编辑进程由应用层单独清理。
+    /// VST2/失败态不做处理。
+    /// 复杂度：时间 O(1 + 插件终止)，空间 O(1)（泄漏一个实例）。
+    ///
+    /// Module: plugin / unified runtime
+    /// Purpose: Terminate the plugin component while keeping the Rust instance alive, so closing a
+    /// project releases plugin-spawned external app windows without running the destructor on the
+    /// UI thread; the app layer separately terminates the plugin's external editor process.
+    /// Inputs: `self`.
+    /// Outputs / side effects: VST3 calls `shutdown_component`, then replaces itself with `Failed`
+    /// and leaks one strong `Plugin` reference; VST2/failed runtimes are untouched.
+    /// Complexity: O(1 + plugin termination) time and O(1) space (one leaked instance).
+    pub fn shutdown(&mut self) {
+        let PluginRuntime::Vst3(v) = self else {
+            return;
+        };
+        // 中毒的锁也继续终止：一次无关 panic 不能让插件拉起的窗口残留在系统里。
+        // Continue even with a poisoned lock: an unrelated panic must not leave plugin-spawned
+        // windows behind.
+        let mut plugin = v.plugin.lock().unwrap_or_else(|poison| poison.into_inner());
+        if let Err(error) = plugin.shutdown_component() {
+            crate::diag::warn(
+                "plugin.runtime",
+                "plugin.shutdown",
+                &[("status", "error"), ("error", &error.to_string())],
+            );
+        }
+        drop(plugin);
+        // 不在这里析构：VOCALOID / ACE Bridge 的析构会等待 UI 消息循环；模块也保持加载，
+        // 避免部分插件不支持「卸载后在同一进程重新加载」。单实例由应用层终止其外部编辑进程解决。
+        // Do not destroy here: VOCALOID / ACE Bridge destructors wait for the UI message loop, and
+        // keeping the module loaded avoids plugins that cannot be unloaded and reloaded in the same
+        // process. The app layer resolves the single-instance conflict by terminating the external
+        // editor process.
+        let leaked = v.plugin.clone();
+        *self = PluginRuntime::Failed("插件已关闭".into());
+        std::mem::forget(leaked);
+    }
+
     /// Capture state blob and parameter snapshot for project persistence.
     pub fn capture_state(&self) -> (Vec<u8>, Vec<f32>) {
         match self {
@@ -276,16 +474,21 @@ impl PluginRuntime {
                     .into_iter()
                     .filter_map(|edit| edit.value.map(|value| (edit.id, value)))
                     .collect();
-                if changed_ids.is_empty() && full_scan {
+                if changed_ids.is_empty() && full_scan && v.params.len() <= MAX_FULL_SCAN_PARAMS {
                     if let Ok(list) = plugin.get_parameters() {
-                        for live in list {
-                            if let Some(param) =
-                                v.params.iter_mut().find(|param| param.id == live.id)
-                            {
-                                if (live.value - param.value).abs() > 1e-4 {
-                                    param.value = live.value;
-                                    changed_ids.push((live.id, live.value));
-                                }
+                        // 先建索引再比对：参数多时逐个 `find` 是平方复杂度，会把 UI 线程和
+                        // 引擎锁一起拖住。
+                        // Index first, then compare: a per-parameter `find` is quadratic and would
+                        // hold both the UI thread and the engine lock.
+                        let live: HashMap<u32, f64> =
+                            list.into_iter().map(|item| (item.id, item.value)).collect();
+                        for param in &mut v.params {
+                            let Some(&value) = live.get(&param.id) else {
+                                continue;
+                            };
+                            if (value - param.value).abs() > 1e-4 {
+                                param.value = value;
+                                changed_ids.push((param.id, value));
                             }
                         }
                     }
@@ -374,7 +577,10 @@ impl PluginRuntime {
     pub fn panic(&mut self) {
         match self {
             PluginRuntime::Vst3(v) => {
-                if let Ok(mut plugin) = v.plugin.lock() {
+                // 音频线程绝不等待插件锁：GUI 初始化/参数轮询可能长时间持有它。
+                // The audio thread never waits for the plugin lock: GUI initialisation or parameter
+                // polling may hold it for a long time.
+                if let Some(mut plugin) = lock_plugin(&v.plugin) {
                     let _ = plugin.midi_panic();
                 }
             }
@@ -408,8 +614,16 @@ impl PluginRuntime {
         let Some(plugin) = lock_plugin(&v.plugin) else {
             return;
         };
-        let changes = plugin.get_parameter_changes();
-        for (id, value) in changes {
+        // 每帧最多格式化前 64 条：分析器/电平参数可能成百上千条，逐条调用插件的
+        // `format_parameter` 会长时间占用引擎锁；剩余值下一帧继续刷新。
+        // Format at most 64 entries per frame: analysers and meters can report hundreds of values,
+        // and calling the plugin's `format_parameter` for each one holds the engine lock for too
+        // long; the rest refresh on the next frame.
+        for (id, value) in plugin
+            .get_parameter_changes()
+            .into_iter()
+            .take(MAX_EDITOR_FEEDBACK_UPDATES)
+        {
             if let Some(param) = v.params.iter_mut().find(|param| param.id == id) {
                 param.value = value;
                 param.display = plugin
@@ -422,7 +636,7 @@ impl PluginRuntime {
     pub fn send_cc(&mut self, controller: u8, value: u8) {
         match self {
             PluginRuntime::Vst3(v) => {
-                if let Ok(mut plugin) = v.plugin.lock() {
+                if let Some(mut plugin) = lock_plugin(&v.plugin) {
                     let _ = plugin.send_midi_event(Vst3MidiEvent::ControlChange {
                         channel: MidiChannel::Ch1,
                         controller,
@@ -442,7 +656,7 @@ impl PluginRuntime {
         let value = (normalized.clamp(0.0, 1.0) * 16_383.0).round() as u16;
         match self {
             PluginRuntime::Vst3(v) => {
-                if let Ok(mut plugin) = v.plugin.lock() {
+                if let Some(mut plugin) = lock_plugin(&v.plugin) {
                     let _ = plugin.send_midi_event(Vst3MidiEvent::PitchBend {
                         channel: MidiChannel::Ch1,
                         value,
@@ -485,7 +699,14 @@ impl PluginRuntime {
         out_r.fill(0.0);
         match self {
             PluginRuntime::Vst3(v) => {
-                let mut plugin = v.plugin.lock().unwrap_or_else(|p| p.into_inner());
+                // GUI 打开/初始化期间插件可能长时间持锁；音频线程必须跳过本块而不是等待，
+                // 否则整个输出流会停住（表现为 Kontakt 等插件“没有声音”）。
+                // A plugin may hold its lock during GUI initialisation; the audio thread must skip this
+                // block instead of waiting, otherwise the whole output stream stalls (heard as silence
+                // with plugins such as Kontakt).
+                let Some(mut plugin) = lock_plugin(&v.plugin) else {
+                    return;
+                };
                 for gate in gates {
                     let event = match gate.kind {
                         GateKind::On => Vst3MidiEvent::NoteOn {

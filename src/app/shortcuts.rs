@@ -202,7 +202,7 @@ impl ShortcutAction {
             ShortcutAction::Save => "保存工程",
             ShortcutAction::Open => "打开工程",
             ShortcutAction::New => "新建工程",
-            ShortcutAction::Export => "导出 WAV",
+            ShortcutAction::Export => "导出音频",
             ShortcutAction::Undo => "撤销",
             ShortcutAction::Redo => "重做",
             ShortcutAction::Copy => "复制",

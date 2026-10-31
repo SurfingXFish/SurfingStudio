@@ -208,7 +208,7 @@ fn main() -> eframe::Result<()> {
     let _ = decode_log_command(&args);
     // 日志必须最先初始化：启动耗时、panic 与退出原因都要落在同一个文件里。
     // Logging is initialized first so startup timings, panics and the exit reason share one file.
-    diag::init(env!("CARGO_PKG_VERSION"));
+    diag::init(surfing_studio::version_label());
     // 在创建任何窗口之前安装顶层异常过滤器：插件在自己的窗口过程或 .NET 消息循环中抛出的
     // 未处理异常不会留在“幽灵进程”里。
     // Install the top-level exception filter before any window exists, so an unhandled exception

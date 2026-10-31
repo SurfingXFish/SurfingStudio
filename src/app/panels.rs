@@ -338,7 +338,7 @@ impl SurfingApp {
             ui.separator();
             if menu_item(
                 ui,
-                "导出 WAV…",
+                "导出音频…",
                 &self.settings.shortcut_label(ShortcutAction::Export),
             )
             .clicked()

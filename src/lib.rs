@@ -42,3 +42,61 @@ pub mod plugin;
 pub mod ui;
 
 pub use app::{SurfingApp, WindowHost};
+
+/// 所属模块：库根 / 版本
+/// 功能：返回面向用户、日志与安卓清单的版本号：把 Cargo 的 SemVer 预发布后缀
+/// `-a` / `-t` 还原为发布号 `a` / `t`（例如 `1.1.0-a` → `1.1.0a`）。
+/// 输入：无。
+/// 输出/副作用：静态版本字符串；只初始化一次，不修改其他状态。
+/// 复杂度：时间 O(1)（首次 O(版本长度)），空间 O(版本长度)。
+///
+/// Module: library root / version
+/// Purpose: Return the user/log/Android-manifest version: restore Cargo's SemVer prerelease
+/// suffixes `-a` / `-t` to the release labels `a` / `t` (for example `1.1.0-a` → `1.1.0a`).
+/// Inputs: none.
+/// Outputs / side effects: static version text; initialised once, no other state change.
+/// Complexity: O(1) time (O(version length) on first use) and O(version length) space.
+pub fn version_label() -> &'static str {
+    // Cargo 只接受 SemVer 预发布写法（`1.1.0-a`），而发布规范使用 `1.1.0a`；
+    // 统一在这里转换，避免界面、日志与安卓清单出现两种写法。
+    // Cargo only accepts SemVer prereleases (`1.1.0-a`) while the release rules use `1.1.0a`;
+    // convert here so the UI, logs and Android manifest never disagree.
+    static LABEL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    LABEL.get_or_init(|| format_version(env!("CARGO_PKG_VERSION")))
+}
+
+/// 所属模块：库根 / 版本
+/// 功能：把 Cargo 的 SemVer 预发布后缀 `-a` / `-t` 转为发布号 `a` / `t`，其它形式原样返回。
+/// 输入：`version`：`CARGO_PKG_VERSION` 形式的版本字符串。
+/// 输出/副作用：返回显示用版本号；不修改输入。
+/// 复杂度：时间 O(版本长度)，空间 O(版本长度)。
+///
+/// Module: library root / version
+/// Purpose: Convert Cargo's SemVer prerelease suffixes `-a` / `-t` into release labels `a` / `t`;
+/// other forms pass through.
+/// Inputs: `version`: version text in `CARGO_PKG_VERSION` form.
+/// Outputs / side effects: display version text; the input is unchanged.
+/// Complexity: O(version length) time and space.
+fn format_version(version: &str) -> String {
+    if let Some(core) = version.strip_suffix("-a") {
+        format!("{core}a")
+    } else if let Some(core) = version.strip_suffix("-t") {
+        format!("{core}t")
+    } else {
+        version.to_string()
+    }
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::format_version;
+
+    /// 覆盖：构建版/测试版后缀去掉连字符，正式版保持原样。
+    /// Covers: build/test suffixes lose the hyphen while releases pass through.
+    #[test]
+    fn release_suffixes_are_rendered_without_hyphen() {
+        assert_eq!(format_version("1.1.0-a"), "1.1.0a");
+        assert_eq!(format_version("1.1.0-t"), "1.1.0t");
+        assert_eq!(format_version("1.1.0"), "1.1.0");
+    }
+}
