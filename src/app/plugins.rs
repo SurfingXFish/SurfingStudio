@@ -888,16 +888,14 @@ impl SurfingApp {
             );
             diag::set_activity("plugin.editor");
             let mut window = PluginWindow::new(plugin);
-            // 以主窗口为所有者：工程窗口销毁时系统会一并销毁插件 GUI，避免残留独立窗口。
-            // Own the editor by the main window so Windows destroys the plugin GUI with the
-            // project window instead of leaving a standalone window behind.
-            let owner = self
-                .main_window_handle()
-                .map(|handle| handle as *mut std::ffi::c_void);
-            let opened = match owner {
-                Some(owner) => window.open_with_owner(Some(owner)),
-                None => window.open(),
-            };
+            // 不把编辑器窗口挂到工程窗口名下：带所有者时 FabFilter Pro-Q 4 的预设二级菜单
+            // 会作为同级 owned 窗口被编辑器窗口盖住，悬停文件夹没有任何反应。工程窗口关闭时
+            // 仍由 `SurfingApp::drop` 逐个 `destroy_for_exit`，生命周期不依赖系统所有者关系。
+            // Do not own the editor window by the project window: with an owner, FabFilter Pro-Q 4
+            // creates its preset submenu as a sibling owned window that ends up behind the editor,
+            // so hovering a folder appears to do nothing. `SurfingApp::drop` still destroys every
+            // editor explicitly, so the lifecycle does not depend on the OS owner relationship.
+            let opened = window.open();
             match opened {
                 Ok(()) => {
                     let _ = window.service_platform_events();
