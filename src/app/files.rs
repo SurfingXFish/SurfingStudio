@@ -496,7 +496,7 @@ impl SurfingApp {
         // `IComponent::terminate`; releasing the instances later on the sync worker leaves the
         // windows behind and the next open reports a plugin error. Instances are leaked until the
         // process exits so the UI thread never waits for a plugin destructor.
-        self.terminate_engine_plugins(Duration::from_millis(500));
+        self.terminate_engine_plugins(Duration::from_millis(500), true);
         self.pending_plugin_apply = None;
         self.roll_windows.clear();
         self.roll_drag = None;

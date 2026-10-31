@@ -746,25 +746,50 @@ impl Engine {
     pub fn shutdown_plugins(&mut self) {
         self.pause();
         for track in &mut self.tracks {
+            let track_label = track.id.to_string();
             if let InstrumentRuntime::Plugin(plugin) = &mut track.instrument {
-                plugin.shutdown();
+                Self::shutdown_plugin_logged(plugin, &track_label, "instrument");
             }
             // 清空身份键：已终止的实例只剩 `Failed` 外壳，下一次同步必须重建，
             // 否则重新打开同一工程时插件不会重新加载。
             // Clear the identity keys: a terminated instance is only a `Failed` shell, so the next
             // sync must rebuild it; otherwise reopening the same project would never reload it.
             track.instrument_key.clear();
-            for effect in &mut track.effects {
+            for (index, effect) in track.effects.iter_mut().enumerate() {
                 if let EffectRuntime::Plugin(plugin) = effect {
-                    plugin.shutdown();
+                    let slot = index.to_string();
+                    Self::shutdown_plugin_logged(plugin, &track_label, &slot);
                 }
             }
             track.effect_keys.clear();
         }
         if let Some(EffectRuntime::Plugin(plugin)) = &mut self.master_effect {
-            plugin.shutdown();
+            Self::shutdown_plugin_logged(plugin, "MASTER", "master");
         }
         self.master_effect_key = None;
+    }
+
+    /// 所属模块：audio::engine / 插件生命周期
+    /// 功能：记录单个插件终止的开始/结束，插件在 terminate 中崩溃时最后一条 begin 即现场。
+    /// 输入：`plugin`：插件运行时；`track` / `slot`：所属轨道与槽位。
+    /// 输出/副作用：调用 `PluginRuntime::shutdown` 并写 `engine.plugin.shutdown` 日志。
+    /// 复杂度：时间 O(1 + 插件终止)。
+    ///
+    /// Module: audio::engine / plugin lifecycle
+    /// Purpose: Log one plugin termination; if it crashes, the last begin record identifies it.
+    /// Inputs: `plugin`; `track` / `slot`: owning track and slot.
+    /// Outputs / side effects: calls `PluginRuntime::shutdown` and writes
+    /// `engine.plugin.shutdown`.
+    /// Complexity: O(1 + termination) time.
+    fn shutdown_plugin_logged(plugin: &mut PluginRuntime, track: &str, slot: &str) {
+        let name = plugin.display_name().to_string();
+        let span = crate::diag::Span::start_logged(
+            "app.engine",
+            "engine.plugin.shutdown",
+            &[("name", &name), ("track", track), ("slot", slot)],
+        );
+        plugin.shutdown();
+        span.end(&[("status", "ok")]);
     }
 
     /// 所属模块：audio::engine / GPU 实时渲染

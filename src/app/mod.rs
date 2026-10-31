@@ -605,10 +605,14 @@ impl Drop for SurfingApp {
         // Terminate VST3 components before destroying any editor window that is still attached:
         // plugins such as VOCALOID / ACE Bridge close their spawned app windows on
         // `IComponent::terminate`, and `close_editor` runs while the native window is still valid.
-        // 音频回调可能刚好持锁：短暂重试，确保组件一定被终止（外部应用窗口随之关闭）。
-        // The audio callback may hold the lock for a moment: retry briefly so the component is
-        // always terminated (and its spawned app windows close with it).
-        if !self.terminate_engine_plugins(Duration::from_millis(200)) {
+        // 工程窗口关闭时不调用 `IComponent::terminate`：VOCALOID / ACE Bridge 在编辑器
+        // 关闭后终止组件偶发 0xC0000005（1.1.5a 实测），而外部编辑进程已经在上一步结束。
+        // 引擎外壳会被保留，实例与模块留到进程退出由系统回收。
+        // Do not call `IComponent::terminate` when closing a project window: VOCALOID / ACE Bridge
+        // occasionally raise 0xC0000005 when terminated after their editor closed (observed in
+        // 1.1.5a), while their external editor processes are already ended above. The engine shell
+        // is retained and the OS reclaims instances/modules at process exit.
+        if !self.terminate_engine_plugins(Duration::from_millis(200), false) {
             diag::warn(
                 "app.window",
                 "window.drop",
@@ -618,7 +622,11 @@ impl Drop for SurfingApp {
         diag::info(
             "app.window",
             "window.drop",
-            &[("phase", "plugins_terminated"), ("tid", &tid_text)],
+            &[
+                ("phase", "plugins_terminated"),
+                ("terminated", "false"),
+                ("tid", &tid_text),
+            ],
         );
         let editor_count = self.editors.len().to_string();
         for (_, mut window) in self.editors.drain(..) {
@@ -718,19 +726,26 @@ impl Drop for SurfingApp {
 
 impl SurfingApp {
     /// 所属模块：app / 插件生命周期
-    /// 功能：在限定时间内取得引擎锁并终止全部 VST3 组件，让插件拉起的外部应用窗口随工程关闭。
-    /// 输入：`timeout`：最长等待时间。
-    /// 输出/副作用：停止处理并调用 `IComponent::terminate`；返回是否完成插件收尾（终止或安全跳过）。
+    /// 功能：关闭插件自建窗口与外部编辑进程；可选地终止 VST3 组件。
+    /// 输入：
+    /// - `timeout`：等待引擎锁的上限。
+    /// - `terminate_components`：是否调用 `IComponent::terminate`；工程窗口关闭时传 `false`，
+    ///   避免 VOCALOID / ACE Bridge 的 terminate 在编辑器关闭后偶发 0xC0000005。
+    /// 输出/副作用：关闭插件窗口、结束外部编辑进程；按需终止组件并清空身份键。
     /// 复杂度：时间 O(等待 + 插件终止)，空间 O(1)。
     ///
     /// Module: app / plugin lifecycle
-    /// Purpose: Acquire the engine lock within the timeout and terminate every VST3 component so
-    /// plugin-spawned external app windows close with the project.
-    /// Inputs: `timeout`: maximum wait.
-    /// Outputs / side effects: stops processing and calls `IComponent::terminate`; returns whether
-    /// plugin shutdown completed (terminated or safely skipped).
+    /// Purpose: Close plugin-created windows and external editor processes, optionally terminating
+    /// VST3 components.
+    /// Inputs:
+    /// - `timeout`: maximum wait for the engine lock.
+    /// - `terminate_components`: whether to call `IComponent::terminate`; the project-window close
+    ///   path passes `false` because VOCALOID / ACE Bridge terminate can raise 0xC0000005 after
+    ///   their editor window has closed.
+    /// Outputs / side effects: closes plugin windows and external editor processes; optionally
+    /// terminates components and clears identity keys.
     /// Complexity: O(wait + plugin termination) time and O(1) space.
-    fn terminate_engine_plugins(&mut self, timeout: Duration) -> bool {
+    fn terminate_engine_plugins(&mut self, timeout: Duration, terminate_components: bool) -> bool {
         // 先请求插件自己拉起的顶层窗口（VOCALOID6 Editor 等）关闭：这是插件的正常关闭路径，
         // 不会像 `IComponent::terminate` 那样在 WPF 的 OnClosing 里抛空引用异常并卡住 UI。
         // First ask plugin-spawned top-level windows (VOCALOID6 Editor etc.) to close: this is the
@@ -748,18 +763,21 @@ impl SurfingApp {
                 ],
             );
         }
+        // 外部编辑进程（VOCALOID6.exe / ACE Studio 等）是单实例检测的真正来源，也应在
+        // terminate 之前结束，避免插件在 terminate 中访问已关闭的编辑应用而崩溃。
+        // External editor apps (VOCALOID6.exe, ACE Studio, ...) are what the single-instance check
+        // detects, and ending them before terminate avoids plugins touching a closed editor app
+        // during teardown.
+        self.terminate_plugin_child_processes();
         if !all_closed {
-            // 插件窗口拒绝关闭（例如弹出模态对话框）：此时终止组件会把 UI 线程永久卡住。
-            // 保留实例（窗口关闭路径本就会泄漏引擎），只记录告警。
-            // A plugin window refused to close (for example a modal dialog is open): terminating the
-            // component would hang the UI thread forever. Keep the instance (the window-close path
-            // already leaks the engine) and log a warning.
             diag::warn(
                 "app.window",
                 "window.drop",
                 &[("phase", "plugin_windows_still_open")],
             );
-            self.terminate_plugin_child_processes();
+            return true;
+        }
+        if !terminate_components {
             return true;
         }
         let deadline = Instant::now() + timeout;
@@ -784,12 +802,6 @@ impl SurfingApp {
                 }
             }
         }
-        // 插件终止后，清理它拉起的外部编辑应用（VOCALOID6.exe / ACE Studio 等）：
-        // 这些进程是「已经有一个启动了」单实例检测的真正来源，窗口关闭并不会结束它们。
-        // After termination, close the external editor apps spawned by plugins (VOCALOID6.exe,
-        // ACE Studio, ...): they are what the "already running" single-instance check detects, and
-        // closing the in-process window does not end them.
-        self.terminate_plugin_child_processes();
         acquired
     }
 
