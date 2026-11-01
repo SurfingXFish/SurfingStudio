@@ -75,18 +75,22 @@ pub struct PluginRef {
     /// Normalized parameter snapshot, used as a fallback for VST2 and as a quick restore.
     #[serde(default)]
     pub params: Vec<f32>,
-    /// 插件程序（预设）索引；导入工程（如 SoundBug 的 `programNum`）可据此恢复音色选择。
-    /// 仅在状态无法恢复时生效，0 基，越界或插件不支持时忽略。
-    /// Plugin program (preset) index; imported projects (SoundBug's `programNum`) use it to restore
-    /// the preset selection. Applied only when the state cannot be restored; zero-based, ignored
-    /// when out of range or unsupported.
-    #[serde(default)]
-    pub program: Option<i32>,
     /// 该效果器是否参与音频处理；关闭时旁路但保留实例、参数与状态。
     /// Whether this effect processes audio; when disabled it is bypassed while the
     /// instance, parameters and state are kept.
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    /// 插件程序（预设）索引；导入工程（如 SoundBug 的 `programNum`）可据此恢复音色选择。
+    /// 仅在状态无法恢复时生效，0 基，越界或插件不支持时忽略。
+    /// 必须保持在结构体末尾：`.sfsd` 用 rmp 的紧凑数组编码，旧工程缺少该字段时依赖
+    /// `#[serde(default)]` 补 `None`；若插在中间会把后面的 `enabled` 读成程序号。
+    /// Plugin program (preset) index; imported projects (SoundBug's `programNum`) use it to restore
+    /// the preset selection. Applied only when the state cannot be restored; zero-based, ignored
+    /// when out of range or unsupported. Must stay last: `.sfsd` uses rmp's compact array encoding,
+    /// and older projects omit this field, which `#[serde(default)]` fills with `None`; putting it
+    /// earlier would read the following `enabled` value as the program index.
+    #[serde(default)]
+    pub program: Option<i32>,
 }
 
 /// 所属模块：core / 数据模型 / 插件引用
@@ -206,5 +210,43 @@ mod tests {
             plugin.restore_state,
             "legacy projects keep state restore enabled"
         );
+        assert!(
+            plugin.program.is_none(),
+            "legacy projects have no program index"
+        );
+    }
+
+    /// 覆盖：`.sfsd` 使用 rmp 紧凑数组编码时，旧工程（缺少末尾的 `program`）仍能读取。
+    /// 覆盖：新增字段必须位于结构体末尾，否则会把后面的 `enabled` 读成程序号。
+    /// Covers: `.sfsd` uses rmp's compact array encoding; projects written before `program`
+    /// existed must still load, which requires the new field to stay last (otherwise the
+    /// following `enabled` value would be read as the program index).
+    #[test]
+    fn legacy_compact_plugin_ref_without_program_still_loads() {
+        #[derive(serde::Serialize)]
+        struct LegacyPluginRef {
+            format: PluginFormat,
+            path: std::path::PathBuf,
+            name: String,
+            uid: String,
+            restore_state: bool,
+            params: Vec<f32>,
+        }
+        let legacy = LegacyPluginRef {
+            format: PluginFormat::Vst3,
+            path: std::path::PathBuf::from("C:/plugins/test.vst3"),
+            name: "Test".into(),
+            uid: "abc".into(),
+            restore_state: true,
+            params: vec![0.5],
+        };
+        let bytes = rmp_serde::to_vec(&legacy).expect("encode legacy plugin");
+        let plugin: PluginRef = rmp_serde::from_slice(&bytes).expect("decode legacy plugin");
+        assert!(plugin.enabled, "missing enabled must default to true");
+        assert!(
+            plugin.program.is_none(),
+            "missing program must default to None"
+        );
+        assert_eq!(plugin.params, vec![0.5]);
     }
 }
