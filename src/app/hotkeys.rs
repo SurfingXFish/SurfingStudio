@@ -20,10 +20,10 @@
 //! - `get_message_hook`: thread message hook that only observes Space outside app windows.
 
 #[cfg(target_os = "windows")]
+use std::sync::Mutex;
+#[cfg(target_os = "windows")]
 use std::sync::atomic::AtomicIsize;
 use std::sync::atomic::{AtomicBool, Ordering};
-#[cfg(target_os = "windows")]
-use std::sync::Mutex;
 
 /// 本次帧内是否收到独立窗口的空格按下。
 /// Whether a Space press in a standalone window arrived for the current frame.
@@ -43,7 +43,7 @@ use winapi::shared::minwindef::{LPARAM, LRESULT, WPARAM};
 use winapi::um::processthreadsapi::GetCurrentThreadId;
 #[cfg(target_os = "windows")]
 use winapi::um::winuser::{
-    CallNextHookEx, SetWindowsHookExW, MSG, PM_REMOVE, VK_SPACE, WH_GETMESSAGE, WM_KEYDOWN,
+    CallNextHookEx, MSG, PM_REMOVE, SetWindowsHookExW, VK_SPACE, WH_GETMESSAGE, WM_KEYDOWN,
 };
 
 /// 所属模块：app / 全局快捷键
@@ -145,25 +145,27 @@ pub(super) fn take_space_toggle() -> bool {
 /// Complexity: O(1) time and space.
 #[cfg(target_os = "windows")]
 unsafe extern "system" fn get_message_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    if code >= 0 && wparam == PM_REMOVE as WPARAM {
-        let message = lparam as *const MSG;
-        if !message.is_null()
+    unsafe {
+        if code >= 0 && wparam == PM_REMOVE as WPARAM {
+            let message = lparam as *const MSG;
+            if !message.is_null()
             && (*message).message == WM_KEYDOWN
             && (*message).wParam == VK_SPACE as WPARAM
             // bit 30 表示按键此前已按下，用它过滤长按自动重复。
             // Bit 30 marks a key that was already down; use it to filter auto-repeat.
             && ((*message).lParam & (1 << 30)) == 0
-        {
-            // 应用窗口自己的空格由 egui 处理，钩子只在插件编辑器/浮动卷帘等窗口上生效。
-            // The app's own windows handle Space through egui; the hook only acts on plugin
-            // editors, floating rolls and other standalone windows.
-            let windows = APP_WINDOWS
-                .lock()
-                .unwrap_or_else(|poison| poison.into_inner());
-            if !windows.contains(&((*message).hwnd as isize)) {
-                SPACE_REQUESTED.store(true, Ordering::Relaxed);
+            {
+                // 应用窗口自己的空格由 egui 处理，钩子只在插件编辑器/浮动卷帘等窗口上生效。
+                // The app's own windows handle Space through egui; the hook only acts on plugin
+                // editors, floating rolls and other standalone windows.
+                let windows = APP_WINDOWS
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner());
+                if !windows.contains(&((*message).hwnd as isize)) {
+                    SPACE_REQUESTED.store(true, Ordering::Relaxed);
+                }
             }
         }
+        CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam)
     }
-    CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam)
 }

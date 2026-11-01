@@ -33,10 +33,10 @@ mod windows {
     use winapi::shared::windef::HWND;
     use winapi::um::libloaderapi::GetModuleHandleW;
     use winapi::um::winuser::{
-        AdjustWindowRectEx, CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindowLongPtrW,
-        IsWindow, LoadCursorW, MoveWindow, RegisterClassExW, SetFocus, SetForegroundWindow,
-        SetWindowLongPtrW, ShowWindow, UpdateWindow, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW,
-        CW_USEDEFAULT, IDC_ARROW, SC_KEYMENU, SW_HIDE, SW_RESTORE, SW_SHOW, VK_MENU, WM_CLOSE,
+        AdjustWindowRectEx, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW,
+        DefWindowProcW, DestroyWindow, GetWindowLongPtrW, IDC_ARROW, IsWindow, LoadCursorW,
+        MoveWindow, RegisterClassExW, SC_KEYMENU, SW_HIDE, SW_RESTORE, SW_SHOW, SetFocus,
+        SetForegroundWindow, SetWindowLongPtrW, ShowWindow, UpdateWindow, VK_MENU, WM_CLOSE,
         WM_NCCREATE, WM_SIZE, WM_SYSCOMMAND, WM_SYSKEYDOWN, WNDCLASSEXW, WS_CHILD, WS_CLIPCHILDREN,
         WS_CLIPSIBLINGS, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
     };
@@ -57,37 +57,39 @@ mod windows {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> LRESULT {
-        if message == WM_NCCREATE {
-            let create = lparam as *const CREATESTRUCTW;
-            if !create.is_null() {
-                SetWindowLongPtrW(hwnd, GWLP_USERDATA, (*create).lpCreateParams as isize);
+        unsafe {
+            if message == WM_NCCREATE {
+                let create = lparam as *const CREATESTRUCTW;
+                if !create.is_null() {
+                    SetWindowLongPtrW(hwnd, GWLP_USERDATA, (*create).lpCreateParams as isize);
+                }
             }
-        }
-        let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const WindowState;
-        // 该窗口没有宿主菜单；吞掉 Alt 的系统菜单请求，避免 DefWindowProc 进入阻塞菜单循环。
-        // The window has no host menu; swallow Alt's system-menu request so DefWindowProc does not
-        // enter a blocking menu loop.
-        if message == WM_SYSCOMMAND && (wparam & 0xFFF0) == SC_KEYMENU as WPARAM {
-            return 0;
-        }
-        if message == WM_SYSKEYDOWN && wparam == VK_MENU as WPARAM {
-            return 0;
-        }
-        if message == WM_CLOSE {
-            if !state.is_null() {
-                (*state).closed.store(true, Ordering::SeqCst);
+            let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const WindowState;
+            // 该窗口没有宿主菜单；吞掉 Alt 的系统菜单请求，避免 DefWindowProc 进入阻塞菜单循环。
+            // The window has no host menu; swallow Alt's system-menu request so DefWindowProc does not
+            // enter a blocking menu loop.
+            if message == WM_SYSCOMMAND && (wparam & 0xFFF0) == SC_KEYMENU as WPARAM {
+                return 0;
             }
-            return 0;
-        }
-        if message == WM_SIZE && !state.is_null() {
-            let container = (*state).container.load(Ordering::SeqCst);
-            if !container.is_null() {
-                let width = (lparam & 0xFFFF) as i32;
-                let height = ((lparam >> 16) & 0xFFFF) as i32;
-                MoveWindow(container as HWND, 0, 0, width.max(1), height.max(1), 1);
+            if message == WM_SYSKEYDOWN && wparam == VK_MENU as WPARAM {
+                return 0;
             }
+            if message == WM_CLOSE {
+                if !state.is_null() {
+                    (*state).closed.store(true, Ordering::SeqCst);
+                }
+                return 0;
+            }
+            if message == WM_SIZE && !state.is_null() {
+                let container = (*state).container.load(Ordering::SeqCst);
+                if !container.is_null() {
+                    let width = (lparam & 0xFFFF) as i32;
+                    let height = ((lparam >> 16) & 0xFFFF) as i32;
+                    MoveWindow(container as HWND, 0, 0, width.max(1), height.max(1), 1);
+                }
+            }
+            DefWindowProcW(hwnd, message, wparam, lparam)
         }
-        DefWindowProcW(hwnd, message, wparam, lparam)
     }
 
     use winapi::um::winuser::GWLP_USERDATA;
@@ -406,7 +408,7 @@ mod windows {
     /// fire until keyboard or mouse input wakes the loop. This drains them once per frame.
     pub fn pump_editor_timers() {
         use winapi::um::winuser::{
-            DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE, WM_TIMER,
+            DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, TranslateMessage, WM_TIMER,
         };
         let mut message: MSG = unsafe { std::mem::zeroed() };
         // 只取 WM_TIMER：普通输入仍由 winit 处理，避免在帧内重入输入逻辑。
@@ -470,6 +472,6 @@ mod fallback {
 }
 
 #[cfg(not(target_os = "windows"))]
-pub use fallback::{pump_editor_timers, Vst2EditorWindow};
+pub use fallback::{Vst2EditorWindow, pump_editor_timers};
 #[cfg(target_os = "windows")]
-pub use windows::{pump_editor_timers, Vst2EditorWindow};
+pub use windows::{Vst2EditorWindow, pump_editor_timers};

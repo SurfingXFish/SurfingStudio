@@ -35,7 +35,7 @@ use eframe::egui;
 /// Outputs / side effects: opens audio devices, creates the root window, writes the diagnostic log
 /// and terminates after `run_native` returns.
 /// Complexity: O(startup) time and O(settings + project) space.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn android_main(app: AndroidApp) {
     // 安卓没有 `%APPDATA%`：设置、日志与插件缓存都必须写在应用沙箱内。
     // Android has no `%APPDATA%`: settings, logs and caches must live inside the app sandbox.
@@ -49,7 +49,7 @@ pub extern "C" fn android_main(app: AndroidApp) {
     // SAF import/export needs the JVM and the Activity: file-picker results come back to Rust from
     // MainActivity.
     surfing_studio::platform::install_activity(app.vm_as_ptr(), app.activity_as_ptr());
-    surfing_studio::diag::init(env!("CARGO_PKG_VERSION"));
+    surfing_studio::diag::init(surfing_studio::version_label());
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

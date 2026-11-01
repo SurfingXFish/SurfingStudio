@@ -372,7 +372,7 @@ fn wait_result(request_code: jint) -> Option<(String, Option<String>)> {
 /// - `name`: document display name, may be null.
 /// Outputs / side effects: fills the result queue and notifies waiters; returns nothing.
 /// Complexity: O(string length) time and space.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_com_surfingstudio_app_MainActivity_nativeOnActivityResult(
     mut env: JNIEnv,
     _class: jni::objects::JClass,

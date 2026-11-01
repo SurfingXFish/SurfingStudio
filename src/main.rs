@@ -32,13 +32,13 @@
 use std::path::PathBuf;
 
 #[cfg(not(target_os = "android"))]
-use surfing_studio::app::{gpu_render_startup, GpuRenderApi, GpuRenderStartup};
+use surfing_studio::WindowHost;
+#[cfg(not(target_os = "android"))]
+use surfing_studio::app::{GpuRenderApi, GpuRenderStartup, gpu_render_startup};
 #[cfg(not(target_os = "android"))]
 use surfing_studio::audio::gpu::{GpuApi, GpuRuntime};
 #[cfg(not(target_os = "android"))]
 use surfing_studio::diag;
-#[cfg(not(target_os = "android"))]
-use surfing_studio::WindowHost;
 
 /// 所属模块：main / 退出兜底
 /// 功能：未处理异常（含插件内部的原生/.NET 异常）发生时记录 FATAL 并立即结束进程。
@@ -57,29 +57,31 @@ use surfing_studio::WindowHost;
 unsafe extern "system" fn terminate_on_unhandled_exception(
     info: *mut winapi::um::winnt::EXCEPTION_POINTERS,
 ) -> i32 {
-    // 插件的未处理异常会触发 Windows 错误报告，进程可能长时间停在崩溃对话框里，
-    // 外部 taskkill 也会因为进程正在终止而返回“拒绝访问”。先记日志，再直接结束进程。
-    // An unhandled plugin exception opens Windows Error Reporting; the process can stay in the
-    // crash dialog and external taskkill fails with "access denied" while it is terminating.
-    // Log first, then terminate directly.
-    if !info.is_null() {
-        if let Some(record) = (*info).ExceptionRecord.as_ref() {
-            let code = format!("0x{:08X}", record.ExceptionCode);
-            diag::crash(
-                "unhandled_exception",
-                "app.crash",
-                "unhandled_exception",
-                &[("exception_code", &code), ("phase", "native")],
-            );
+    unsafe {
+        // 插件的未处理异常会触发 Windows 错误报告，进程可能长时间停在崩溃对话框里，
+        // 外部 taskkill 也会因为进程正在终止而返回“拒绝访问”。先记日志，再直接结束进程。
+        // An unhandled plugin exception opens Windows Error Reporting; the process can stay in the
+        // crash dialog and external taskkill fails with "access denied" while it is terminating.
+        // Log first, then terminate directly.
+        if !info.is_null() {
+            if let Some(record) = (*info).ExceptionRecord.as_ref() {
+                let code = format!("0x{:08X}", record.ExceptionCode);
+                diag::crash(
+                    "unhandled_exception",
+                    "app.crash",
+                    "unhandled_exception",
+                    &[("exception_code", &code), ("phase", "native")],
+                );
+            }
         }
+        winapi::um::processthreadsapi::TerminateProcess(
+            winapi::um::processthreadsapi::GetCurrentProcess(),
+            1,
+        );
+        // EXCEPTION_EXECUTE_HANDLER（1）：让系统继续执行处理器；进程已在上一行终止。
+        // EXCEPTION_EXECUTE_HANDLER (1): the process was already terminated above.
+        1
     }
-    winapi::um::processthreadsapi::TerminateProcess(
-        winapi::um::processthreadsapi::GetCurrentProcess(),
-        1,
-    );
-    // EXCEPTION_EXECUTE_HANDLER（1）：让系统继续执行处理器；进程已在上一行终止。
-    // EXCEPTION_EXECUTE_HANDLER (1): the process was already terminated above.
-    1
 }
 
 /// 所属模块：main / 日志解码

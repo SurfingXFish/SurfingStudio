@@ -24,7 +24,7 @@
 
 | 领域 | 选型 |
 | --- | --- |
-| 语言 | Rust 2021（`rust-version = 1.85`） |
+| 语言 | Rust 2024（`edition = "2024"`，`rust-version = 1.85`） |
 | GUI | eframe / egui 0.34（安卓为 NativeActivity + OpenGL ES） |
 | 音频输出 | cpal 0.18（系统默认 / WASAPI）与原生 ASIO 后端（Windows） |
 | MIDI 输入 | midir 0.11 |
@@ -34,7 +34,7 @@
 
 ## 快速开始
 
-环境要求：Rust stable 工具链（edition 2021）、Windows 10/11 与可用的音频输出设备。
+环境要求：Rust stable 工具链（edition 2024，最低 1.85）、Windows 10/11 与可用的音频输出设备。
 
 ```bash
 cargo run              # 启动后进入主页，新建 / 打开工程即可开始

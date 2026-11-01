@@ -23,7 +23,7 @@
 //! - `buffer_switch` / `render_block` / `write_channel` / `write_aligned_int32`: realtime callback and sample conversion.
 //! - `parse_clsid` / `registry_string`: registry and GUID parsing.
 
-use crate::audio::backend::{lock_engine, AudioRouter};
+use crate::audio::backend::{AudioRouter, lock_engine};
 use crate::audio::engine::Engine;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::{Arc, Mutex};
@@ -33,7 +33,7 @@ use winapi::shared::minwindef::{DWORD, HKEY};
 use winapi::um::combaseapi::{CoCreateInstance, CoInitializeEx};
 use winapi::um::winnt::{KEY_READ, REG_SZ};
 use winapi::um::winreg::{
-    RegCloseKey, RegEnumKeyExW, RegOpenKeyExW, RegQueryValueExW, HKEY_LOCAL_MACHINE,
+    HKEY_LOCAL_MACHINE, RegCloseKey, RegEnumKeyExW, RegOpenKeyExW, RegQueryValueExW,
 };
 
 /// ASIO 成功返回码。
@@ -578,21 +578,23 @@ pub fn start(
 /// Outputs / side effects: writes the driver output buffers; advances transport and levels.
 /// Complexity: O(frames × tracks + events in block) time and O(1) space.
 unsafe extern "system" fn buffer_switch(double_buffer_index: i32, _direct_process: i32) {
-    let context_ptr = ASIO_CONTEXT.load(Ordering::Acquire);
-    if context_ptr.is_null() {
-        return;
-    }
-    let context = &mut *context_ptr;
-    let index = (double_buffer_index.clamp(0, 1)) as usize;
-    render_block(context);
-    for (channel, buffers) in context.output_buffers.iter().enumerate() {
-        let sample_type = context.output_types.get(channel).copied().unwrap_or(0);
-        let data = if channel == 0 {
-            &context.left
-        } else {
-            &context.right
-        };
-        write_channel(buffers[index], sample_type, data);
+    unsafe {
+        let context_ptr = ASIO_CONTEXT.load(Ordering::Acquire);
+        if context_ptr.is_null() {
+            return;
+        }
+        let context = &mut *context_ptr;
+        let index = (double_buffer_index.clamp(0, 1)) as usize;
+        render_block(context);
+        for (channel, buffers) in context.output_buffers.iter().enumerate() {
+            let sample_type = context.output_types.get(channel).copied().unwrap_or(0);
+            let data = if channel == 0 {
+                &context.left
+            } else {
+                &context.right
+            };
+            write_channel(buffers[index], sample_type, data);
+        }
     }
 }
 
@@ -618,8 +620,10 @@ unsafe extern "system" fn buffer_switch_time_info(
     double_buffer_index: i32,
     direct_process: i32,
 ) -> *mut c_void {
-    buffer_switch(double_buffer_index, direct_process);
-    params
+    unsafe {
+        buffer_switch(double_buffer_index, direct_process);
+        params
+    }
 }
 
 /// 所属模块：audio / ASIO 输出 / 回调
@@ -689,61 +693,63 @@ unsafe fn render_block(context: &mut AsioCallbackContext) {
 /// Outputs / side effects: writes driver memory; unsupported formats write nothing.
 /// Complexity: O(frames) time and O(1) space.
 unsafe fn write_channel(buffer: *mut c_void, sample_type: i32, data: &[f32]) {
-    if buffer.is_null() {
-        return;
-    }
-    match sample_type {
-        ASIO_ST_FLOAT32_LSB => {
-            let out = buffer as *mut f32;
-            for (frame, sample) in data.iter().enumerate() {
-                *out.add(frame) = sample.clamp(-1.0, 1.0);
+    unsafe {
+        if buffer.is_null() {
+            return;
+        }
+        match sample_type {
+            ASIO_ST_FLOAT32_LSB => {
+                let out = buffer as *mut f32;
+                for (frame, sample) in data.iter().enumerate() {
+                    *out.add(frame) = sample.clamp(-1.0, 1.0);
+                }
             }
-        }
-        ASIO_ST_FLOAT64_LSB => {
-            let out = buffer as *mut f64;
-            for (frame, sample) in data.iter().enumerate() {
-                *out.add(frame) = sample.clamp(-1.0, 1.0) as f64;
+            ASIO_ST_FLOAT64_LSB => {
+                let out = buffer as *mut f64;
+                for (frame, sample) in data.iter().enumerate() {
+                    *out.add(frame) = sample.clamp(-1.0, 1.0) as f64;
+                }
             }
-        }
-        ASIO_ST_INT24_LSB => {
-            // 24 位样本按 3 字节小端打包；取 i32 的最低 3 字节即为二补码 24 位值。
-            // 24-bit samples are packed into 3 little-endian bytes; the low 3 bytes of an i32 are
-            // the two's-complement 24-bit value.
-            let out = buffer as *mut u8;
-            for (frame, sample) in data.iter().enumerate() {
-                let value = (sample.clamp(-1.0, 1.0) * 8_388_607.0) as i32;
-                let bytes = value.to_le_bytes();
-                let base = frame * 3;
-                *out.add(base) = bytes[0];
-                *out.add(base + 1) = bytes[1];
-                *out.add(base + 2) = bytes[2];
+            ASIO_ST_INT24_LSB => {
+                // 24 位样本按 3 字节小端打包；取 i32 的最低 3 字节即为二补码 24 位值。
+                // 24-bit samples are packed into 3 little-endian bytes; the low 3 bytes of an i32 are
+                // the two's-complement 24-bit value.
+                let out = buffer as *mut u8;
+                for (frame, sample) in data.iter().enumerate() {
+                    let value = (sample.clamp(-1.0, 1.0) * 8_388_607.0) as i32;
+                    let bytes = value.to_le_bytes();
+                    let base = frame * 3;
+                    *out.add(base) = bytes[0];
+                    *out.add(base + 1) = bytes[1];
+                    *out.add(base + 2) = bytes[2];
+                }
             }
-        }
-        ASIO_ST_INT32_LSB => {
-            let out = buffer as *mut i32;
-            for (frame, sample) in data.iter().enumerate() {
-                *out.add(frame) = (sample.clamp(-1.0, 1.0) * 2_147_483_647.0) as i32;
+            ASIO_ST_INT32_LSB => {
+                let out = buffer as *mut i32;
+                for (frame, sample) in data.iter().enumerate() {
+                    *out.add(frame) = (sample.clamp(-1.0, 1.0) * 2_147_483_647.0) as i32;
+                }
             }
-        }
-        ASIO_ST_INT32_LSB16 => {
-            write_aligned_int32(buffer, data, 32_767.0, 16);
-        }
-        ASIO_ST_INT32_LSB18 => {
-            write_aligned_int32(buffer, data, 131_071.0, 14);
-        }
-        ASIO_ST_INT32_LSB20 => {
-            write_aligned_int32(buffer, data, 524_287.0, 12);
-        }
-        ASIO_ST_INT32_LSB24 => {
-            write_aligned_int32(buffer, data, 8_388_607.0, 8);
-        }
-        ASIO_ST_INT16_LSB => {
-            let out = buffer as *mut i16;
-            for (frame, sample) in data.iter().enumerate() {
-                *out.add(frame) = (sample.clamp(-1.0, 1.0) * 32_767.0) as i16;
+            ASIO_ST_INT32_LSB16 => {
+                write_aligned_int32(buffer, data, 32_767.0, 16);
             }
+            ASIO_ST_INT32_LSB18 => {
+                write_aligned_int32(buffer, data, 131_071.0, 14);
+            }
+            ASIO_ST_INT32_LSB20 => {
+                write_aligned_int32(buffer, data, 524_287.0, 12);
+            }
+            ASIO_ST_INT32_LSB24 => {
+                write_aligned_int32(buffer, data, 8_388_607.0, 8);
+            }
+            ASIO_ST_INT16_LSB => {
+                let out = buffer as *mut i16;
+                for (frame, sample) in data.iter().enumerate() {
+                    *out.add(frame) = (sample.clamp(-1.0, 1.0) * 32_767.0) as i16;
+                }
+            }
+            _ => {}
         }
-        _ => {}
     }
 }
 
@@ -768,10 +774,12 @@ unsafe fn write_channel(buffer: *mut c_void, sample_type: i32, data: &[f32]) {
 /// Outputs / side effects: writes driver memory; inputs are untouched.
 /// Complexity: O(frames) time and O(1) space.
 unsafe fn write_aligned_int32(buffer: *mut c_void, data: &[f32], full_scale: f32, shift: u32) {
-    let out = buffer as *mut i32;
-    for (frame, sample) in data.iter().enumerate() {
-        let value = (sample.clamp(-1.0, 1.0) * full_scale) as i32;
-        *out.add(frame) = value << shift;
+    unsafe {
+        let out = buffer as *mut i32;
+        for (frame, sample) in data.iter().enumerate() {
+            let value = (sample.clamp(-1.0, 1.0) * full_scale) as i32;
+            *out.add(frame) = value << shift;
+        }
     }
 }
 
@@ -882,48 +890,50 @@ fn enumerate_drivers() -> Vec<(String, GUID, String)> {
 /// Outputs / side effects: the string, or `None` when missing or of another type.
 /// Complexity: O(value length) time and space.
 unsafe fn registry_string(root: HKEY, sub_key: &str, value_name: &str) -> Option<String> {
-    let path: Vec<u16> = sub_key.encode_utf16().chain(std::iter::once(0)).collect();
-    let name: Vec<u16> = value_name
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect();
-    let mut key: HKEY = std::ptr::null_mut();
-    if RegOpenKeyExW(root, path.as_ptr(), 0, KEY_READ, &mut key) != 0 {
-        return None;
-    }
-    let mut value_type: DWORD = 0;
-    let mut size = 0_u32;
-    let query = RegQueryValueExW(
-        key,
-        name.as_ptr(),
-        std::ptr::null_mut(),
-        &mut value_type,
-        std::ptr::null_mut(),
-        &mut size,
-    );
-    if query != 0 || value_type != REG_SZ || size == 0 {
+    unsafe {
+        let path: Vec<u16> = sub_key.encode_utf16().chain(std::iter::once(0)).collect();
+        let name: Vec<u16> = value_name
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let mut key: HKEY = std::ptr::null_mut();
+        if RegOpenKeyExW(root, path.as_ptr(), 0, KEY_READ, &mut key) != 0 {
+            return None;
+        }
+        let mut value_type: DWORD = 0;
+        let mut size = 0_u32;
+        let query = RegQueryValueExW(
+            key,
+            name.as_ptr(),
+            std::ptr::null_mut(),
+            &mut value_type,
+            std::ptr::null_mut(),
+            &mut size,
+        );
+        if query != 0 || value_type != REG_SZ || size == 0 {
+            RegCloseKey(key);
+            return None;
+        }
+        let mut buffer = vec![0_u8; size as usize];
+        let query = RegQueryValueExW(
+            key,
+            name.as_ptr(),
+            std::ptr::null_mut(),
+            &mut value_type,
+            buffer.as_mut_ptr(),
+            &mut size,
+        );
         RegCloseKey(key);
-        return None;
+        if query != 0 {
+            return None;
+        }
+        let wide: Vec<u16> = buffer
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .take_while(|unit| *unit != 0)
+            .collect();
+        Some(String::from_utf16_lossy(&wide))
     }
-    let mut buffer = vec![0_u8; size as usize];
-    let query = RegQueryValueExW(
-        key,
-        name.as_ptr(),
-        std::ptr::null_mut(),
-        &mut value_type,
-        buffer.as_mut_ptr(),
-        &mut size,
-    );
-    RegCloseKey(key);
-    if query != 0 {
-        return None;
-    }
-    let wide: Vec<u16> = buffer
-        .chunks_exact(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-        .take_while(|unit| *unit != 0)
-        .collect();
-    Some(String::from_utf16_lossy(&wide))
 }
 
 /// 所属模块：audio / ASIO 输出 / GUID
