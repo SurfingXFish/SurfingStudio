@@ -1177,18 +1177,21 @@ impl SurfingApp {
                 PluginKind::Unknown => groups[index].unknown.push(plugin),
             }
         }
+        // 每帧都会重建列表：缓存排序键，避免每次比较都分配一个小写字符串。
+        // The list is rebuilt every frame: cache sort keys instead of allocating a lowercase
+        // string on every comparison.
         for group in &mut groups {
             group
                 .instruments
-                .sort_by_key(|plugin| plugin.name.to_lowercase());
+                .sort_by_cached_key(|plugin| plugin.name.to_lowercase());
             group
                 .effects
-                .sort_by_key(|plugin| plugin.name.to_lowercase());
+                .sort_by_cached_key(|plugin| plugin.name.to_lowercase());
             group
                 .unknown
-                .sort_by_key(|plugin| plugin.name.to_lowercase());
+                .sort_by_cached_key(|plugin| plugin.name.to_lowercase());
         }
-        groups.sort_by_key(|group| group.brand.to_lowercase());
+        groups.sort_by_cached_key(|group| group.brand.to_lowercase());
 
         let mut toggle_brand: Option<String> = None;
         let mut toggle_plugin: Vec<PathBuf> = Vec::new();

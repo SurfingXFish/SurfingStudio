@@ -160,12 +160,12 @@ impl SurfingApp {
                 }
 
                 let body_height = (ui.available_height() - 4.0).max(120.0);
-                let mut sorted = options.clone();
-                sorted.sort_by(|a, b| {
-                    a.vendor
-                        .to_lowercase()
-                        .cmp(&b.vendor.to_lowercase())
-                        .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+                // 排序用引用，避免每帧深拷贝整份插件列表；排序键同样只计算一次。
+                // Sort references to avoid a deep copy of the plugin list every frame, and let
+                // `sort_by_cached_key` compute each lowercase key once.
+                let mut sorted: Vec<&EffectOption> = options.iter().collect();
+                sorted.sort_by_cached_key(|entry| {
+                    (entry.vendor.to_lowercase(), entry.name.to_lowercase())
                 });
                 ui.horizontal_top(|ui| {
                     ui.allocate_ui_with_layout(
@@ -185,6 +185,7 @@ impl SurfingApp {
                         let filter = search.trim().to_lowercase();
                         let visible: Vec<&EffectOption> = sorted
                             .iter()
+                            .copied()
                             .filter(|option| match category {
                                 EffectCategory::All => true,
                                 EffectCategory::Favorites => favorites.contains(&option.key),
