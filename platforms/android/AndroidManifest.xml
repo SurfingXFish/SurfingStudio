@@ -7,8 +7,8 @@
      used by SAF ships inside `classes.dex`, hence hasCode=true. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.surfingstudio.app"
-    android:versionCode="4"
-    android:versionName="1.1.11t">
+    android:versionCode="5"
+    android:versionName="1.1.11">
 
     <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="35" />
 
