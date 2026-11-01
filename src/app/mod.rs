@@ -265,6 +265,12 @@ pub struct SurfingApp {
     /// 主页项目列表中已展开的项目（可同时展开多个）。
     /// Projects whose detail panel is expanded on the home page (several may be open).
     pub home_project_expanded: HashSet<PathBuf>,
+    /// 主页项目删除确认；仅 UI 状态，不持久化。
+    /// Pending home project-delete confirmation; UI-only and never persisted.
+    pub home_project_delete: Option<HomeProjectDelete>,
+    /// 编曲区右键菜单目标；在右键按下的那一帧写入，仅 UI 状态。
+    /// Arrangement context-menu target, written on the secondary-click frame; UI-only.
+    pub arrangement_menu: Option<ArrangementMenu>,
     /// 项目信息缓存：路径 → 解析结果；展开时后台加载一次。
     /// Project-info cache: path → parse result; loaded once in the background when expanded.
     home_project_info: HashMap<PathBuf, Result<home::HomeProjectSummary, String>>,
@@ -1276,6 +1282,8 @@ impl SurfingApp {
             home_template_search: String::new(),
             home_template_family: None,
             home_project_expanded: HashSet::new(),
+            home_project_delete: None,
+            arrangement_menu: None,
             home_project_info: HashMap::new(),
             home_project_info_rx: None,
             home_project_sweep_at: Instant::now(),

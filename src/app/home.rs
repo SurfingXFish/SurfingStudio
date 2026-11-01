@@ -10,6 +10,7 @@
 //! - `SurfingApp::ui_home` / `ui_home_sidebar`：主页两栏布局与左侧菜单。
 //! - `SurfingApp::ui_home_projects` / `ui_home_templates` / `ui_home_plugins` / `ui_home_tips`：右侧内容页。
 //! - `SurfingApp::ui_home_project_row` / `ui_home_project_details`：项目行与展开的工程信息/历史版本。
+//! - `SurfingApp::ui_home_project_delete_prompt` / `delete_home_project`：项目删除确认与移除。
 //! - `SurfingApp::request_home_project_info` / `poll_home_project_info`：后台读取工程摘要。
 //! - `SurfingApp::open_recent_project` / `request_project_from_template`：打开项目 / 从模板创建。
 //! - `load_project_summary` / `format_bytes` / `format_version_name`：工程摘要与展示文本。
@@ -32,6 +33,7 @@
 //! - `SurfingApp::ui_home` / `ui_home_sidebar`: two-column home layout and the left menu.
 //! - `SurfingApp::ui_home_projects` / `ui_home_templates` / `ui_home_plugins` / `ui_home_tips`: content pages.
 //! - `SurfingApp::ui_home_project_row` / `ui_home_project_details`: project row and its expanded info/versions.
+//! - `SurfingApp::ui_home_project_delete_prompt` / `delete_home_project`: delete confirmation and removal.
 //! - `SurfingApp::request_home_project_info` / `poll_home_project_info`: background project summary.
 //! - `SurfingApp::open_recent_project` / `request_project_from_template`: open a project / create from a template.
 //! - `load_project_summary` / `format_bytes` / `format_version_name`: project summary and display text.
@@ -42,10 +44,10 @@
 use super::panels::{icon_button, paint_gear, paint_studio_logo};
 use super::time_fmt;
 use super::*;
+use crate::core::model::InstrumentRef;
 use crate::core::model::template::{
     self, ExampleProject, MusicTemplate, TemplateFamily, TemplateId,
 };
-use crate::core::model::InstrumentRef;
 use crate::core::project_runtime::ProjectRuntime;
 use crate::plugin::{PluginKind, ScannedPlugin};
 use std::path::Path;
@@ -112,6 +114,12 @@ enum ProjectRowAction {
     Open,
     Toggle,
     RefreshInfo,
+    /// 立即创建一份历史版本（右键菜单）。
+    /// Create a history version immediately (context menu).
+    Backup,
+    /// 打开删除确认窗口（右键菜单）。
+    /// Open the delete confirmation (context menu).
+    Delete,
 }
 
 /// 后台解析出的工程摘要。
@@ -211,6 +219,10 @@ impl SurfingApp {
                     HomePage::Tips => self.ui_home_tips(ui),
                 }
             });
+
+        // 删除确认窗口绘制在页面之上。
+        // The delete confirmation is drawn above the page content.
+        self.ui_home_project_delete_prompt(ctx);
     }
 
     /// 所属模块：app / 主页 / 左侧菜单
@@ -433,6 +445,8 @@ impl SurfingApp {
         let mut open: Option<PathBuf> = None;
         let mut toggle: Option<PathBuf> = None;
         let mut refresh: Option<PathBuf> = None;
+        let mut backup: Option<PathBuf> = None;
+        let mut delete: Option<PathBuf> = None;
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -442,6 +456,8 @@ impl SurfingApp {
                         Some(ProjectRowAction::Open) => open = Some(path.clone()),
                         Some(ProjectRowAction::Toggle) => toggle = Some(path.clone()),
                         Some(ProjectRowAction::RefreshInfo) => refresh = Some(path.clone()),
+                        Some(ProjectRowAction::Backup) => backup = Some(path.clone()),
+                        Some(ProjectRowAction::Delete) => delete = Some(path.clone()),
                         None => {}
                     }
                 }
@@ -455,9 +471,144 @@ impl SurfingApp {
             self.home_project_info.remove(&path);
             self.request_home_project_info(path);
         }
+        if let Some(path) = backup {
+            self.backup_home_project(&path);
+        }
+        if let Some(path) = delete {
+            self.home_project_delete = Some(HomeProjectDelete {
+                path,
+                delete_file: false,
+            });
+        }
         if let Some(path) = open {
             self.open_recent_project(path);
         }
+    }
+
+    /// 所属模块：app / 主页 / 项目页
+    /// 功能：立即为指定工程创建一份历史版本，并在状态栏报告结果。
+    /// 输入：`path`：工程文件路径。
+    /// 输出/副作用：按设置中的保留数量写入 `Backups`；不修改 `recent_projects`。
+    /// 复杂度：时间 O(工程大小 + 版本数)，空间 O(工程大小)。
+    ///
+    /// Module: app / home page / projects
+    /// Purpose: Create one history version for a project immediately and report the result.
+    /// Inputs: `path` — project file path.
+    /// Outputs / side effects: writes into `Backups` using the configured retention; the recent list
+    /// is untouched.
+    /// Complexity: O(project size + versions) time and O(project size) space.
+    fn backup_home_project(&mut self, path: &Path) {
+        match super::backup::create_backup_now(path, self.settings.backup_retention) {
+            Ok(Some(created)) => {
+                self.status = format!("已备份工程：{}", created.display());
+            }
+            Ok(None) => {
+                self.status = "工程文件不存在，无法备份".into();
+            }
+            Err(error) => {
+                self.status = format!("备份失败：{error}");
+            }
+        }
+    }
+
+    /// 所属模块：app / 主页 / 项目页
+    /// 功能：绘制删除确认窗口：可从列表移除，也可同时删除本地工程文件。
+    /// 输入：`ctx`：egui 上下文。
+    /// 输出/副作用：确认后调用 `delete_home_project`；取消时只关闭窗口。
+    /// 复杂度：每帧 O(路径长度)。
+    ///
+    /// Module: app / home page / projects
+    /// Purpose: Draw the delete confirmation: remove from the list and optionally delete the local
+    /// project file.
+    /// Inputs: `ctx`: egui context.
+    /// Outputs / side effects: calls `delete_home_project` on confirm; cancel only closes the window.
+    /// Complexity: O(path length) per frame.
+    fn ui_home_project_delete_prompt(&mut self, ctx: &egui::Context) {
+        let Some(mut prompt) = self.home_project_delete.clone() else {
+            return;
+        };
+        let mut decision: Option<bool> = None;
+        egui::Window::new("删除项目")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.label(format!(
+                    "确定要删除项目「{}」吗？",
+                    project_display_name(&prompt.path)
+                ));
+                ui.label(
+                    egui::RichText::new(prompt.path.display().to_string())
+                        .size(10.0)
+                        .color(theme::TEXT_FAINT),
+                );
+                ui.add_space(4.0);
+                ui.checkbox(&mut prompt.delete_file, "同时删除本地工程文件（不可恢复）");
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new("删除").color(egui::Color32::WHITE),
+                            )
+                            .fill(theme::RED),
+                        )
+                        .clicked()
+                    {
+                        decision = Some(true);
+                    }
+                    if ui.button("取消").clicked() {
+                        decision = Some(false);
+                    }
+                });
+            });
+        match decision {
+            Some(true) => {
+                self.home_project_delete = None;
+                self.delete_home_project(&prompt.path, prompt.delete_file);
+            }
+            Some(false) => {
+                self.home_project_delete = None;
+            }
+            None => {
+                self.home_project_delete = Some(prompt);
+            }
+        }
+    }
+
+    /// 所属模块：app / 主页 / 项目页
+    /// 功能：从最近项目列表移除工程，并按需删除本地文件；同时清理展开状态与摘要缓存。
+    /// 输入：
+    /// - `path`：工程文件路径。
+    /// - `delete_file`：是否删除本地工程文件。
+    /// 输出/副作用：可能删除文件、修改 `recent_projects` 并保存设置；失败时只更新状态栏。
+    /// 复杂度：时间 O(项目数 + 文件删除)，空间 O(1)。
+    ///
+    /// Module: app / home page / projects
+    /// Purpose: Remove a project from the recent list and optionally delete the local file, clearing
+    /// its expanded state and summary cache.
+    /// Inputs:
+    /// - `path`: project file path.
+    /// - `delete_file`: whether to delete the local project file.
+    /// Outputs / side effects: may remove the file, edit `recent_projects` and save settings; on
+    /// failure only the status bar changes.
+    /// Complexity: O(projects + file removal) time and O(1) space.
+    fn delete_home_project(&mut self, path: &Path, delete_file: bool) {
+        if delete_file {
+            if let Err(error) = std::fs::remove_file(path) {
+                self.status = format!("删除本地文件失败：{error}");
+                return;
+            }
+        }
+        self.settings.recent_projects.retain(|entry| entry != path);
+        self.home_project_expanded.remove(path);
+        self.home_project_info.remove(path);
+        self.commit_settings();
+        self.status = if delete_file {
+            "已删除项目并移除本地文件".into()
+        } else {
+            "已从项目列表移除".into()
+        };
     }
 
     /// 所属模块：app / 主页 / 项目页
@@ -604,10 +755,23 @@ impl SurfingApp {
                 theme::TEXT_DIM
             },
         );
+        // 右键菜单：备份历史版本 / 删除项目（删除前弹出确认）。
+        // Context menu: back up a history version / delete the project (with confirmation).
+        egui::Popup::context_menu(&response).show(|ui| {
+            ui.set_min_width(160.0);
+            if theme::menu_button(ui, "备份", "").clicked() {
+                action = Some(ProjectRowAction::Backup);
+                ui.close();
+            }
+            if theme::menu_button(ui, "删除", "").clicked() {
+                action = Some(ProjectRowAction::Delete);
+                ui.close();
+            }
+        });
         response
             .on_hover_cursor(egui::CursorIcon::PointingHand)
             .on_hover_text(format!(
-                "{}\n最近保存：{}\n点击展开工程信息与历史版本",
+                "{}\n最近保存：{}\n点击展开工程信息与历史版本；右键可备份或删除",
                 path.display(),
                 time_fmt::format_datetime(modified)
             ));

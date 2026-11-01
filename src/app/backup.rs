@@ -6,7 +6,8 @@
 //! 函数清单：
 //! - `BackupVersion`：一个历史版本的路径、保存时间与大小。
 //! - `backup_dir` / `backup_prefix` / `backup_versions`：版本目录、文件名前缀与列表。
-//! - `create_backup` / `prune_backups` / `is_history_path`：创建、清理历史版本与路径判定。
+//! - `create_backup` / `create_backup_now` / `prune_backups` / `is_history_path`：创建（含手动强制）、
+//!   清理历史版本与路径判定。
 //!
 //! Module: app / project history versions
 //! Purpose:
@@ -18,7 +19,8 @@
 //! Functions:
 //! - `BackupVersion`: path, save time and size of one history version.
 //! - `backup_dir` / `backup_prefix` / `backup_versions`: version directory, name prefix and list.
-//! - `create_backup` / `prune_backups`: create and prune history versions.
+//! - `create_backup` / `create_backup_now` / `prune_backups`: create (automatic or manual) and
+//!   prune history versions.
 
 use super::time_fmt;
 use std::path::{Path, PathBuf};
@@ -167,17 +169,70 @@ pub(super) fn backup_versions(project: &Path) -> Vec<BackupVersion> {
 /// returns the new version path (`None` when nothing was created).
 /// Complexity: O(project size + versions) time and O(project size) space.
 pub(super) fn create_backup(project: &Path, retention: usize) -> Result<Option<PathBuf>, String> {
+    create_backup_inner(project, retention, true)
+}
+
+/// 所属模块：app / 工程历史版本
+/// 功能：立即创建一份历史版本，忽略两次备份之间的最小间隔（主页右键「备份」使用）。
+/// 输入：
+/// - `project`：现有工程文件路径。
+/// - `retention`：保留的版本数量（至少 1）。
+/// 输出/副作用：创建 `Backups` 目录并复制文件，随后清理超出保留数的旧版本；
+/// 返回新建版本的路径（工程不存在时为 `None`）。
+/// 复杂度：时间 O(工程大小 + 版本数)，空间 O(工程大小)。
+///
+/// Module: app / project history versions
+/// Purpose: Create a history version immediately, ignoring the minimum interval (home page
+/// context-menu "backup").
+/// Inputs:
+/// - `project`: existing project file path.
+/// - `retention`: number of kept versions (at least 1).
+/// Outputs / side effects: creates the `Backups` directory, copies the file and prunes old versions;
+/// returns the new version path (`None` when the project does not exist).
+/// Complexity: O(project size + versions) time and O(project size) space.
+pub(super) fn create_backup_now(
+    project: &Path,
+    retention: usize,
+) -> Result<Option<PathBuf>, String> {
+    create_backup_inner(project, retention, false)
+}
+
+/// 所属模块：app / 工程历史版本
+/// 功能：创建历史版本的内部实现，可选择是否遵守最小备份间隔。
+/// 输入：
+/// - `project`：现有工程文件路径。
+/// - `retention`：保留的版本数量（至少 1）。
+/// - `respect_interval`：是否在最小间隔内跳过创建。
+/// 输出/副作用：创建 `Backups` 目录并复制文件，随后清理旧版本；返回新版本路径。
+/// 复杂度：时间 O(工程大小 + 版本数)，空间 O(工程大小)。
+///
+/// Module: app / project history versions
+/// Purpose: Internal implementation that optionally honours the minimum backup interval.
+/// Inputs:
+/// - `project`: existing project file path.
+/// - `retention`: number of kept versions (at least 1).
+/// - `respect_interval`: whether to skip creation inside the minimum interval.
+/// Outputs / side effects: creates `Backups`, copies the file and prunes old versions; returns the
+/// new version path.
+/// Complexity: O(project size + versions) time and O(project size) space.
+fn create_backup_inner(
+    project: &Path,
+    retention: usize,
+    respect_interval: bool,
+) -> Result<Option<PathBuf>, String> {
     if !project.is_file() {
         return Ok(None);
     }
-    let versions = backup_versions(project);
-    if let Some(newest) = versions.first() {
-        if SystemTime::now()
-            .duration_since(newest.saved_at)
-            .unwrap_or(Duration::ZERO)
-            < BACKUP_MIN_INTERVAL
-        {
-            return Ok(None);
+    if respect_interval {
+        let versions = backup_versions(project);
+        if let Some(newest) = versions.first() {
+            if SystemTime::now()
+                .duration_since(newest.saved_at)
+                .unwrap_or(Duration::ZERO)
+                < BACKUP_MIN_INTERVAL
+            {
+                return Ok(None);
+            }
         }
     }
     let directory = backup_dir(project);
@@ -256,6 +311,32 @@ mod tests {
         // 间隔限制内不会重复创建。
         // No duplicate backup inside the minimum interval.
         assert!(create_backup(&project, 1).expect("second").is_none());
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    /// 覆盖：手动备份忽略最小间隔，同一秒内的两次备份都会生成文件。
+    /// Covers: a manual backup ignores the minimum interval and two backups in one second both exist.
+    #[test]
+    fn manual_backup_ignores_the_minimum_interval() {
+        let directory = std::env::temp_dir().join(format!(
+            "surfing_backup_manual_test_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .map(|duration| duration.subsec_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&directory).expect("create temp dir");
+        let project = directory.join("Demo.sfsd");
+        std::fs::write(&project, b"first").expect("write project");
+        let first = create_backup_now(&project, 5)
+            .expect("first backup")
+            .expect("created");
+        let second = create_backup_now(&project, 5)
+            .expect("second backup")
+            .expect("created");
+        assert_ne!(first, second);
+        assert_eq!(backup_versions(&project).len(), 2);
         let _ = std::fs::remove_dir_all(&directory);
     }
 }

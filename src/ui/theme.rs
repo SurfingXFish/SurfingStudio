@@ -8,7 +8,7 @@
 //! - `apply_style`：把 IDEA New UI 的配色、圆角、间距与文字尺寸写入全局样式。
 //! - `track_color` / `palette_color` / `hsv_to_rgb`：轨道色与 16×16 片段调色板。
 //! - `with_alpha`：给颜色附加透明度。
-//! - `level_meter` / `badge` / `toggle_switch`：主题内的复用绘制。
+//! - `level_meter` / `badge` / `toggle_switch` / `menu_button`：主题内的复用绘制。
 //!
 //! Module: ui / theme
 //! Purpose:
@@ -21,7 +21,7 @@
 //! - `apply_style`: write the IDEA New UI colors, radii, spacing and text sizes into the global style.
 //! - `track_color` / `palette_color` / `hsv_to_rgb`: track colors and the 16×16 clip palette.
 //! - `with_alpha`: attach alpha to a color.
-//! - `level_meter` / `badge` / `toggle_switch`: reusable painters owned by the theme.
+//! - `level_meter` / `badge` / `toggle_switch` / `menu_button`: reusable painters owned by the theme.
 
 use eframe::egui::{self, Color32, CornerRadius, FontFamily, Stroke, Vec2};
 use std::sync::Arc;
@@ -338,6 +338,29 @@ pub fn badge(ui: &mut egui::Ui, text: &str, color: Color32) {
         .show(ui, |ui| {
             ui.label(egui::RichText::new(text).color(color).size(10.0));
         });
+}
+
+/// 所属模块：ui / 主题 / 菜单
+/// 功能：绘制 IDEA 风格菜单项：左侧文字、右侧快捷键、整行可点击。
+/// 输入：
+/// - `ui`：弹出菜单内容区。
+/// - `label`：菜单项文字。
+/// - `shortcut`：右对齐的快捷键文本；空字符串表示不显示。
+/// 输出/副作用：分配整行按钮并返回其响应；不修改应用状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: ui / theme / menu
+/// Purpose: Draw an IDEA-like menu item: label on the left, shortcut on the right, full-row click.
+/// Inputs:
+/// - `ui`: popup menu content area.
+/// - `label`: item text.
+/// - `shortcut`: right-aligned shortcut text; an empty string hides it.
+/// Outputs / side effects: allocates a full-row button and returns its response; no app state.
+/// Complexity: O(1) time and space.
+pub fn menu_button(ui: &mut egui::Ui, label: &str, shortcut: &str) -> egui::Response {
+    let label = egui::RichText::new(label).size(12.5);
+    let shortcut = egui::RichText::new(shortcut).size(10.5).color(TEXT_DIM);
+    ui.add(egui::Button::new(label).shortcut_text(shortcut))
 }
 
 /// 所属模块：ui / 主题

@@ -54,7 +54,8 @@ impl SurfingApp {
     /// - `ui`：卷帘容器。
     /// - `track_id`：要显示的轨道 id。
     /// - `detached`：是否位于浮动窗口（隐藏拖出/关闭按钮）。
-    /// 输出/副作用：写回该轨道的 `PianoViewState`；编辑音符、力度与选择，并标记脏状态。
+    /// 输出/副作用：写回该轨道的 `PianoViewState`；编辑音符、力度与选择，处理右键菜单，
+    /// 并标记脏状态。
     /// 复杂度：每帧 O(可见音符数 + 可见网格线数)。
     ///
     /// Module: ui / piano roll
@@ -65,7 +66,7 @@ impl SurfingApp {
     /// - `track_id`: the track to show.
     /// - `detached`: whether this is a floating window (hides detach/close buttons).
     /// Outputs / side effects: writes the track's `PianoViewState`; edits notes, velocity and the
-    /// selection, marking the project dirty.
+    /// selection, serves the context menu and marks the project dirty.
     /// Complexity: O(visible notes + visible grid lines) per frame.
     pub fn ui_piano_roll_for(&mut self, ui: &mut egui::Ui, track_id: u64, detached: bool) {
         let panel_rect = ui.available_rect_before_wrap();
@@ -704,28 +705,6 @@ impl SurfingApp {
             self.audition_off(previous);
         }
 
-        if response.secondary_clicked() {
-            if let Some(pos) = response.interact_pointer_pos() {
-                if pos.x >= grid_left && pos.y >= grid_top && pos.y < grid_bottom {
-                    if let Some((clip_index, note_index, _, _)) = hit_note {
-                        self.push_undo_now();
-                        if let Some(track) = self.project.tracks.get_mut(track_index) {
-                            if let Some(clip) = track.clips.get_mut(clip_index) {
-                                if note_index < clip.notes.len() {
-                                    clip.notes.remove(note_index);
-                                    clip.bump_revision();
-                                    self.selected_note = None;
-                                    self.selected_notes.clear();
-                                    self.mark_dirty();
-                                    self.status = "已删除音符".into();
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
         // Cut preview: a full-height dashed line follows the pointer.
         if mode == MouseMode::Cut {
             if let Some(pos) = response.hover_pos() {
@@ -784,6 +763,59 @@ impl SurfingApp {
             None
         };
 
+        // 右键菜单：剪切 / 复制 / 粘贴 / 删除。右键音符时先把它纳入选择。
+        // Context menu: cut, copy, paste and delete; right-clicking a note selects it first.
+        if response.secondary_clicked() {
+            if let Some(pos) = response.interact_pointer_pos() {
+                if pos.x >= grid_left && pos.y >= grid_top && pos.y < grid_bottom {
+                    if let Some((clip_index, note_index, _, _)) = hit_at(pos) {
+                        if !self.selected_notes.contains(&(clip_index, note_index)) {
+                            self.selected_notes = vec![(clip_index, note_index)];
+                        }
+                        self.selected_note = Some((clip_index, note_index));
+                        self.selected_clip = Some(clip_index);
+                    }
+                }
+            }
+        }
+        let copy_shortcut = self
+            .settings
+            .shortcut_label(crate::app::ShortcutAction::Copy);
+        let paste_shortcut = self
+            .settings
+            .shortcut_label(crate::app::ShortcutAction::Paste);
+        let delete_shortcut = self
+            .settings
+            .shortcut_label(crate::app::ShortcutAction::Delete);
+        let can_paste = !matches!(self.clipboard, crate::app::Clipboard::Empty);
+        egui::Popup::context_menu(&response).show(|ui| {
+            ui.set_min_width(168.0);
+            if theme::menu_button(ui, "剪切", "").clicked() {
+                self.cut_selection();
+                ui.close();
+            }
+            if theme::menu_button(ui, "复制", &copy_shortcut).clicked() {
+                self.copy_selection();
+                ui.close();
+            }
+            let paste = ui.add_enabled(
+                can_paste,
+                egui::Button::new(egui::RichText::new("粘贴").size(12.5)).shortcut_text(
+                    egui::RichText::new(&paste_shortcut)
+                        .size(10.5)
+                        .color(theme::TEXT_DIM),
+                ),
+            );
+            if paste.clicked() {
+                self.paste_clipboard();
+                ui.close();
+            }
+            ui.separator();
+            if theme::menu_button(ui, "删除", &delete_shortcut).clicked() {
+                self.delete_selection();
+                ui.close();
+            }
+        });
         // 卷帘只允许从顶部工具条拖出为独立窗口；在画布上拖动始终是框选/编辑手势，
         // 幅度再大也不会误触拖出。
         // A roll can only be detached by dragging its top toolbar; dragging on the canvas always
@@ -1036,10 +1068,10 @@ impl SurfingApp {
                         // Map the content anchor back to screen space with the current zoom/scroll.
                         let start =
                             egui::pos2(beat_to_x(start_beat), grid_top + start_row * note_h);
-                        let band = Rect::from_two_pos(start, pos).intersect(Rect::from_min_max(
-                            egui::pos2(grid_left, grid_top),
-                            egui::pos2(rect.right(), grid_bottom),
-                        ));
+                        // 命中不裁剪到可视网格：指针移出屏幕后仍按内容坐标选中屏幕外音符。
+                        // Hit-testing is not clipped to the visible grid, so notes outside the
+                        // viewport are still selected while the pointer is beyond the screen.
+                        let band = Rect::from_two_pos(start, pos);
                         let mut selected: Vec<(usize, usize)> = Vec::new();
                         for (clip_index, clip) in &clips {
                             for (note_index, note) in clip.notes.iter().enumerate() {
@@ -1061,6 +1093,15 @@ impl SurfingApp {
                         } else if pos.x > rect.right() - 20.0 {
                             self.piano_view_beat =
                                 (self.piano_view_beat + step).min(content_end.max(1.0));
+                            ui.ctx().request_repaint();
+                        }
+                        // 纵向边缘自动滚动：让框选范围继续延伸到当前屏幕之外。
+                        // Vertical edge auto-scroll: let the marquee reach beyond the screen.
+                        if pos.y < grid_top + 20.0 {
+                            self.piano_top_pitch = (self.piano_top_pitch + 1).clamp(24, 120);
+                            ui.ctx().request_repaint();
+                        } else if pos.y > grid_bottom - 20.0 {
+                            self.piano_top_pitch = (self.piano_top_pitch - 1).clamp(24, 120);
                             ui.ctx().request_repaint();
                         }
                     }

@@ -14,7 +14,7 @@
 //! Functions:
 //! - `SurfingApp::ui_arrangement`: arrangement painting and interaction entry point.
 
-use crate::app::SurfingApp;
+use crate::app::{ArrangementMenu, Clipboard, ShortcutAction, SurfingApp};
 use crate::core::model::{AudioSource, Clip, ControllerKind, evaluate_automation};
 
 use crate::ui::{ArrangementDrag, BottomView, MouseMode, theme};
@@ -29,7 +29,7 @@ impl SurfingApp {
     /// 输入：
     /// - `ui`：当前 egui 画布。
     ///
-    /// 输出/副作用：修改选择、工程片段/控制器、视图状态与状态栏；可能打开卷帘窗口。
+    /// 输出/副作用：修改选择、工程片段/控制器、视图状态与状态栏；可能打开卷帘窗口或右键菜单。
     ///
     /// 复杂度：每帧 O(可见轨道数 + 可见片段数 + 可见控制器点)。
     ///
@@ -40,7 +40,7 @@ impl SurfingApp {
     /// - `ui`: current egui canvas.
     ///
     /// Outputs / side effects: mutates selection, project clips/controllers, view state
-    /// and the status bar; may open roll windows.
+    /// and the status bar; may open roll windows or the context menu.
     ///
     /// Complexity: O(visible tracks + visible clips + visible controller points) per frame.
     pub fn ui_arrangement(&mut self, ui: &mut egui::Ui) {
@@ -2138,6 +2138,15 @@ impl SurfingApp {
                             self.view_start += step;
                             ui.ctx().request_repaint();
                         }
+                        // 纵向边缘自动滚动：让框选继续选中当前屏幕之外的轨道。
+                        // Vertical edge auto-scroll: keep selecting tracks beyond the screen.
+                        if pos.y < lane_top + 18.0 {
+                            self.arr_scroll = (self.arr_scroll - 12.0).max(0.0);
+                            ui.ctx().request_repaint();
+                        } else if pos.y > rect.bottom() - 18.0 {
+                            self.arr_scroll = (self.arr_scroll + 12.0).min(max_scroll);
+                            ui.ctx().request_repaint();
+                        }
                     }
                 }
                 ArrangementDrag::None => {}
@@ -2598,6 +2607,91 @@ impl SurfingApp {
                 self.status = format!("已添加音频片段 · {:.1} 秒", duration);
             }
         }
+
+        // 右键菜单：画布提供剪切/复制/粘贴，轨道列表额外提供轨道操作。
+        // Context menu: cut/copy/paste on the canvas; the track list also offers track actions.
+        if response.secondary_clicked() {
+            if let Some(pos) = response.interact_pointer_pos() {
+                self.arrangement_menu = Some(ArrangementMenu::Lane);
+                if pos.y >= lane_top {
+                    if let Some((track_index, kind, _)) = row_rect_at(
+                        &self.project,
+                        pos,
+                        lane_top,
+                        scroll,
+                        lane_left,
+                        lane_width,
+                        row_scale,
+                    ) {
+                        self.selected_track = track_index;
+                        if kind == RowKind::Main {
+                            if pos.x < lane_left {
+                                self.arrangement_menu = Some(ArrangementMenu::Track(track_index));
+                            } else {
+                                let beat = x_to_beat(pos.x);
+                                let hit = self.project.tracks.get(track_index).and_then(|track| {
+                                    track
+                                        .clips
+                                        .iter()
+                                        .position(|clip| beat >= clip.start && beat <= clip.end())
+                                });
+                                match hit {
+                                    Some(clip_index) => {
+                                        if !self.selected_clips.contains(&(track_index, clip_index))
+                                        {
+                                            self.selected_clips = vec![(track_index, clip_index)];
+                                        }
+                                        self.selected_clip = Some(clip_index);
+                                    }
+                                    None => {
+                                        self.selected_clip = None;
+                                        self.selected_clips.clear();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let copy_shortcut = self.settings.shortcut_label(ShortcutAction::Copy);
+        let paste_shortcut = self.settings.shortcut_label(ShortcutAction::Paste);
+        let can_paste = !matches!(self.clipboard, Clipboard::Empty);
+        let menu = self.arrangement_menu.unwrap_or(ArrangementMenu::Lane);
+        egui::Popup::context_menu(&response).show(|ui| {
+            ui.set_min_width(176.0);
+            if let ArrangementMenu::Track(track_index) = menu {
+                if theme::menu_button(ui, "在下方插入轨道", "").clicked() {
+                    self.insert_track_below(track_index);
+                    ui.close();
+                }
+                if theme::menu_button(ui, "修改乐器…", "").clicked() {
+                    self.open_instrument_picker(track_index);
+                    ui.close();
+                }
+                ui.separator();
+            }
+            if theme::menu_button(ui, "剪切", "").clicked() {
+                self.cut_selection();
+                ui.close();
+            }
+            if theme::menu_button(ui, "复制", &copy_shortcut).clicked() {
+                self.copy_selection();
+                ui.close();
+            }
+            let paste = ui.add_enabled(
+                can_paste,
+                egui::Button::new(egui::RichText::new("粘贴").size(12.5)).shortcut_text(
+                    egui::RichText::new(&paste_shortcut)
+                        .size(10.5)
+                        .color(theme::TEXT_DIM),
+                ),
+            );
+            if paste.clicked() {
+                self.paste_clipboard();
+                ui.close();
+            }
+        });
 
         // Rubber-band selection overlay.
         if let ArrangementDrag::Marquee {

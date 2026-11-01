@@ -103,7 +103,22 @@ impl Project {
             + 1
     }
 
-    pub fn add_track(&mut self, instrument: InstrumentRef) -> usize {
+    /// 所属模块：core / 工程模型
+    /// 功能：在指定下标插入一条新轨道，返回其最终索引；越界下标按末尾处理。
+    /// 输入：
+    /// - `index`：插入位置，`0` 表示最前；大于轨道数时追加到末尾。
+    /// - `instrument`：新轨道使用的乐器。
+    /// 输出/副作用：修改 `tracks` 并返回新轨道索引；不修改其它字段。
+    /// 复杂度：时间 O(轨道数)，空间 O(1)。
+    ///
+    /// Module: core / project model
+    /// Purpose: Insert a new track at `index` and return its final index; out-of-range appends.
+    /// Inputs:
+    /// - `index`: insertion position, `0` means first; beyond the end appends.
+    /// - `instrument`: instrument of the new track.
+    /// Outputs / side effects: mutates `tracks` and returns the new index; other fields untouched.
+    /// Complexity: O(tracks) time and O(1) space.
+    pub fn insert_track(&mut self, index: usize, instrument: InstrumentRef) -> usize {
         let id = self.next_track_id();
         let palette: [[u8; 3]; 6] = [
             [45, 212, 191],
@@ -120,8 +135,26 @@ impl Project {
             InstrumentRef::Plugin(_) => format!("插件轨道 {}", id),
             InstrumentRef::Synth(_) => format!("MIDI 轨道 {}", id),
         };
-        self.tracks.push(Track::new(id, &name, color, instrument));
-        self.tracks.len() - 1
+        let index = index.min(self.tracks.len());
+        self.tracks
+            .insert(index, Track::new(id, &name, color, instrument));
+        index
+    }
+
+    /// 所属模块：core / 工程模型
+    /// 功能：在末尾追加一条新轨道，返回其索引。
+    /// 输入：`instrument` 新轨道乐器。
+    /// 输出/副作用：修改 `tracks` 并返回新轨道索引。
+    /// 复杂度：时间 O(轨道数)，空间 O(1)。
+    ///
+    /// Module: core / project model
+    /// Purpose: Append a new track at the end and return its index.
+    /// Inputs: `instrument` — instrument of the new track.
+    /// Outputs / side effects: mutates `tracks` and returns the new index.
+    /// Complexity: O(tracks) time and O(1) space.
+    pub fn add_track(&mut self, instrument: InstrumentRef) -> usize {
+        let index = self.tracks.len();
+        self.insert_track(index, instrument)
     }
 
     /// Create a main lane intended for audio clips. It still hosts the same
@@ -372,5 +405,26 @@ mod tests {
             loaded.tracks[0].clips[0].notes.len(),
             project.tracks[0].clips[0].notes.len()
         );
+    }
+
+    /// 覆盖：在指定轨道下方插入的新轨道位置正确、id 唯一，越界时追加到末尾。
+    /// Covers: inserting below a track keeps the position, allocates a unique id and appends when
+    /// the index is out of range.
+    #[test]
+    fn insert_track_keeps_position_and_unique_ids() {
+        let mut project = Project::empty();
+        project.add_track(InstrumentRef::Synth(SynthSettings::default()));
+        let existing: Vec<TrackId> = project.tracks.iter().map(|track| track.id).collect();
+        let index = project.insert_track(1, InstrumentRef::Synth(SynthSettings::default()));
+        assert_eq!(index, 1);
+        assert_eq!(project.tracks.len(), 3);
+        assert_eq!(project.tracks[0].id, existing[0]);
+        assert_eq!(project.tracks[2].id, existing[1]);
+        assert!(!existing.contains(&project.tracks[1].id));
+        assert_eq!(
+            project.insert_track(99, InstrumentRef::Synth(SynthSettings::default()),),
+            3
+        );
+        assert_eq!(project.tracks.len(), 4);
     }
 }

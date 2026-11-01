@@ -48,7 +48,7 @@ impl SurfingApp {
                     self.settings.shortcut_label(ShortcutAction::ToolDraw),
                     self.settings.shortcut_label(ShortcutAction::ToolCut)
                 ));
-                ui.label("• 选择：拖动片段或音符；在空白处拖拽可框选（靠近两端自动滚动）");
+                ui.label("• 选择：拖动片段或音符；在空白处拖拽可框选（靠近边缘自动滚动，可选中屏幕外内容）");
                 ui.label("• 绘制：轨道内拖出新片段，钢琴卷帘内新建音符；切割：拆分片段/音符");
                 ui.label(format!(
                     "• 控制器卷帘画笔：画笔 / 直线 / 平滑 / 擦除（{} 循环切换，{} / {} / {} / {} 直接选择）",
@@ -71,7 +71,7 @@ impl SurfingApp {
                     self.settings.shortcut_label(ShortcutAction::ScrollDown)
                 ));
                 ui.label(format!(
-                    "• 右键音符 / {} = 删除选中项（片段/音符/效果器/控制器/节点）；顶部「量化」按网格对齐",
+                    "• 右键菜单：编曲区 / 钢琴卷帘可剪切、复制、粘贴；轨道列表右键可插入轨道或修改乐器；{} = 删除选中项（片段/音符/效果器/控制器/节点）；顶部「量化」按网格对齐",
                     self.settings.shortcut_label(ShortcutAction::Delete)
                 ));
                 ui.add_space(6.0);

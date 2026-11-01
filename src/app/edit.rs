@@ -6,9 +6,10 @@
 //! 函数清单：
 //! - `select_all`：按当前编辑上下文全选控制器点位、音符、效果器链或片段。
 //! - `delete_selection`：按优先级删除控制器点、音符、效果器、子轨或片段。
+//! - `insert_track_below`：在指定轨道下方插入一条同类型新轨道。
 //! - `remove_effect_at` / `add_native_effect` / `remove_controller`：效果器与控制器子轨增删。
 //! - `copy_child_lane_selection` / `lane_points` / `apply_lane_paste`：子轨复制与覆盖粘贴。
-//! - `copy_selection` / `paste_clipboard`：复制/粘贴入口。
+//! - `copy_selection` / `cut_selection` / `paste_clipboard`：复制、剪切与粘贴入口。
 //! - `validate_selection`：结构变化后校正失效选择。
 //!
 //! Module: app / editing commands
@@ -19,9 +20,10 @@
 //! Functions:
 //! - `select_all`: select controller points, notes, the effect chain or clips by context.
 //! - `delete_selection`: delete controller points, notes, effects, child lanes or clips in priority order.
+//! - `insert_track_below`: insert a new track of the same kind below the given track.
 //! - `remove_effect_at` / `add_native_effect` / `remove_controller`: effect and controller lane editing.
 //! - `copy_child_lane_selection` / `lane_points` / `apply_lane_paste`: child-lane copy and overwrite paste.
-//! - `copy_selection` / `paste_clipboard`: copy/paste entry points.
+//! - `copy_selection` / `cut_selection` / `paste_clipboard`: copy, cut and paste entry points.
 //! - `validate_selection`: fix stale selections after structural changes.
 
 use super::*;
@@ -298,6 +300,45 @@ impl SurfingApp {
         }
     }
 
+    /// 所属模块：app / 编辑命令
+    /// 功能：在指定轨道下方插入一条同类型新轨道，并选中新轨道。
+    /// 输入：`track_index`：参考轨道索引；越界时追加到末尾。
+    /// 输出/副作用：记录撤销、插入轨道、清空片段/音符选择并标记脏。
+    /// 复杂度：时间 O(轨道数)，空间 O(1)。
+    ///
+    /// Module: app / editing commands
+    /// Purpose: Insert a new track of the same kind below the given track and select it.
+    /// Inputs: `track_index` — reference track index; out-of-range appends.
+    /// Outputs / side effects: records undo, inserts the track, clears clip/note selection and marks
+    /// the project dirty.
+    /// Complexity: O(tracks) time and O(1) space.
+    pub fn insert_track_below(&mut self, track_index: usize) {
+        let is_audio = self
+            .project
+            .tracks
+            .get(track_index)
+            .map(|track| track.is_audio_lane())
+            .unwrap_or(false);
+        self.push_undo_now();
+        let index = self.project.insert_track(
+            track_index.saturating_add(1),
+            crate::core::model::InstrumentRef::Synth(crate::core::model::SynthSettings::default()),
+        );
+        if is_audio {
+            if let Some(track) = self.project.tracks.get_mut(index) {
+                track.kind = crate::core::model::TrackKind::Audio;
+                track.name = format!("音频轨道 {}", track.id);
+            }
+        }
+        self.selected_track = index;
+        self.selected_clip = None;
+        self.selected_clips.clear();
+        self.selected_note = None;
+        self.selected_notes.clear();
+        self.mark_dirty();
+        self.status = "已在下方插入轨道".into();
+    }
+
     /// Remove one insert effect from a track.
     pub fn remove_effect_at(&mut self, track_id: TrackId, index: usize) {
         self.push_undo_now();
@@ -570,7 +611,21 @@ impl SurfingApp {
     }
 
     /// Ctrl+C: copy clips, notes or controller points depending on the focus.
-    pub fn copy_selection(&mut self) {
+    ///
+    /// 所属模块：app / 编辑命令
+    /// 功能：按当前焦点复制控制器点位、子轨/效果器、音符或片段。
+    /// 输入：`self`。
+    /// 输出/副作用：命中可复制内容时写入 `clipboard` 并更新状态栏；
+    /// 返回是否真的更新了剪贴板。
+    /// 复杂度：时间 O(选中项数量)，空间 O(选中项数量)。
+    ///
+    /// Module: app / editing commands
+    /// Purpose: Copy controller points, child lanes/effects, notes or clips by focus.
+    /// Inputs: `self`.
+    /// Outputs / side effects: writes `clipboard` and the status bar when something is copied;
+    /// returns whether the clipboard was updated.
+    /// Complexity: O(selected items) time and space.
+    pub fn copy_selection(&mut self) -> bool {
         if self.bottom_open {
             if let BottomView::Controller { track_id, kind } = self.bottom_view {
                 if !self.controller_selection.is_empty() {
@@ -594,7 +649,7 @@ impl SurfingApp {
                     if !points.is_empty() {
                         self.clipboard = Clipboard::ControllerPoints(points);
                         self.status = "已复制控制器点位".into();
-                        return;
+                        return true;
                     }
                 }
             }
@@ -602,7 +657,7 @@ impl SurfingApp {
 
         // Whole child lanes and individual effects take priority over notes.
         if self.copy_child_lane_selection() {
-            return;
+            return true;
         }
 
         let note_refs = if !self.selected_notes.is_empty() {
@@ -639,7 +694,7 @@ impl SurfingApp {
                         .collect();
                     self.clipboard = Clipboard::Notes(list);
                     self.status = "已复制音符".into();
-                    return;
+                    return true;
                 }
             }
         }
@@ -663,11 +718,35 @@ impl SurfingApp {
                 clips.push((track_index, clip.clone()));
             }
         }
-        if !clips.is_empty() {
-            let count = clips.len();
-            self.clipboard = Clipboard::Clips(clips);
-            self.status = format!("已复制 {count} 个 MIDI 片段");
+        if clips.is_empty() {
+            return false;
         }
+        let count = clips.len();
+        self.clipboard = Clipboard::Clips(clips);
+        self.status = format!("已复制 {count} 个 MIDI 片段");
+        true
+    }
+
+    /// 所属模块：app / 编辑命令
+    /// 功能：剪切当前选中内容：先复制，再按删除优先级移除。
+    /// 输入：`self`。
+    /// 输出/副作用：可能替换剪贴板、删除控制器点位/音符/效果器/片段并标记脏；
+    /// 无可剪切内容时只更新状态栏。
+    /// 复杂度：时间 O(选中项数量)，空间 O(选中项数量)。
+    ///
+    /// Module: app / editing commands
+    /// Purpose: Cut the current selection: copy first, then delete in the priority order.
+    /// Inputs: `self`.
+    /// Outputs / side effects: may replace the clipboard, delete controller points/notes/effects/
+    /// clips and mark the project dirty; only the status bar changes when nothing can be cut.
+    /// Complexity: O(selected items) time and space.
+    pub fn cut_selection(&mut self) {
+        if !self.copy_selection() {
+            self.status = "没有可剪切的内容".into();
+            return;
+        }
+        self.delete_selection();
+        self.status = "已剪切".into();
     }
 
     /// Ctrl+V: paste the clipboard at the playhead.

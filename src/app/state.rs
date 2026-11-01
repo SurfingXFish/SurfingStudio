@@ -5,6 +5,8 @@
 //! 导出项：
 //! - `ScanMode` / `Clipboard` / `RollKind` / `RollWindow` / `RollDragState`：编辑与扫描状态。
 //! - `PianoViewState` / `LanePastePrompt`：卷帘视图与子轨覆盖确认。
+//! - `ArrangementMenu`：编曲区右键菜单的目标（画布或某条轨道）。
+//! - `HomeProjectDelete`：主页项目删除确认的待删除路径与本地文件选项。
 //! - `WorkspaceView` / `HomePage`：主页与工作室视图、主页左侧菜单页面（项目 / 模板 / 插件 / 提示）。
 //! - `WindowAction`：窗口级动作（显示主页 / 打开工程窗口 / 新建工程窗口 / 回到工程窗口）。
 //! - `InstrumentCategory` / `InstrumentPicker`：乐器窗口的种类与目标轨道。
@@ -16,6 +18,8 @@
 //! Exports:
 //! - `ScanMode` / `Clipboard` / `RollKind` / `RollWindow` / `RollDragState`: editing and scan state.
 //! - `PianoViewState` / `LanePastePrompt`: roll view state and child-lane overwrite prompt.
+//! - `ArrangementMenu`: the context-menu target in the arrangement (canvas or one track).
+//! - `HomeProjectDelete`: home project-delete confirmation (path plus local-file option).
 //! - `WorkspaceView` / `HomePage`: home/studio views and the home sidebar page (projects / templates / plugins / tips).
 //! - `WindowAction`: window-level actions (show home / open a project window / create a project window / resume).
 //! - `InstrumentCategory` / `InstrumentPicker`: instrument window categories and target track.
@@ -242,4 +246,20 @@ impl Default for PianoViewState {
 pub struct LanePastePrompt {
     pub target_track: usize,
     pub payload: Clipboard,
+}
+
+/// 编曲区右键菜单的目标：画布（编辑操作）或某条轨道（轨道操作）。
+/// Context-menu target in the arrangement: the canvas (edit actions) or one track (track actions).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArrangementMenu {
+    Lane,
+    Track(usize),
+}
+
+/// 主页项目删除确认：待删除路径与是否同时删除本地工程文件。
+/// Home project-delete confirmation: the path and whether to delete the local project file.
+#[derive(Clone, Debug)]
+pub struct HomeProjectDelete {
+    pub path: PathBuf,
+    pub delete_file: bool,
 }
