@@ -1502,7 +1502,7 @@ fn format_version_name(path: &Path) -> String {
 }
 
 /// 所属模块：app / 主页 / 侧栏
-/// 功能：绘制主页左上角的软件图标：IDEA 蓝圆角方块 + 白色波形。
+/// 功能：绘制主页左上角的软件图标：与 `assets/icon.svg` 一致的深灰圆角底（带描边）+ 蓝色音柱。
 /// 输入：
 /// - `ui`：侧栏水平布局。
 /// - `size`：图标边长（逻辑点）。
@@ -1510,7 +1510,8 @@ fn format_version_name(path: &Path) -> String {
 /// 复杂度：时间 O(1)，空间 O(1)。
 ///
 /// Module: app / home page / sidebar
-/// Purpose: Draw the home logo: an IDEA-blue rounded square with a white waveform.
+/// Purpose: Draw the home logo: the `assets/icon.svg` artwork (dark-grey rounded tile with a border
+/// plus blue bars).
 /// Inputs:
 /// - `ui`: sidebar horizontal layout.
 /// - `size`: icon side length in logical points.
