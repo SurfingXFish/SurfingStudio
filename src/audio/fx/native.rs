@@ -12,7 +12,7 @@
 //! - `process_reverb` / `process_compressor`：混响与压缩 DSP。
 //! - `Comb::new` / `Comb::process`：混响梳状滤波器。
 //! - `Allpass::new` / `Allpass::process`：混响全通滤波器。
-//! - `allpass` / `lfo` / `soft_clip` / `db_to_gain`：DSP 辅助函数。
+//! - `allpass` / `lfo` / `soft_clip`：DSP 辅助函数。
 //!
 //! Module: audio / built-in effects
 //! Purpose:
@@ -29,7 +29,7 @@
 //! - `process_reverb` / `process_compressor`: reverb and compressor DSP.
 //! - `Comb::new` / `Comb::process`: reverb comb filter.
 //! - `Allpass::new` / `Allpass::process`: reverb all-pass filter.
-//! - `allpass` / `lfo` / `soft_clip` / `db_to_gain`: DSP helpers.
+//! - `allpass` / `lfo` / `soft_clip`: DSP helpers.
 
 use crate::core::model::{NativeEffectKind, NativeEffectSettings};
 use std::f32::consts::PI;
@@ -124,7 +124,12 @@ impl Comb {
         let output = self.buffer[self.index];
         self.filtered = output * (1.0 - damping) + self.filtered * damping;
         self.buffer[self.index] = input + self.filtered * feedback;
-        self.index = (self.index + 1) % self.buffer.len();
+        // 索引每次只前进 1，用比较回绕代替取模，实时回调里避免整数除法。
+        // The index advances by one, so wrap with a compare instead of integer division.
+        self.index += 1;
+        if self.index == self.buffer.len() {
+            self.index = 0;
+        }
         output
     }
 }
@@ -170,7 +175,12 @@ impl Allpass {
         let delayed = self.buffer[self.index];
         let output = -input + delayed;
         self.buffer[self.index] = input + delayed * 0.5;
-        self.index = (self.index + 1) % self.buffer.len();
+        // 同上：单步推进用比较回绕，省去每采样的取模。
+        // Same as above: single-step advance wraps by comparison, avoiding a per-sample modulo.
+        self.index += 1;
+        if self.index == self.buffer.len() {
+            self.index = 0;
+        }
         output
     }
 }
@@ -513,7 +523,12 @@ fn process_chorus(
         let read_r = read_delay(buffer_r, *write, delay_r);
         buffer_l[*write] = in_l[frame];
         buffer_r[*write] = in_r[frame];
-        *write = (*write + 1) % length;
+        // 写指针每次前进 1，用比较回绕代替取模。
+        // The write pointer advances by one, so wrap by comparison instead of a modulo.
+        *write += 1;
+        if *write == length {
+            *write = 0;
+        }
         *phase += rate / sample_rate;
         if *phase >= 1.0 {
             *phase -= 1.0;
@@ -634,7 +649,12 @@ fn process_delay(
         *damp_r += (read_r - *damp_r) * tone;
         buffer_l[*write] = in_l[frame] + *damp_l * feedback;
         buffer_r[*write] = in_r[frame] + *damp_r * feedback;
-        *write = (*write + 1) % length;
+        // 写指针每次前进 1，用比较回绕代替取模。
+        // The write pointer advances by one, so wrap by comparison instead of a modulo.
+        *write += 1;
+        if *write == length {
+            *write = 0;
+        }
         out_l[frame] = in_l[frame] * (1.0 - mix) + read_l * mix * level;
         out_r[frame] = in_r[frame] * (1.0 - mix) + read_r * mix * level;
     }
@@ -735,17 +755,23 @@ fn process_compressor(
     let attack = (-1.0 / (attack_seconds * sample_rate)).exp();
     let release = (-1.0 / (release_seconds * sample_rate)).exp();
     let makeup = 0.4 + settings.level.clamp(0.0, 1.0) * 1.2;
+    // 在幅度域直接求增益，避免每采样一次 log10 再指数回算：
+    // 10^(((thr_db + (env_db - thr_db) / ratio) - env_db) / 20)
+    //   = (thr_lin / env)^(1 - 1/ratio)。
+    // Compute the gain in the linear domain to avoid a per-sample log10 followed by an exp:
+    // 10^(((thr_db + (env_db - thr_db) / ratio) - env_db) / 20)
+    //   = (thr_lin / env)^(1 - 1/ratio).
+    let threshold_linear = 10.0_f32.powf(threshold_db / 20.0);
+    let ratio_exponent = 1.0 - 1.0 / ratio;
     for frame in 0..frames {
         let peak = in_l[frame].abs().max(in_r[frame].abs());
         let coefficient = if peak > *envelope { attack } else { release };
         *envelope = peak + coefficient * (*envelope - peak);
-        let envelope_db = 20.0 * envelope.max(1e-6).log10();
-        let reduction_db = if envelope_db > threshold_db {
-            (threshold_db + (envelope_db - threshold_db) / ratio) - envelope_db
+        let target_gain = if *envelope > threshold_linear {
+            (threshold_linear / *envelope).powf(ratio_exponent)
         } else {
-            0.0
+            1.0
         };
-        let target_gain = db_to_gain(reduction_db);
         // 增益平滑，避免快速起音造成的“抽吸”爆音。
         // Smooth the gain to avoid pumping artefacts from fast attacks.
         let gain_coefficient = if target_gain < *gain_l {
@@ -781,14 +807,18 @@ fn read_delay(buffer: &[f32], write: usize, delay: f32) -> f32 {
     let length = buffer.len();
     let delay = delay.clamp(1.0, (length - 3) as f32);
     let read = write as f32 - delay;
+    // 负偏移加一个缓冲区长度即可回到 [0, length)；随后只前进 1 的邻点也用比较回绕。
+    // Adding one buffer length brings a negative offset back into [0, length); the next index
+    // also advances by one and wraps by comparison.
     let read = if read < 0.0 {
         read + length as f32
     } else {
         read
     };
-    let index = (read.floor() as usize) % length;
-    let next = (index + 1) % length;
-    let fraction = read - read.floor();
+    let base = read.floor();
+    let index = base as usize;
+    let next = if index + 1 == length { 0 } else { index + 1 };
+    let fraction = read - base;
     buffer[index] * (1.0 - fraction) + buffer[next] * fraction
 }
 
@@ -853,21 +883,6 @@ fn lfo(phase: f32) -> f32 {
 /// Complexity: O(1) time and space.
 fn soft_clip(sample: f32) -> f32 {
     sample / (1.0 + sample.abs())
-}
-
-/// 所属模块：audio / 内置效果器
-/// 功能：分贝转线性增益。
-/// 输入：`db` 分贝。
-/// 输出/副作用：线性增益；不修改状态。
-/// 复杂度：时间 O(1)，空间 O(1)。
-///
-/// Module: audio / built-in effects
-/// Purpose: Convert decibels to linear gain.
-/// Inputs: `db` decibels.
-/// Outputs / side effects: linear gain; no state change.
-/// Complexity: O(1) time and space.
-fn db_to_gain(db: f32) -> f32 {
-    10.0_f32.powf(db / 20.0)
 }
 
 #[cfg(test)]

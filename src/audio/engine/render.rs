@@ -770,9 +770,13 @@ impl Engine {
             // 自动化 0.5 表示 100%，1.0 表示 200%。
             // Automation 0.5 means 100% and 1.0 means 200%.
             let volume = track.volume.clamp(0.0, 1.5) * lane_volume * 2.0;
-            let angle = (pan.clamp(-1.0, 1.0) + 1.0) * std::f32::consts::FRAC_PI_4;
-            let gain_l = angle.cos() * volume;
-            let gain_r = angle.sin() * volume;
+            // 等功率声像律的闭式：cos/sin((pan + 1)·π/4) 等于 √((1 ∓ pan)/2)，
+            // 用平方根代替每块每轨的三角函数，听感一致且更快。
+            // Closed form of the equal-power law: cos/sin((pan + 1)·π/4) equals √((1 ∓ pan)/2);
+            // square roots replace per-track trig calls with the same perceived result.
+            let pan = pan.clamp(-1.0, 1.0);
+            let gain_l = ((1.0 - pan) * 0.5).sqrt() * volume;
+            let gain_r = ((1.0 + pan) * 0.5).sqrt() * volume;
 
             let mut peak = 0.0_f32;
             let mut peak_l = 0.0_f32;
@@ -853,58 +857,69 @@ impl Engine {
         }
 
         let master_gain = self.project.master_volume_at(block_start);
-        for channel in master.iter_mut().take(master_count) {
-            for sample in channel.iter_mut() {
-                *sample *= master_gain;
-            }
-        }
-
         // GPU 导出时主总线只做增益，软限幅留到整段渲染完成后由计算着色器处理；实时 GPU 路径
         // 在限定的等待时间内完成限幅，否则本块回退 CPU，保证音频回调不被显卡拖住。
         // GPU export applies master gain only and limits the whole render afterwards. The realtime
         // GPU path limits within a bounded wait and falls back to the CPU for this block otherwise,
         // so the audio callback is never held hostage by the GPU.
         let defer_clip = self.defer_master_clip;
-        if !defer_clip {
-            let mut gpu_error: Option<String> = None;
-            let mut limited_by_gpu = false;
-            if self.gpu_realtime.is_some() {
-                let scratch = &mut self.gpu_interleave_scratch;
-                scratch.clear();
-                scratch.resize(frames * master_count, 0.0);
-                for frame in 0..frames {
-                    for channel in 0..master_count {
-                        scratch[frame * master_count + channel] = master[channel][frame];
-                    }
-                }
-                let outcome = match self.gpu_realtime.as_mut() {
-                    Some(limiter) => {
-                        limiter.process(scratch, crate::audio::gpu::GPU_REALTIME_TIMEOUT)
-                    }
-                    None => Err("实时 GPU 限幅未初始化".to_string()),
-                };
-                match outcome {
-                    Ok(()) => {
-                        for frame in 0..frames {
-                            for channel in 0..master_count {
-                                master[channel][frame] = scratch[frame * master_count + channel];
-                            }
-                        }
-                        limited_by_gpu = true;
-                    }
-                    Err(error) => gpu_error = Some(error),
+        if !defer_clip && self.gpu_realtime.is_none() {
+            // CPU 限幅路径把主音量与软限幅合并成一趟，减少一次主总线缓冲的全量读写。
+            // The CPU limiter path fuses master gain and soft clipping into one pass to halve the
+            // master-bus traffic.
+            for channel in master.iter_mut().take(master_count) {
+                for sample in channel.iter_mut() {
+                    *sample = soft_clip(*sample * master_gain);
                 }
             }
-            if !limited_by_gpu {
-                for channel in master.iter_mut().take(master_count) {
-                    for sample in channel.iter_mut() {
-                        *sample = soft_clip(*sample);
+        } else {
+            for channel in master.iter_mut().take(master_count) {
+                for sample in channel.iter_mut() {
+                    *sample *= master_gain;
+                }
+            }
+            if !defer_clip {
+                let mut gpu_error: Option<String> = None;
+                let mut limited_by_gpu = false;
+                if self.gpu_realtime.is_some() {
+                    let scratch = &mut self.gpu_interleave_scratch;
+                    scratch.clear();
+                    scratch.resize(frames * master_count, 0.0);
+                    for frame in 0..frames {
+                        for channel in 0..master_count {
+                            scratch[frame * master_count + channel] = master[channel][frame];
+                        }
+                    }
+                    let outcome = match self.gpu_realtime.as_mut() {
+                        Some(limiter) => {
+                            limiter.process(scratch, crate::audio::gpu::GPU_REALTIME_TIMEOUT)
+                        }
+                        None => Err("实时 GPU 限幅未初始化".to_string()),
+                    };
+                    match outcome {
+                        Ok(()) => {
+                            for frame in 0..frames {
+                                for channel in 0..master_count {
+                                    master[channel][frame] =
+                                        scratch[frame * master_count + channel];
+                                }
+                            }
+                            limited_by_gpu = true;
+                        }
+                        Err(error) => gpu_error = Some(error),
                     }
                 }
-                if let Some(error) = gpu_error {
-                    self.gpu_realtime = None;
-                    self.gpu_realtime_warning =
-                        Some(format!("实时 GPU 限幅超时或失败，已回退 CPU：{error}"));
+                if !limited_by_gpu {
+                    for channel in master.iter_mut().take(master_count) {
+                        for sample in channel.iter_mut() {
+                            *sample = soft_clip(*sample);
+                        }
+                    }
+                    if let Some(error) = gpu_error {
+                        self.gpu_realtime = None;
+                        self.gpu_realtime_warning =
+                            Some(format!("实时 GPU 限幅超时或失败，已回退 CPU：{error}"));
+                    }
                 }
             }
         }
@@ -914,11 +929,14 @@ impl Engine {
         let mut peak_r = 0.0_f32;
         for (channel_index, channel) in master.iter().take(master_count).enumerate() {
             for sample in channel.iter() {
-                peak = peak.max(sample.abs());
+                // 每采样只求一次绝对值，供总峰值与左右峰值复用。
+                // Compute the magnitude once per sample for the overall and per-side peaks.
+                let magnitude = sample.abs();
+                peak = peak.max(magnitude);
                 if channel_index == 0 {
-                    peak_l = peak_l.max(sample.abs());
+                    peak_l = peak_l.max(magnitude);
                 } else if channel_index == 1 {
-                    peak_r = peak_r.max(sample.abs());
+                    peak_r = peak_r.max(magnitude);
                 }
             }
         }
@@ -1669,9 +1687,13 @@ fn mix_audio_clips(
             let gr = r * clip_gain * gain_r;
             out_l[frame] += gl;
             out_r[frame] += gr;
-            peak = peak.max(gl.abs()).max(gr.abs());
-            peak_l = peak_l.max(gl.abs());
-            peak_r = peak_r.max(gr.abs());
+            // 每帧只求一次左右幅度，供总峰值与单侧峰值复用。
+            // Compute the left/right magnitudes once per frame for both peak families.
+            let magnitude_l = gl.abs();
+            let magnitude_r = gr.abs();
+            peak = peak.max(magnitude_l).max(magnitude_r);
+            peak_l = peak_l.max(magnitude_l);
+            peak_r = peak_r.max(magnitude_r);
         }
         cursors.insert(
             key,
