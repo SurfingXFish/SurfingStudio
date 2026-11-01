@@ -383,6 +383,51 @@ mod windows {
             .chain(std::iter::once(0))
             .collect()
     }
+
+    /// 所属模块：plugin / 编辑器窗口
+    /// 功能：分发本线程已到期的 `WM_TIMER`。
+    /// 输入：无。
+    /// 输出/副作用：只把 `WM_TIMER` 派发给本线程的窗口（含插件编辑器），其它消息留给 winit。
+    /// 复杂度：时间 O(到期定时器数)，空间 O(1)。
+    ///
+    /// Win32 的 `WM_TIMER` 是低优先级消息：线程在 `MsgWaitForMultipleObjectsEx` 上空闲等待时，
+    /// 定时器不会唤醒它，插件的悬停计时（FabFilter/VOCALOID 的二级菜单延迟）就一直不触发——
+    /// 现象是菜单必须等到有键盘/鼠标输入把消息循环唤醒才出现。这里每帧主动取出并派发一次。
+    ///
+    /// Module: plugin / editor windows
+    /// Purpose: Dispatch due `WM_TIMER` messages for this thread.
+    /// Inputs: none.
+    /// Outputs / side effects: dispatches only `WM_TIMER` to this thread's windows (including plugin
+    /// editors); other messages stay with winit.
+    /// Complexity: O(due timers) time and O(1) space.
+    ///
+    /// Win32 treats `WM_TIMER` as a low-priority message: an idle `MsgWaitForMultipleObjectsEx`
+    /// wait is not woken by it, so plugin hover timers (FabFilter / VOCALOID submenu delays) never
+    /// fire until keyboard or mouse input wakes the loop. This drains them once per frame.
+    pub fn pump_editor_timers() {
+        use winapi::um::winuser::{
+            DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE, WM_TIMER,
+        };
+        let mut message: MSG = unsafe { std::mem::zeroed() };
+        // 只取 WM_TIMER：普通输入仍由 winit 处理，避免在帧内重入输入逻辑。
+        // Take only WM_TIMER; regular input stays with winit to avoid re-entering input handling
+        // in the middle of a frame.
+        while unsafe {
+            PeekMessageW(
+                &mut message,
+                std::ptr::null_mut(),
+                WM_TIMER,
+                WM_TIMER,
+                PM_REMOVE,
+            )
+        } != 0
+        {
+            unsafe {
+                TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
+        }
+    }
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -418,9 +463,13 @@ mod fallback {
             Err("VST1/VST2 编辑器窗口目前仅支持 Windows".into())
         }
     }
+
+    /// 非 Windows 平台没有原生定时器需要派发。
+    /// No native timers to dispatch off Windows.
+    pub fn pump_editor_timers() {}
 }
 
 #[cfg(not(target_os = "windows"))]
-pub use fallback::Vst2EditorWindow;
+pub use fallback::{pump_editor_timers, Vst2EditorWindow};
 #[cfg(target_os = "windows")]
-pub use windows::Vst2EditorWindow;
+pub use windows::{pump_editor_timers, Vst2EditorWindow};

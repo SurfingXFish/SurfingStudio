@@ -566,6 +566,13 @@ impl SurfingApp {
 
     pub fn service_editors(&mut self) {
         diag::set_activity("plugin.editors");
+        // 先派发本线程到期的 WM_TIMER：Win32 的低优先级定时器不会唤醒空闲等待，
+        // 插件的悬停计时（二级菜单延迟）会一直不触发，直到有输入把消息循环叫醒。
+        // Dispatch due WM_TIMER first: Win32's low-priority timers do not wake an idle wait, so
+        // plugin hover timers (submenu delays) never fire until input wakes the loop.
+        if !self.editors.is_empty() {
+            crate::plugin::pump_editor_timers();
+        }
         let now = Instant::now();
         for (key, window) in &mut self.editors {
             let repaint = self
