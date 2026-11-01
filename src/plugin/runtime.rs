@@ -467,6 +467,34 @@ impl PluginRuntime {
         }
     }
 
+    /// 所属模块：plugin / 统一运行时
+    /// 功能：按程序（预设）索引切换插件音色，用于导入工程在状态不可恢复时还原预设选择。
+    /// 输入：`program`：0 基程序索引（SoundBug 的 `programNum`）。
+    /// 输出/副作用：VST3 调用 `IUnitInfo` 选择根单元的程序并刷新参数；越界、
+    /// 插件无程序表或 VST2 时静默忽略。
+    /// 复杂度：时间 O(参数数)，空间 O(参数数)。
+    ///
+    /// Module: plugin / unified runtime
+    /// Purpose: Select a plugin program (preset) so imported projects can restore the preset even
+    /// when their state blob cannot be applied.
+    /// Inputs: `program`: zero-based program index (SoundBug's `programNum`).
+    /// Outputs / side effects: VST3 selects the root unit's program through `IUnitInfo` and
+    /// refreshes parameters; out-of-range indices, plugins without a program list and VST2 runtimes
+    /// are silently ignored.
+    /// Complexity: O(parameter count) time and space.
+    pub fn select_program(&mut self, program: i32) {
+        let PluginRuntime::Vst3(v) = self else {
+            return;
+        };
+        {
+            let mut plugin = v.plugin.lock().unwrap_or_else(|p| p.into_inner());
+            if plugin.select_program(0, program).is_err() {
+                return;
+            }
+        }
+        self.refresh_params();
+    }
+
     pub fn set_tempo(&mut self, bpm: f64, time_sig: (u8, u8)) {
         match self {
             PluginRuntime::Vst3(v) => {

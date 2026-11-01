@@ -435,10 +435,14 @@ impl TrackEngine {
                         time_sig,
                     ) {
                         Ok(mut runtime) => {
-                            // 导入的未验证状态只保留数据，不自动恢复，避免插件崩溃。
-                            // Unverified imported state is preserved but not applied.
+                            // 导入的未验证状态只保留数据，不自动恢复，避免插件崩溃；
+                            // 此时用导入的程序号尽量还原预设选择。
+                            // Unverified imported state is preserved but not applied; the imported
+                            // program number is used to restore the preset selection instead.
                             if pref.restore_state {
                                 runtime.restore_state(&pref.state, &pref.params);
+                            } else if let Some(program) = pref.program {
+                                runtime.select_program(program);
                             }
                             span.end(&[("status", "ok")]);
                             InstrumentRuntime::Plugin(runtime)
@@ -554,6 +558,8 @@ impl TrackEngine {
                         Ok(mut runtime) => {
                             if pref.restore_state {
                                 runtime.restore_state(&pref.state, &pref.params);
+                            } else if let Some(program) = pref.program {
+                                runtime.select_program(program);
                             }
                             EffectRuntime::Plugin(runtime)
                         }
@@ -1060,6 +1066,8 @@ impl Engine {
                         Ok(mut runtime) => {
                             if pref.restore_state {
                                 runtime.restore_state(&pref.state, &pref.params);
+                            } else if let Some(program) = pref.program {
+                                runtime.select_program(program);
                             }
                             Some(EffectRuntime::Plugin(runtime))
                         }

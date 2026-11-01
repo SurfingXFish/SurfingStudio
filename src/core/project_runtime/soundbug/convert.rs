@@ -159,6 +159,7 @@ pub(super) fn import_track(
                 path,
                 &plugin.display_name,
                 plugin.state.clone(),
+                plugin.program,
                 plugin.uid.clone(),
             )));
     }
@@ -415,6 +416,9 @@ fn parse_plugin(node: &Node) -> SoundBugPlugin {
         path,
         format,
         state,
+        program: node
+            .prop_u64("programNum")
+            .and_then(|value| i32::try_from(value).ok()),
         uid: node.prop_str("uid").unwrap_or_default(),
         enabled: node.prop_bool("enabled").unwrap_or(true),
         volume: node.prop_f64("volume").map(|value| value as f32),
@@ -463,6 +467,7 @@ fn instrument_for(
                     path,
                     &plugin.display_name,
                     plugin.state.clone(),
+                    plugin.program,
                     plugin.uid.clone(),
                 ));
             }
@@ -522,6 +527,7 @@ fn detect_format(path: &Path) -> Option<PluginFormat> {
 /// - `path`：插件路径。
 /// - `name`：显示名。
 /// - `state`：SoundBug 保存的插件状态（已解码）。
+/// - `program`：插件程序（预设）索引；仅状态不可恢复时用于恢复音色。
 /// - `uid`：SoundBug 的 uid；仅 32 位十六进制时作为 VST3 class id。
 ///
 /// 输出/副作用：返回 `PluginRef`；无效 uid 留空以使用插件默认类。
@@ -537,6 +543,8 @@ fn detect_format(path: &Path) -> Option<PluginFormat> {
 /// - `path`: plugin path.
 /// - `name`: display name.
 /// - `state`: decoded SoundBug plugin state.
+/// - `program`: plugin program (preset) index, used to restore the preset when the state cannot
+///   be restored.
 /// - `uid`: SoundBug uid; used as a VST3 class id only when it is 32 hex digits.
 ///
 /// Outputs / side effects: returns a `PluginRef`; invalid uids stay empty so the
@@ -549,6 +557,7 @@ fn plugin_ref(
     path: PathBuf,
     name: &str,
     state: Option<Vec<u8>>,
+    program: Option<i32>,
     uid: String,
 ) -> PluginRef {
     let mut plugin = PluginRef::new(format, path, name.to_string());
@@ -557,6 +566,7 @@ fn plugin_ref(
         plugin.uid = uid;
     }
     plugin.state = state.unwrap_or_default().into();
+    plugin.program = program;
     plugin.restore_state = false;
     plugin
 }
@@ -838,6 +848,10 @@ struct SoundBugPlugin {
     path: Option<PathBuf>,
     format: Option<PluginFormat>,
     state: Option<Vec<u8>>,
+    /// `programNum`：插件程序（预设）索引；状态不可恢复时用它恢复音色选择。
+    /// `programNum`: the plugin program (preset) index, used to restore the preset when the state
+    /// cannot be restored.
+    program: Option<i32>,
     uid: String,
     enabled: bool,
     volume: Option<f32>,

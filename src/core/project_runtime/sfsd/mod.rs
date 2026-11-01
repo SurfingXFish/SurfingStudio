@@ -321,6 +321,7 @@ mod tests {
             state: Arc::from(vec![1u8, 2, 3, 250, 251, 252]),
             restore_state: true,
             params: vec![0.25, 0.75],
+            program: None,
             enabled: true,
         }));
         project.tracks.push(Track::new(
@@ -335,6 +336,7 @@ mod tests {
                 state: Arc::from(Vec::new()),
                 restore_state: true,
                 params: vec![0.5],
+                program: None,
                 enabled: true,
             }),
         ));

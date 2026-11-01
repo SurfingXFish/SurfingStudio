@@ -75,6 +75,13 @@ pub struct PluginRef {
     /// Normalized parameter snapshot, used as a fallback for VST2 and as a quick restore.
     #[serde(default)]
     pub params: Vec<f32>,
+    /// 插件程序（预设）索引；导入工程（如 SoundBug 的 `programNum`）可据此恢复音色选择。
+    /// 仅在状态无法恢复时生效，0 基，越界或插件不支持时忽略。
+    /// Plugin program (preset) index; imported projects (SoundBug's `programNum`) use it to restore
+    /// the preset selection. Applied only when the state cannot be restored; zero-based, ignored
+    /// when out of range or unsupported.
+    #[serde(default)]
+    pub program: Option<i32>,
     /// 该效果器是否参与音频处理；关闭时旁路但保留实例、参数与状态。
     /// Whether this effect processes audio; when disabled it is bypassed while the
     /// instance, parameters and state are kept.
@@ -154,6 +161,7 @@ impl PluginRef {
             state: Arc::from(Vec::new()),
             restore_state: true,
             params: Vec::new(),
+            program: None,
             enabled: true,
         }
     }

@@ -220,6 +220,12 @@ mod tests {
             plugins.iter().any(|plugin| !plugin.state.is_empty()),
             "imported plugins must keep their state"
         );
+        // 程序号（programNum）要保留：状态无法恢复时用它还原音色选择。
+        // The program number must survive: it restores the preset when the state cannot be applied.
+        assert!(
+            plugins.iter().any(|plugin| plugin.program.is_some()),
+            "imported plugin programs must be kept"
+        );
         // 文本编码的状态可能不是标准 VST3 状态，只保留不自动恢复。
         // Text-encoded states may not be standard VST3 states; preserve but do
         // not auto-restore them.
