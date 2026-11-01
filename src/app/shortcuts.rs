@@ -462,24 +462,38 @@ impl Binding {
     }
 
     /// 所属模块：app / 可配置快捷键
-    /// 功能：判断该绑定是否在本帧被按下（修饰键必须完全一致）。
+    /// 功能：判断该绑定是否在本帧被按下（修饰键必须与按键事件本身一致）。
+    /// 说明：不能读取帧末的 `i.modifiers`——快速按下再松开 Ctrl 时，帧被处理时
+    /// 修饰键可能已经弹起，导致快捷键概率性失效；必须使用 `Event::Key` 携带的修饰键。
     /// 输入：
     /// - `ctx`：egui 上下文。
     /// 输出/副作用：返回布尔值；不修改状态。
-    /// 复杂度：时间 O(1)，空间 O(1)。
+    /// 复杂度：时间 O(本帧按键事件数)，空间 O(1)。
     ///
     /// Module: app / configurable shortcuts
-    /// Purpose: Whether this binding was pressed this frame (modifiers must match exactly).
+    /// Purpose: Whether this binding was pressed this frame (modifiers come from the key event).
+    /// Why: reading the end-of-frame `i.modifiers` fails when Ctrl is released quickly inside the
+    /// same frame; the modifiers carried by `Event::Key` are the correct source.
     /// Inputs:
     /// - `ctx`: egui context.
     /// Outputs / side effects: the boolean; no state change.
-    /// Complexity: O(1) time and space.
+    /// Complexity: O(key events in this frame) time and O(1) space.
     pub fn matches(self, ctx: &egui::Context) -> bool {
         ctx.input(|i| {
-            i.key_pressed(self.key)
-                && i.modifiers.command == self.ctrl
-                && i.modifiers.shift == self.shift
-                && i.modifiers.alt == self.alt
+            i.events.iter().any(|event| {
+                matches!(
+                    event,
+                    egui::Event::Key {
+                        key,
+                        pressed: true,
+                        modifiers,
+                        ..
+                    } if *key == self.key
+                        && modifiers.command == self.ctrl
+                        && modifiers.shift == self.shift
+                        && modifiers.alt == self.alt
+                )
+            })
         })
     }
 }
@@ -868,6 +882,33 @@ mod tests {
                 binding.text()
             );
         }
+    }
+
+    /// 覆盖：绑定使用按键事件携带的修饰键，即使帧末 Ctrl 已弹起也能命中。
+    /// Covers: a binding matches with the modifiers carried by the key event even when the
+    /// end-of-frame modifiers no longer contain Ctrl.
+    #[test]
+    fn binding_uses_key_event_modifiers() {
+        let ctx = egui::Context::default();
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::Key {
+            key: egui::Key::Z,
+            physical_key: Some(egui::Key::Z),
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers {
+                ctrl: true,
+                command: true,
+                ..Default::default()
+            },
+        });
+        // 帧末修饰键为空：模拟很快松开 Ctrl、事件在本帧稍后才被处理。
+        // Empty end-of-frame modifiers: simulates Ctrl released before the frame is processed.
+        input.modifiers = egui::Modifiers::default();
+        ctx.begin_pass(input);
+        let matched = Binding::new(egui::Key::Z, true, false, false).matches(&ctx);
+        ctx.end_pass();
+        assert!(matched, "Ctrl+Z should match using the key event modifiers");
     }
 
     /// 覆盖：默认快捷键之间不存在重复绑定。
