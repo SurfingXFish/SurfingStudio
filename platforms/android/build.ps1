@@ -63,7 +63,7 @@ Set-Item -Path "env:CC_$targetEnv" -Value $clang
 Set-Item -Path "env:CXX_$targetEnv" -Value $clangxx
 Set-Item -Path "env:AR_$targetEnv" -Value (Join-Path $toolchain 'llvm-ar.exe')
 
-Write-Host "=== 1/5 cargo build ($target) ===" -ForegroundColor Cyan
+Write-Host "=== 1/7 cargo build ($target) ===" -ForegroundColor Cyan
 Push-Location $root
 try {
     cargo build -p surfing-studio-android --target $target --release
@@ -83,11 +83,21 @@ $aligned = Join-Path $outDir "SurfingStudio-$abi-aligned.apk"
 $signed = Join-Path $outDir "SurfingStudio-$abi.apk"
 Remove-Item $unsigned, $aligned, $signed -ErrorAction SilentlyContinue
 
-Write-Host '=== 2/6 aapt2 link manifest ===' -ForegroundColor Cyan
-& (Join-Path $buildTools 'aapt2.exe') link -o $unsigned -I $androidJar --manifest $manifest
+Write-Host '=== 2/7 aapt2 compile resources ===' -ForegroundColor Cyan
+$resDir = Join-Path $PSScriptRoot 'res'
+$compiledRes = Join-Path $outDir 'res-compiled'
+Remove-Item $compiledRes -Recurse -Force -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force -Path $compiledRes | Out-Null
+& (Join-Path $buildTools 'aapt2.exe') compile --dir $resDir -o $compiledRes
+if ($LASTEXITCODE -ne 0) { throw 'aapt2 compile failed' }
+$flatFiles = Get-ChildItem $compiledRes -Recurse -Filter *.flat | ForEach-Object { $_.FullName }
+if (-not $flatFiles) { throw 'aapt2 compile produced no .flat files' }
+
+Write-Host '=== 3/7 aapt2 link manifest ===' -ForegroundColor Cyan
+& (Join-Path $buildTools 'aapt2.exe') link -o $unsigned -I $androidJar --manifest $manifest $flatFiles
 if ($LASTEXITCODE -ne 0) { throw 'aapt2 link failed' }
 
-Write-Host '=== 3/6 javac + d8 (activity subclass) ===' -ForegroundColor Cyan
+Write-Host '=== 4/7 javac + d8 (activity subclass) ===' -ForegroundColor Cyan
 $classesDir = Join-Path $outDir 'classes'
 $dexDir = Join-Path $outDir 'dex'
 Remove-Item $classesDir, $dexDir -Recurse -Force -ErrorAction SilentlyContinue
@@ -103,7 +113,7 @@ if (-not $classFiles) { throw 'javac produced no class files' }
 & (Join-Path $buildTools 'd8.bat') --lib $androidJar --min-api $apiLevel --output $dexDir $classFiles
 if ($LASTEXITCODE -ne 0) { throw 'd8 failed' }
 
-Write-Host '=== 4/6 add native library and classes.dex ===' -ForegroundColor Cyan
+Write-Host '=== 5/7 add native library and classes.dex ===' -ForegroundColor Cyan
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $zip = [System.IO.Compression.ZipFile]::Open($unsigned, 'Update')
@@ -128,17 +138,24 @@ try {
     $zip.Dispose()
 }
 
-Write-Host '=== 5/6 zipalign ===' -ForegroundColor Cyan
+Write-Host '=== 6/7 zipalign ===' -ForegroundColor Cyan
 & (Join-Path $buildTools 'zipalign.exe') -p -f 4 $unsigned $aligned
 if ($LASTEXITCODE -ne 0) { throw 'zipalign failed' }
 
-Write-Host '=== 6/6 apksigner ===' -ForegroundColor Cyan
+Write-Host '=== 7/7 apksigner ===' -ForegroundColor Cyan
 $keystore = Join-Path $env:USERPROFILE '.android\debug.keystore'
 if (-not (Test-Path $keystore)) { throw "debug keystore not found: $keystore" }
+# 同时启用 v1 / v2 / v3，避免个别 ROM 或旧设备只认其中一种方案而拒绝安装。
+# Enable v1 / v2 / v3 together so ROMs that only honour one scheme still accept the APK.
 & (Join-Path $buildTools 'apksigner.bat') sign `
     --ks $keystore --ks-pass pass:android --key-pass pass:android `
-    --ks-key-alias androiddebugkey --out $signed $aligned
+    --ks-key-alias androiddebugkey `
+    --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true `
+    --out $signed $aligned
 if ($LASTEXITCODE -ne 0) { throw 'apksigner failed' }
+
+& (Join-Path $buildTools 'apksigner.bat') verify --verbose $signed
+if ($LASTEXITCODE -ne 0) { throw 'apksigner verify failed' }
 
 Remove-Item $unsigned, $aligned -ErrorAction SilentlyContinue
 Write-Host "APK: $signed" -ForegroundColor Green
