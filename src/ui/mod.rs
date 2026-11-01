@@ -196,9 +196,10 @@ pub enum PianoDrag {
         anchor: (usize, usize),
         group: Vec<(usize, usize, f64, f64)>,
     },
-    /// Rubber-band selection of notes.
-    /// The anchor is stored in content space (`start_beat` plus the row offset from the grid top)
-    /// so the band follows the pointer while the view scrolls or zooms.
+    /// 框选音符：锚点使用内容坐标（起拍 + 绝对音高行），视图横向或纵向滚动/缩放时选择框仍跟随指针。
+    /// Rubber-band selection of notes: the anchor is stored in content space (`start_beat` plus the
+    /// absolute pitch row) so the band follows the pointer while the view scrolls or zooms in either
+    /// direction.
     Marquee {
         start_beat: f64,
         start_row: f32,

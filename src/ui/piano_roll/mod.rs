@@ -907,7 +907,7 @@ impl SurfingApp {
                         // scrolls or zooms.
                         self.piano_drag = PianoDrag::Marquee {
                             start_beat: x_to_beat(pos.x),
-                            start_row: (pos.y - grid_top) / note_h,
+                            start_row: top_pitch as f32 - (pos.y - grid_top) / note_h,
                         };
                     }
                 }
@@ -1216,7 +1216,10 @@ impl SurfingApp {
         } = &self.piano_drag
         {
             if let Some(pos) = response.interact_pointer_pos() {
-                let start = egui::pos2(beat_to_x(*start_beat), grid_top + *start_row * note_h);
+                let start = egui::pos2(
+                    beat_to_x(*start_beat),
+                    grid_top + (top_pitch as f32 - *start_row) * note_h,
+                );
                 let band = Rect::from_two_pos(start, pos).intersect(Rect::from_min_max(
                     egui::pos2(grid_left, grid_top),
                     egui::pos2(rect.right(), grid_bottom),
