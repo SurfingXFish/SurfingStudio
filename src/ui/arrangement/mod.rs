@@ -15,9 +15,9 @@
 //! - `SurfingApp::ui_arrangement`: arrangement painting and interaction entry point.
 
 use crate::app::SurfingApp;
-use crate::core::model::{evaluate_automation, AudioSource, Clip, ControllerKind};
+use crate::core::model::{AudioSource, Clip, ControllerKind, evaluate_automation};
 
-use crate::ui::{theme, ArrangementDrag, BottomView, MouseMode};
+use crate::ui::{ArrangementDrag, BottomView, MouseMode, theme};
 use eframe::egui::{self, Align2, CornerRadius, FontId, Rect, Sense, Stroke, StrokeKind, Vec2};
 
 mod layout;

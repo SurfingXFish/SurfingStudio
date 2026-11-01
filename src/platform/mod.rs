@@ -35,7 +35,7 @@ mod backends;
 mod dialog;
 
 pub use backend::{FileRequest, PlatformBackend, PlatformCaps, PlatformInfo};
-pub use dialog::{parent_by_title, DialogParent};
+pub use dialog::{DialogParent, parent_by_title};
 
 #[cfg(target_os = "android")]
 pub use backends::{install_activity, install_storage};

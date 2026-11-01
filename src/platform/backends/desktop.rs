@@ -23,8 +23,8 @@
 //! - `DesktopPlatform::pick_file` / `pick_folder` / `save_file`: rfd dialogs.
 //! - `DesktopPlatform::exit_process`: terminate the process.
 
-use super::super::{FileRequest, PlatformBackend, PlatformCaps, PlatformInfo};
 use super::super::{APP_DIR_NAME, LOG_DIR_SUFFIX};
+use super::super::{FileRequest, PlatformBackend, PlatformCaps, PlatformInfo};
 use std::path::PathBuf;
 
 /// 桌面后端实例。

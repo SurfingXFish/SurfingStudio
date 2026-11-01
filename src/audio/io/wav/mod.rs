@@ -21,8 +21,8 @@
 //! - `decode_wav` / `wav_duration_seconds` / `encode_wav`: WAV codec implementation.
 
 use super::{
-    build_peaks, split_stereo, AudioBitDepth, AudioCodec, AudioCodecInfo, AudioEncodeOptions,
-    AudioFile,
+    AudioBitDepth, AudioCodec, AudioCodecInfo, AudioEncodeOptions, AudioFile, build_peaks,
+    split_stereo,
 };
 use std::path::Path;
 

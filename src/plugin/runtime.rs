@@ -1,13 +1,13 @@
 //! Unified plugin runtime used by the audio engine.
 
-use super::backends::{make_vst2_cc, send_vst2_events, send_vst2_gates, Vst2Host};
+use super::backends::{Vst2Host, make_vst2_cc, send_vst2_events, send_vst2_gates};
 use super::{ParamView, PluginKind};
 use crate::audio::synth::{GateKind, SynthEvent};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use vst::plugin::Plugin as VstPluginTrait;
-use vst3_host::midi::{MidiChannel, MidiEvent as Vst3MidiEvent};
 use vst3_host::Plugin as Vst3Plugin;
+use vst3_host::midi::{MidiChannel, MidiEvent as Vst3MidiEvent};
 
 /// 全量参数比对的参数数量上限：Kontakt 等采样器有数千个参数，逐个调用控制器会让 UI 线程
 /// 卡住数秒并长期占用引擎锁（音频回调拿不到锁，表现为没有声音）；超过上限时只依赖插件主动

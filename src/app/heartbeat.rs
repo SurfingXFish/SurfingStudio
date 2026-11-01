@@ -18,8 +18,8 @@
 //! - `set_active`: enable the heartbeat while any plugin editor is open.
 //! - `worker`: request a repaint and post `WM_NULL` to the UI thread every 16 ms.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 /// 是否需要在编辑器打开期间保持 UI 线程活跃。
 /// Whether the UI thread must be kept awake while an editor is open.

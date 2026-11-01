@@ -22,7 +22,7 @@
 
 use crate::app::{PianoViewState, RollKind, SurfingApp};
 use crate::core::model::Clip;
-use crate::ui::{theme, MouseMode, PianoDrag};
+use crate::ui::{MouseMode, PianoDrag, theme};
 use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Rect, Sense, Stroke, StrokeKind};
 
 mod helpers;

@@ -20,4 +20,4 @@ mod vst3;
 pub use vst2::Vst2Backend;
 pub use vst3::Vst3Backend;
 
-pub(crate) use vst2::{make_vst2_cc, send_vst2_events, send_vst2_gates, Vst2Host};
+pub(crate) use vst2::{Vst2Host, make_vst2_cc, send_vst2_events, send_vst2_gates};

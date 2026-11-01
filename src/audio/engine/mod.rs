@@ -43,8 +43,8 @@ use crate::audio::gpu::GpuRenderConfig;
 use crate::audio::io::{AudioFile, AudioRuntime};
 use crate::audio::synth::{DrumKit, GateKind, ModeledInstrument, PolySynth, SynthEvent};
 use crate::core::model::{
-    evaluate_automation, ChannelLayout, ControllerKind, ControllerLanes, EffectRef, InstrumentRef,
-    Project, Track, TrackId,
+    ChannelLayout, ControllerKind, ControllerLanes, EffectRef, InstrumentRef, Project, Track,
+    TrackId, evaluate_automation,
 };
 use crate::plugin::{ParamView, PluginHost, PluginKind, PluginRuntime};
 use std::collections::{HashMap, HashSet};

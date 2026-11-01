@@ -526,7 +526,7 @@ impl<'a> Reader<'a> {
                 return Err(format!(
                     "SoundBug 数量前缀无效（{other:#X}，偏移 {:#X}）",
                     self.pos - 1
-                ))
+                ));
             }
         };
         if count > self.data.len() {

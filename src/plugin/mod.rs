@@ -33,8 +33,8 @@ mod runtime;
 mod scan;
 
 pub use backend::{PluginBackend, PluginBackendInfo};
-pub use catalog::{lookup as lookup_catalog, CatalogEntry};
-pub use editor::{pump_editor_timers, Vst2EditorWindow};
+pub use catalog::{CatalogEntry, lookup as lookup_catalog};
+pub use editor::{Vst2EditorWindow, pump_editor_timers};
 pub use host::PluginHost;
 pub(crate) use runtime::stash_reusable;
 pub use runtime::{PluginRuntime, Vst2Runtime, Vst3Runtime};
@@ -186,8 +186,8 @@ mod tests {
     fn pro_q_editor_repaints_in_a_plain_message_loop() {
         use std::time::{Duration, Instant};
         use winapi::um::winuser::{
-            DispatchMessageW, MsgWaitForMultipleObjectsEx, PeekMessageW, TranslateMessage, MSG,
-            MWMO_INPUTAVAILABLE, PM_REMOVE, QS_ALLINPUT, WM_PAINT, WM_TIMER,
+            DispatchMessageW, MSG, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE,
+            PeekMessageW, QS_ALLINPUT, TranslateMessage, WM_PAINT, WM_TIMER,
         };
 
         let path =
@@ -309,7 +309,7 @@ mod tests {
         let class: Vec<u16> = "STATIC\0".encode_utf16().collect();
         let title: Vec<u16> = "focus taker\0".encode_utf16().collect();
         use winapi::um::winuser::{
-            CreateWindowExW, SetForegroundWindow, ShowWindow, CW_USEDEFAULT, SW_SHOW,
+            CW_USEDEFAULT, CreateWindowExW, SW_SHOW, SetForegroundWindow, ShowWindow,
             WS_OVERLAPPEDWINDOW, WS_VISIBLE,
         };
         let dummy = unsafe {
@@ -364,9 +364,9 @@ mod tests {
         use winapi::shared::windef::{HWND, POINT, RECT};
         use winapi::um::winuser::{
             ClientToScreen, CreateWindowExW, DestroyWindow, DispatchMessageW, FindWindowW,
-            GetClientRect, GetWindowRect, IsWindowVisible, MsgWaitForMultipleObjectsEx,
-            PeekMessageW, ShowWindow, TranslateMessage, MSG, MWMO_INPUTAVAILABLE, PM_REMOVE,
-            QS_ALLINPUT, SW_SHOW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+            GetClientRect, GetWindowRect, IsWindowVisible, MSG, MWMO_INPUTAVAILABLE,
+            MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW, QS_ALLINPUT, SW_SHOW, ShowWindow,
+            TranslateMessage, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
         };
 
         let path =
@@ -492,8 +492,8 @@ mod tests {
     fn pro_q_editor_timer_thread_follows_the_loading_thread() {
         use std::time::{Duration, Instant};
         use winapi::um::winuser::{
-            DispatchMessageW, MsgWaitForMultipleObjectsEx, PeekMessageW, TranslateMessage, MSG,
-            MWMO_INPUTAVAILABLE, PM_REMOVE, QS_ALLINPUT, WM_TIMER,
+            DispatchMessageW, MSG, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE,
+            PeekMessageW, QS_ALLINPUT, TranslateMessage, WM_TIMER,
         };
 
         let path =
@@ -800,9 +800,9 @@ mod tests {
         use std::time::{Duration, Instant};
         use winapi::shared::windef::HWND;
         use winapi::um::winuser::{
-            CreateWindowExW, DestroyWindow, DispatchMessageW, MsgWaitForMultipleObjectsEx,
-            PeekMessageW, ShowWindow, TranslateMessage, MSG, MWMO_INPUTAVAILABLE, PM_REMOVE,
-            QS_ALLINPUT, SW_SHOW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+            CreateWindowExW, DestroyWindow, DispatchMessageW, MSG, MWMO_INPUTAVAILABLE,
+            MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW, QS_ALLINPUT, SW_SHOW, ShowWindow,
+            TranslateMessage, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
         };
 
         let path = PathBuf::from(r"C:\Program Files\Common Files\VST3\Antares\Auto-Tune Pro.vst3");

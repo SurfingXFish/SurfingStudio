@@ -41,8 +41,8 @@
 
 use super::*;
 use crate::diag;
-use std::sync::mpsc::Sender as MpscSender;
 use std::sync::Weak;
+use std::sync::mpsc::Sender as MpscSender;
 
 /// 加载中关闭窗口时等待插件同步的上限；超过后强制关闭并放弃引擎。
 /// Maximum wait for a plugin sync when closing during loading; after it the window force-closes
@@ -196,7 +196,7 @@ fn run_sync_service(engine: Weak<Mutex<Engine>>, requests: Receiver<SyncRequest>
 /// Complexity: O(message count) time and O(1) space.
 #[cfg(target_os = "windows")]
 fn pump_plugin_messages() {
-    use winapi::um::winuser::{DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE};
+    use winapi::um::winuser::{DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, TranslateMessage};
     let mut message: MSG = unsafe { std::mem::zeroed() };
     while unsafe { PeekMessageW(&mut message, std::ptr::null_mut(), 0, 0, PM_REMOVE) } != 0 {
         unsafe {

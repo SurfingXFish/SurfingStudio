@@ -29,7 +29,7 @@
 //! - `SurfingApp::resolve_native_window`: resolve the native handle of this window (Windows).
 //! - `Drop::drop`: stop the recovery thread and wait for the background save before exiting.
 
-use crate::audio::{format_position, Engine, SlotKind};
+use crate::audio::{Engine, SlotKind, format_position};
 use crate::core::model::{
     AutomationPoint, Clip, ControllerKind, InstrumentRef, Note, PluginFormat, PluginRef, Project,
     TemplateFamily, TemplateId, Track, TrackId,
@@ -37,12 +37,12 @@ use crate::core::model::{
 use crate::core::project_runtime::ProjectSession;
 use crate::diag;
 use crate::plugin::{ParamView, PluginHost, ScannedPlugin};
-use crate::ui::{theme, ArrangementDrag, BottomView, BrowserState, MouseMode, PianoDrag};
+use crate::ui::{ArrangementDrag, BottomView, BrowserState, MouseMode, PianoDrag, theme};
 use eframe::egui;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use vst3_host::PluginWindow;
@@ -73,7 +73,7 @@ mod window_chrome;
 
 pub use export::{ExportChannels, ExportFormat, ExportState};
 pub use plugins::EditorWindow;
-pub use settings::{gpu_render_startup, GpuRenderApi, GpuRenderStartup};
+pub use settings::{GpuRenderApi, GpuRenderStartup, gpu_render_startup};
 pub use shared::SharedServices;
 pub use shell::WindowHost;
 pub use shortcuts::{ScrollDirection, ShortcutAction};
@@ -838,10 +838,10 @@ impl SurfingApp {
         use winapi::shared::minwindef::{BOOL, DWORD, LPARAM};
         use winapi::shared::windef::HWND;
         use winapi::um::winuser::{
-            DispatchMessageW, EnumWindows, GetWindow, GetWindowTextLengthW, GetWindowTextW,
-            GetWindowThreadProcessId, IsWindowVisible, MsgWaitForMultipleObjectsEx, PeekMessageW,
-            PostMessageW, TranslateMessage, GW_OWNER, MSG, MWMO_INPUTAVAILABLE, PM_REMOVE,
-            QS_ALLINPUT, WM_CLOSE,
+            DispatchMessageW, EnumWindows, GW_OWNER, GetWindow, GetWindowTextLengthW,
+            GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible, MSG, MWMO_INPUTAVAILABLE,
+            MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW, PostMessageW, QS_ALLINPUT,
+            TranslateMessage, WM_CLOSE,
         };
 
         unsafe fn title_of(hwnd: HWND) -> Option<String> {
@@ -987,7 +987,7 @@ impl SurfingApp {
         use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
         use winapi::um::processthreadsapi::{GetCurrentProcessId, OpenProcess, TerminateProcess};
         use winapi::um::tlhelp32::{
-            CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+            CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
             TH32CS_SNAPPROCESS,
         };
         use winapi::um::winnt::PROCESS_TERMINATE;

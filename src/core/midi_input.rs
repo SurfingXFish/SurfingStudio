@@ -19,7 +19,7 @@
 //! - `MidiInputManager::drain`: take the pending events.
 
 use midir::{MidiInput, MidiInputConnection, MidiOutput};
-use std::sync::mpsc::{channel, Receiver};
+use std::sync::mpsc::{Receiver, channel};
 
 pub struct MidiKeyEvent {
     pub on: bool,

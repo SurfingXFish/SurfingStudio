@@ -28,11 +28,11 @@ mod container;
 mod manifest;
 
 use self::container::{
-    ContainerReader, ContainerWriter, CODEC_RAW, CODEC_ZSTD, TAG_META, TAG_PEAK, TAG_PLUG,
+    CODEC_RAW, CODEC_ZSTD, ContainerReader, ContainerWriter, TAG_META, TAG_PEAK, TAG_PLUG,
 };
-use self::manifest::{plugin_refs, plugin_refs_mut, Manifest, ManifestRef, PeakTable};
+use self::manifest::{Manifest, ManifestRef, PeakTable, plugin_refs, plugin_refs_mut};
 use super::{CodecInfo, ProjectCodec, ProjectSession, ProjectSource, WaveformPeak};
-use crate::core::model::{Project, CURRENT_PROJECT_VERSION};
+use crate::core::model::{CURRENT_PROJECT_VERSION, Project};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

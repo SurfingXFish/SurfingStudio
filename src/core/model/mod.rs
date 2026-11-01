@@ -41,9 +41,9 @@ mod project;
 pub mod template;
 mod track;
 
-pub use channel::{default_layout, ChannelLayout};
+pub use channel::{ChannelLayout, default_layout};
 pub use clip::{AudioSource, Clip, Note};
-pub use controller::{evaluate_automation, AutomationPoint, ControllerKind, ControllerLanes};
+pub use controller::{AutomationPoint, ControllerKind, ControllerLanes, evaluate_automation};
 pub use effect::{
     EffectRef, NativeEffect, NativeEffectKind, NativeEffectParam, NativeEffectSettings,
 };

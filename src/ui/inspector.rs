@@ -7,7 +7,7 @@ use crate::core::model::{
     NativeInstrumentKind, PluginRef, SynthSettings, Waveform,
 };
 use crate::plugin::{ParamView, PluginKind};
-use crate::ui::{theme, BottomView, PluginTarget};
+use crate::ui::{BottomView, PluginTarget, theme};
 use eframe::egui::{self, RichText, Sense, Slider, Vec2};
 
 #[derive(Clone, Copy, Debug)]

@@ -1,11 +1,11 @@
 //! Tracks and their child lanes.
 
+use super::TrackId;
 use super::clip::Clip;
 use super::controller::{ControllerKind, ControllerLanes};
 use super::default_revision;
 use super::effect::EffectRef;
 use super::instrument::InstrumentRef;
-use super::TrackId;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

@@ -18,7 +18,7 @@
 
 use crate::app::{RollKind, SurfingApp};
 use crate::audio::SlotKind;
-use crate::ui::{theme, PluginTarget};
+use crate::ui::{PluginTarget, theme};
 use eframe::egui::{
     self, Align2, CornerRadius, FontId, Rect, RichText, Sense, Stroke, StrokeKind, Vec2,
 };

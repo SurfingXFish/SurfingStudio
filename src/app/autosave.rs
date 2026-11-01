@@ -626,9 +626,11 @@ mod tests {
     fn unsaved_projects_use_the_temp_directory() {
         let target = recovery_target_path(None, "我的 工程", 7);
         assert!(target.starts_with(std::env::temp_dir().join(RECOVERY_DIR_NAME)));
-        assert!(target
-            .file_name()
-            .is_some_and(|name| name.to_string_lossy().ends_with("-7.sfsd")));
+        assert!(
+            target
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().ends_with("-7.sfsd"))
+        );
     }
 
     /// 覆盖：已保存工程的恢复文件紧邻工程文件，且不覆盖原文件。

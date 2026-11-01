@@ -20,7 +20,7 @@
 //! - `read_comp`: decompress `comp.dat` with zlib.
 //! - `resolve_path`: resolve a relative media path.
 
-use super::edit::{trim_nul, Reader};
+use super::edit::{Reader, trim_nul};
 use flate2::read::ZlibDecoder;
 use std::collections::HashMap;
 use std::fs::File;

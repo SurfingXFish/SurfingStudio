@@ -1653,9 +1653,9 @@ impl SurfingApp {
                     );
                 }
                 settings_hint(
-                        ui,
-                        "导出时按所选设备与 API 运行计算着色器；设备不可用时自动回退 CPU 并在状态栏提示。",
-                    );
+                    ui,
+                    "导出时按所选设备与 API 运行计算着色器；设备不可用时自动回退 CPU 并在状态栏提示。",
+                );
                 let realtime_label = if !self.settings.gpu_audio_realtime_enabled {
                     "未启用"
                 } else if realtime_active {

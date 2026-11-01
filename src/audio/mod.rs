@@ -18,6 +18,6 @@ pub mod synth;
 pub mod asio;
 
 pub use backend::{AudioOptions, AudioOutput, AudioRouter, AudioSystem};
-pub use engine::{format_position, Engine, SlotKind};
+pub use engine::{Engine, SlotKind, format_position};
 pub use gpu::{GpuDeviceInfo, GpuRenderConfig, GpuRuntime};
 pub use io::{AudioFile, AudioRuntime};

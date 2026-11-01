@@ -1011,7 +1011,7 @@ fn sample_resources() -> Option<ResourceSample> {
     };
     use winapi::um::psapi::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
     use winapi::um::tlhelp32::{
-        CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+        CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
     };
 
     // SAFETY: 所有调用只读取当前进程/系统快照；结构体均已初始化并设置大小字段。

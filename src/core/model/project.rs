@@ -1,12 +1,12 @@
 //! Project container, defaults and the built-in demo arrangement.
 
-use super::channel::{default_layout, ChannelLayout};
+use super::channel::{ChannelLayout, default_layout};
 use super::clip::{Clip, Note};
-use super::controller::{evaluate_automation, ControllerKind, ControllerLanes};
+use super::controller::{ControllerKind, ControllerLanes, evaluate_automation};
 use super::effect::EffectRef;
 use super::instrument::{DrumSettings, InstrumentRef, SynthSettings, Waveform};
 use super::track::{Track, TrackKind};
-use super::{TrackId, CURRENT_PROJECT_VERSION};
+use super::{CURRENT_PROJECT_VERSION, TrackId};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

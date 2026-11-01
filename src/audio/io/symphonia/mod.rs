@@ -23,7 +23,7 @@
 //! - `decode_with_symphonia`: fully decode and downmix to stereo.
 //! - `probe_track`: probe the container and return the default audio track metadata.
 
-use super::{build_peaks, split_stereo, AudioCodec, AudioCodecInfo, AudioFile};
+use super::{AudioCodec, AudioCodecInfo, AudioFile, build_peaks, split_stereo};
 use std::fs::File;
 use std::path::Path;
 use symphonia::core::codecs::audio::AudioDecoderOptions;

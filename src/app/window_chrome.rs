@@ -212,8 +212,8 @@ fn window_work_area(raw: Option<RawWindowHandle>, ppp: f32) -> Option<(f32, f32,
     use raw_window_handle::RawWindowHandle;
     use winapi::shared::windef::RECT;
     use winapi::um::winuser::{
-        GetMonitorInfoW, MonitorFromWindow, SystemParametersInfoW, MONITORINFO,
-        MONITOR_DEFAULTTONEAREST, SPI_GETWORKAREA,
+        GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow, SPI_GETWORKAREA,
+        SystemParametersInfoW,
     };
 
     let RawWindowHandle::Win32(handle) = raw? else {

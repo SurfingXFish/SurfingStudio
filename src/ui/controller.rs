@@ -1,9 +1,9 @@
 //! Controller-lane editor (volume / pan / sustain / pitch bend).
 
 use crate::app::{RollKind, SurfingApp};
-use crate::core::model::{evaluate_automation, AutomationPoint, ControllerKind};
-use crate::ui::theme;
+use crate::core::model::{AutomationPoint, ControllerKind, evaluate_automation};
 use crate::ui::MouseMode;
+use crate::ui::theme;
 use eframe::egui::{self, Align2, CornerRadius, FontId, Sense, Stroke, StrokeKind, Vec2};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -322,11 +322,7 @@ impl SurfingApp {
             AutomationPoint {
                 beat: (x_to_beat(pos.x) / grid).round() * grid,
                 value: if kind == ControllerKind::Sustain {
-                    if raw >= 0.5 {
-                        1.0
-                    } else {
-                        0.0
-                    }
+                    if raw >= 0.5 { 1.0 } else { 0.0 }
                 } else {
                     raw
                 },

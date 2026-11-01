@@ -3,7 +3,7 @@
 use crate::app::SurfingApp;
 use crate::core::model::PluginFormat;
 use crate::plugin::{PluginKind, ScannedPlugin};
-use crate::ui::{theme, PluginFilter, PluginTarget};
+use crate::ui::{PluginFilter, PluginTarget, theme};
 use eframe::egui::{self, RichText};
 use std::collections::BTreeMap;
 
