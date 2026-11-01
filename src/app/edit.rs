@@ -890,66 +890,87 @@ impl SurfingApp {
                 } else {
                     base
                 };
-                let mut new_indices = Vec::new();
+                // 先做类型校验，避免没有实际粘贴时写入空撤销步骤。
+                // Validate types first so a no-op paste does not push an empty undo step.
+                let mut valid: Vec<(usize, Clip)> = Vec::new();
                 let mut rejected = 0usize;
                 for (track_index, clip) in clips {
                     // Clips always paste back onto their original track, so a
                     // cross-track copy keeps its arrangement.
                     let target = track_index.min(self.project.tracks.len() - 1);
+                    match self.project.tracks.get(target) {
+                        Some(track) if track.accepts_clip(&clip) => valid.push((target, clip)),
+                        _ => rejected += 1,
+                    }
+                }
+                if valid.is_empty() {
+                    self.status = if rejected > 0 {
+                        "目标轨道已有另一种类型的片段，无法粘贴".into()
+                    } else {
+                        "没有可粘贴的片段".into()
+                    };
+                    return;
+                }
+                self.push_undo_now();
+                let mut new_indices = Vec::new();
+                for (target, mut clip) in valid {
                     let id = self.project.next_clip_id();
-                    let mut clip = clip;
                     clip.id = id;
                     clip.start = (base + (clip.start - first)).max(0.0);
                     clip.bump_revision();
                     if let Some(track) = self.project.tracks.get_mut(target) {
-                        if track.accepts_clip(&clip) {
-                            track.clips.push(clip);
-                            new_indices.push((target, track.clips.len() - 1));
-                        } else {
-                            rejected += 1;
-                        }
+                        track.clips.push(clip);
+                        new_indices.push((target, track.clips.len() - 1));
                     }
                 }
-                if !new_indices.is_empty() {
-                    self.selected_track = new_indices.last().map(|(track, _)| *track).unwrap_or(0);
-                    self.selected_clip = new_indices.last().map(|(_, clip)| *clip);
-                    self.selected_clips = new_indices;
-                    self.mark_dirty();
-                    self.status = if rejected > 0 {
-                        format!("已粘贴部分片段（{rejected} 个因轨道类型冲突被跳过）")
-                    } else {
-                        "已粘贴 MIDI 片段".into()
-                    };
-                } else if rejected > 0 {
-                    self.status = "目标轨道已有另一种类型的片段，无法粘贴".into();
-                }
+                self.selected_track = new_indices.last().map(|(track, _)| *track).unwrap_or(0);
+                self.selected_clip = new_indices.last().map(|(_, clip)| *clip);
+                self.selected_clips = new_indices;
+                self.mark_dirty();
+                self.status = if rejected > 0 {
+                    format!("已粘贴部分片段（{rejected} 个因轨道类型冲突被跳过）")
+                } else {
+                    "已粘贴 MIDI 片段".into()
+                };
             }
             Clipboard::Notes(notes) => {
                 let playhead = self.playhead();
                 let mut pasted: Vec<(usize, usize)> = Vec::new();
-                if let Some(clip_index) = self.selected_clip {
-                    if let Some(track) = self.current_track_mut() {
-                        if let Some(clip) = track.clips.get_mut(clip_index) {
-                            let first = notes
-                                .iter()
-                                .map(|note| note.start)
-                                .fold(f64::INFINITY, f64::min);
-                            let base_abs = if (playhead - clip.start - first).abs() < 1e-6 {
-                                playhead + 1.0
-                            } else {
-                                playhead
-                            };
-                            for note in notes {
-                                let mut note = note;
-                                let abs = base_abs + (note.start - first);
-                                note.start = (abs - clip.start).clamp(0.0, clip.length);
-                                let max_start = (clip.length - note.length).max(0.0);
-                                note.start = note.start.min(max_start);
-                                clip.notes.push(note);
-                                pasted.push((clip_index, clip.notes.len() - 1));
-                            }
-                            clip.bump_revision();
+                if notes.is_empty() {
+                    return;
+                }
+                let Some(clip_index) = self.selected_clip else {
+                    return;
+                };
+                if self
+                    .current_track()
+                    .and_then(|track| track.clips.get(clip_index))
+                    .is_none()
+                {
+                    return;
+                }
+                self.push_undo_now();
+                if let Some(track) = self.current_track_mut() {
+                    if let Some(clip) = track.clips.get_mut(clip_index) {
+                        let first = notes
+                            .iter()
+                            .map(|note| note.start)
+                            .fold(f64::INFINITY, f64::min);
+                        let base_abs = if (playhead - clip.start - first).abs() < 1e-6 {
+                            playhead + 1.0
+                        } else {
+                            playhead
+                        };
+                        for note in notes {
+                            let mut note = note;
+                            let abs = base_abs + (note.start - first);
+                            note.start = (abs - clip.start).clamp(0.0, clip.length);
+                            let max_start = (clip.length - note.length).max(0.0);
+                            note.start = note.start.min(max_start);
+                            clip.notes.push(note);
+                            pasted.push((clip_index, clip.notes.len() - 1));
                         }
+                        clip.bump_revision();
                     }
                 }
                 if !pasted.is_empty() {
@@ -960,10 +981,16 @@ impl SurfingApp {
                 }
             }
             Clipboard::ControllerPoints(points) => {
-                if !self.bottom_open {
+                if !self.bottom_open || points.is_empty() {
                     return;
                 }
                 if let BottomView::Controller { track_id, kind } = self.bottom_view {
+                    let has_lane = track_id == crate::core::model::MASTER_TRACK_ID
+                        || self.project.tracks.iter().any(|track| track.id == track_id);
+                    if !has_lane {
+                        return;
+                    }
+                    self.push_undo_now();
                     let playhead = self.playhead();
                     let first = points
                         .iter()
