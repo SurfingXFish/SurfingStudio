@@ -47,6 +47,12 @@ const MAX_VOICES: usize = 24;
 /// and soft-limit with tanh.
 const OUTPUT_HEADROOM: f32 = 0.55;
 
+/// 持续类乐器的自然起音时间（秒）：分区采样从提取脚本导出后往往已丢掉真实弓头，
+/// 直接从满音量开始，听感像突然张口的“a”。用平滑起音补回弓毛加速的过程。
+/// Natural onset time (seconds) for sustained instruments: extracted zones often lose the real bow
+/// attack and start at full level, which is heard as an abrupt open "a"; a smooth onset restores it.
+const SUSTAIN_ONSET_SECONDS: f32 = 0.032;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum EnvStage {
     Off,
@@ -93,6 +99,12 @@ struct Voice {
     pending_release: bool,
     age: u64,
     tone_state: f32,
+    /// 持续类乐器的起音整形进度（0~1）；非持续类固定为 1。
+    /// Onset-shaping progress (0..=1) for sustained instruments; fixed at 1 otherwise.
+    onset_env: f32,
+    /// 起音整形每采样的步进；非持续类为 0。
+    /// Per-sample onset-shaping step; 0 for non-sustained instruments.
+    onset_step: f32,
     /// 音符已持续时间（秒），神经模型的时间特征由它推算。
     /// Seconds since note-on; the neural model derives its time feature from it.
     neural_time: f32,
@@ -132,6 +144,8 @@ impl Voice {
             pending_release: false,
             age: 0,
             tone_state: 0.0,
+            onset_env: 1.0,
+            onset_step: 0.0,
             neural_time: 0.0,
             jitter: 0.0,
             jitter_level: 1.0,
@@ -256,6 +270,10 @@ impl SampledInstrument {
         let zone = &self.zones[zone_index];
         let semitones = note as f32 - zone.root;
         let base_step = (zone.sample_rate / self.sample_rate) * 2.0_f32.powf(semitones / 12.0);
+        // 只有持续类分区需要补弓头；钢琴、拨弦与打击乐的瞬态必须保留。
+        // Only sustained zones need a bow-style onset; piano, plucked and percussive attacks must
+        // stay untouched.
+        let sustained = zone.loop_end > zone.loop_start;
         self.age_counter = self.age_counter.wrapping_add(1);
         let velocity_norm = (velocity.max(1) as f32 / 127.0).powf(0.85);
         let amount = self.settings.neural.clamp(0.0, 1.0);
@@ -289,6 +307,16 @@ impl SampledInstrument {
         voice.pending_release = false;
         voice.age = self.age_counter;
         voice.tone_state = 0.0;
+        voice.onset_env = if sustained { 0.0 } else { 1.0 };
+        // 力度越大，弓压越高、起音越快；留出上下限避免极端力度失去音头或拖沓。
+        // Harder velocity means more bow pressure and a faster onset; the bounds keep extreme
+        // velocities from losing the attack or dragging.
+        voice.onset_step = if sustained {
+            let seconds = SUSTAIN_ONSET_SECONDS * (1.25 - 0.5 * velocity_norm);
+            1.0 / (seconds * self.sample_rate).max(1.0)
+        } else {
+            0.0
+        };
         voice.neural_time = 0.0;
         voice.jitter = jitter;
         voice.jitter_level = jitter_level;
@@ -441,7 +469,15 @@ impl SampledInstrument {
                 // 神经整形器在 0 dB 时是直通，因此关闭神经音色不改变原始采样。
                 // The neural shaper is transparent at 0 dB, so disabling it restores the raw sample.
                 let shaped = voice.shaper.process(voice.tone_state);
-                let gain = voice.env * (1.0 - velocity_amount + velocity_amount * voice.velocity);
+                if voice.onset_env < 1.0 {
+                    voice.onset_env = (voice.onset_env + voice.onset_step).min(1.0);
+                }
+                // smoothstep 起音：两端斜率为 0，既听不到突然张口，也不会在满音量处产生折点。
+                // Smoothstep onset: zero slope at both ends, so the note neither pops open nor
+                // kinks when it reaches full level.
+                let onset = voice.onset_env * voice.onset_env * (3.0 - 2.0 * voice.onset_env);
+                let gain =
+                    voice.env * onset * (1.0 - velocity_amount + velocity_amount * voice.velocity);
                 mix += shaped * gain * voice.jitter_level;
 
                 voice.position += voice.step * bend_ratio;
@@ -952,5 +988,57 @@ mod tests {
         let mut out = vec![0.5; 128];
         instrument.render(&mut out, &events);
         assert!(out.iter().all(|sample| *sample == 0.0));
+    }
+
+    /// 覆盖：持续类乐器（小提琴）的起音在 30 ms 内平滑升起，不会从满音量突然张口。
+    /// Covers: a sustained instrument (violin) ramps up smoothly within ~30 ms instead of opening
+    /// abruptly at full level.
+    #[test]
+    fn sustained_onset_ramps_smoothly() {
+        let entry = bank_instrument("Violin").expect("Violin");
+        let mut instrument = SampledInstrument::new(entry, SampleSettings::default(), 48_000.0);
+        let events = [SynthEvent {
+            frame: 0,
+            kind: GateKind::On,
+            pitch: 68,
+            velocity: 100,
+        }];
+        let mut out = vec![0.0; 2_880];
+        instrument.render(&mut out, &events);
+        let rms = |start: usize, end: usize| {
+            let slice = &out[start..end];
+            (slice.iter().map(|value| value * value).sum::<f32>() / slice.len() as f32).sqrt()
+        };
+        let head = rms(0, 240);
+        let body = rms(2_400, 2_880);
+        assert!(
+            head < body * 0.3,
+            "起音段应当明显低于稳定段：head={head}, body={body}"
+        );
+        let step = out[..480]
+            .windows(2)
+            .fold(0.0_f32, |peak, pair| peak.max((pair[1] - pair[0]).abs()));
+        assert!(step < 0.03, "起音前 10 ms 不应出现阶跃：{step}");
+        assert!(out.iter().all(|sample| sample.is_finite()));
+    }
+
+    /// 覆盖：钢琴等瞬态乐器不受持续类起音整形影响，音头仍然完整。
+    /// Covers: percussive instruments (piano) keep their full attack and are not slowed down.
+    #[test]
+    fn percussive_attack_is_not_slowed() {
+        let entry = bank_instrument("GrandPiano").expect("GrandPiano");
+        let mut instrument = SampledInstrument::new(entry, SampleSettings::default(), 48_000.0);
+        let events = [SynthEvent {
+            frame: 0,
+            kind: GateKind::On,
+            pitch: 60,
+            velocity: 110,
+        }];
+        let mut out = vec![0.0; 2_400];
+        instrument.render(&mut out, &events);
+        let peak = out[..240]
+            .iter()
+            .fold(0.0_f32, |peak, value| peak.max(value.abs()));
+        assert!(peak > 0.05, "钢琴前 5 ms 的音头不应被削弱：{peak}");
     }
 }
