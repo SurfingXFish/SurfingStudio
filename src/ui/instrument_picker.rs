@@ -319,6 +319,7 @@ impl SurfingApp {
         };
         if let Some(instrument) = option.builtin {
             let label = instrument.label();
+            self.push_undo_now();
             self.close_editor(picker.track_id, crate::audio::SlotKind::Instrument);
             if let Some(track) = self.project.tracks.get_mut(track_index) {
                 track.instrument = instrument;

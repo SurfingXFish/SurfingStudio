@@ -63,6 +63,12 @@ impl SurfingApp {
         }
         let (response, painter) = ui.allocate_painter(available, Sense::click_and_drag());
         let rect = response.rect;
+        // 在画布上按下时释放输入框焦点，避免检查器文本框一直吞掉后续快捷键。
+        // Release text-field focus when pressing the canvas so the inspector text field cannot
+        // keep swallowing later shortcuts.
+        if response.hovered() && ui.input(|i| i.pointer.any_pressed()) {
+            ui.memory_mut(|memory| memory.stop_text_input());
+        }
         let header_w = track_header_width(rect);
         let lane_left = rect.left() + header_w;
         let lane_right = rect.right();
@@ -1421,6 +1427,7 @@ impl SurfingApp {
             // 加轨不再询问类型，直接创建默认 MIDI 合成器轨道。
             // Adding a track no longer asks for a type; it creates a default MIDI synth track.
             if add_response.clicked() {
+                self.push_undo_now();
                 self.project
                     .add_track(crate::core::model::InstrumentRef::Synth(
                         crate::core::model::SynthSettings::default(),
@@ -2242,12 +2249,14 @@ impl SurfingApp {
                             self.mark_dirty();
                         } else if single_clicked && kind == RowKind::Main && mute_rect.contains(pos)
                         {
+                            self.push_undo_now();
                             if let Some(track) = self.project.tracks.get_mut(track_index) {
                                 track.muted = !track.muted;
                             }
                             self.mark_dirty();
                         } else if single_clicked && kind == RowKind::Main && solo_rect.contains(pos)
                         {
+                            self.push_undo_now();
                             if let Some(track) = self.project.tracks.get_mut(track_index) {
                                 track.solo = !track.solo;
                             }

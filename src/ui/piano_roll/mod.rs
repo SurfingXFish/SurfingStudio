@@ -115,6 +115,12 @@ impl SurfingApp {
         }
         let (response, painter) = ui.allocate_painter(available, Sense::click_and_drag());
         let rect = response.rect;
+        // 在卷帘上按下时释放输入框焦点，避免检查器文本框一直吞掉后续快捷键。
+        // Release text-field focus when pressing the roll so the inspector text field cannot keep
+        // swallowing later shortcuts.
+        if response.hovered() && ui.input(|i| i.pointer.any_pressed()) {
+            ui.memory_mut(|memory| memory.stop_text_input());
+        }
         // Effective pointer tool: holding Shift temporarily switches to Draw.
         let mode = if ui.input(|i| i.modifiers.shift) {
             MouseMode::Draw

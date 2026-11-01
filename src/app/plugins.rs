@@ -1082,6 +1082,9 @@ impl SurfingApp {
             self.status = "正在加载插件，请稍候…".into();
             return;
         }
+        // 替换乐器/效果器属于可撤销的工程修改。
+        // Replacing an instrument/effect is an undoable project edit.
+        self.push_undo_now();
         // 停止后台插件识别：它正在 LoadLibrary，加载器锁会与本次插件加载互相阻塞。
         // Stop background classification: it is inside LoadLibrary, and the loader lock
         // would block this plugin load.
