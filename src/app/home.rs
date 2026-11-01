@@ -596,8 +596,12 @@ impl SurfingApp {
     fn delete_home_project(&mut self, path: &Path, delete_file: bool) {
         if delete_file {
             if let Err(error) = std::fs::remove_file(path) {
-                self.status = format!("删除本地文件失败：{error}");
-                return;
+                // 文件已被外部删除时仍继续清理列表，避免条目残留。
+                // A file removed outside the app still clears the list entry.
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    self.status = format!("删除本地文件失败：{error}");
+                    return;
+                }
             }
         }
         self.settings.recent_projects.retain(|entry| entry != path);
