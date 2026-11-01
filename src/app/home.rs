@@ -39,7 +39,7 @@
 //! - `home_project_row` / `plugin_brand_header` / `home_plugin_row` / `plugin_tag` / `path_hash` / `project_display_name`: rows and names.
 //! - `template_card` / `example_card` / `template_family_filter` / `template_filter_chip`: template and example cards.
 
-use super::panels::{icon_button, paint_gear};
+use super::panels::{icon_button, paint_gear, paint_studio_logo};
 use super::time_fmt;
 use super::*;
 use crate::core::model::template::{
@@ -1518,23 +1518,7 @@ fn format_version_name(path: &Path) -> String {
 /// Complexity: O(1) time and space.
 fn home_logo(ui: &mut egui::Ui, size: f32) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
-    let painter = ui.painter();
-    painter.rect_filled(rect, egui::CornerRadius::from(6), theme::ACCENT);
-    let wave = [0.58_f32, 0.30, 0.70, 0.32, 0.60];
-    let points: Vec<egui::Pos2> = wave
-        .iter()
-        .enumerate()
-        .map(|(index, y)| {
-            egui::pos2(
-                rect.left() + rect.width() * (0.16 + 0.17 * index as f32),
-                rect.top() + rect.height() * y,
-            )
-        })
-        .collect();
-    painter.add(egui::Shape::line(
-        points,
-        egui::Stroke::new(1.6_f32, egui::Color32::WHITE),
-    ));
+    paint_studio_logo(ui.painter(), rect);
 }
 
 /// 所属模块：app / 主页

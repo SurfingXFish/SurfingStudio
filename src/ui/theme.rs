@@ -32,6 +32,12 @@ use std::sync::Arc;
 /// 编辑区最底层：卷帘背景、输入框深底。
 /// Deepest editor background: roll canvases and dark input backgrounds.
 pub const BG_DEEP: Color32 = Color32::from_rgb(24, 25, 28);
+/// 软件图标底色：深灰，与 `assets/icon.svg` 的背景一致。
+/// App-logo background: dark grey, matching the background of `assets/icon.svg`.
+pub const LOGO_BG: Color32 = Color32::from_rgb(46, 46, 51);
+/// 软件图标音柱蓝色，与 `assets/icon.svg` 一致（#0078D4）。
+/// App-logo bar blue, matching `assets/icon.svg` (#0078D4).
+pub const LOGO_BLUE: Color32 = Color32::from_rgb(0, 120, 212);
 /// 编辑区/中央面板底色（#1E1F22）。
 /// Editor and central panel background (#1E1F22).
 pub const BG: Color32 = Color32::from_rgb(30, 31, 34);

@@ -1035,14 +1035,87 @@ fn current_user_name() -> String {
 }
 
 /// 所属模块：app / 面板 / 应用栏控件
-/// 功能：绘制 16 点见方的软件图标：IDEA 蓝圆角方块 + 白色波形折线；点击返回主页。
+/// 功能：按 `assets/icon.svg` 的比例绘制软件图标：深灰圆角底、五根蓝色音柱、白色播放头与蓝色方块；
+/// 尺寸足够大时再画底部 "SF STUDIO" 字样。应用栏（16 点）与主页侧栏共用此函数。
+/// 输入：`painter`：绘制器；`rect`：图标外接矩形（正方形）。
+/// 输出/副作用：向绘制器写入图形命令；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: app / panels / app bar widgets
+/// Purpose: Paint the app logo with the proportions of `assets/icon.svg`: a dark-grey rounded
+/// square, five blue bars, a white playhead and a blue square; the "SF STUDIO" caption is added
+/// only at large sizes. Shared by the app bar (16 pt) and the home sidebar.
+/// Inputs: `painter`: painter; `rect`: square bounding rect of the logo.
+/// Outputs / side effects: emits paint commands; no state change.
+/// Complexity: O(1) time and space.
+pub(crate) fn paint_studio_logo(painter: &egui::Painter, rect: egui::Rect) {
+    let side = rect.width().min(rect.height());
+    let scale = side / 512.0;
+    let map = |x: f32, y: f32| egui::pos2(rect.left() + x * scale, rect.top() + y * scale);
+    let rounded =
+        |radius: f32| egui::CornerRadius::from((radius * scale).round().clamp(0.0, 255.0) as u8);
+
+    // 深灰圆角底与背景网格：与 SVG 的 512 坐标系保持一致。
+    // Dark grey rounded background and grid, keeping the SVG's 512-unit coordinate system.
+    painter.rect_filled(rect, rounded(112.0), theme::LOGO_BG);
+    let grid = egui::Stroke::new(
+        (2.0 * scale).max(0.5),
+        theme::with_alpha(theme::TEXT_DIM, 46),
+    );
+    for y in [160.0, 256.0, 352.0] {
+        painter.line_segment([map(64.0, y), map(448.0, y)], grid);
+    }
+
+    // 五根蓝色音柱。
+    // Five blue waveform bars.
+    let bars = [
+        (116.0_f32, 200.0_f32, 80.0_f32),
+        (150.0, 160.0, 160.0),
+        (184.0, 180.0, 120.0),
+        (218.0, 240.0, 80.0),
+        (252.0, 200.0, 160.0),
+    ];
+    for (x, y, height) in bars {
+        let bar = egui::Rect::from_min_max(map(x, y), map(x + 22.0, y + height));
+        painter.rect_filled(bar, rounded(11.0), theme::LOGO_BLUE);
+    }
+
+    // 白色播放头：竖线 + 顶部横线。
+    // White playhead: a vertical line plus a horizontal head.
+    let head = egui::Stroke::new((20.0 * scale).max(1.0), egui::Color32::WHITE);
+    painter.line_segment([map(380.0, 120.0), map(380.0, 440.0)], head);
+    painter.line_segment([map(380.0, 120.0), map(456.0, 120.0)], head);
+
+    // 蓝色方块与白色横杠。
+    // Blue square with a short white dash.
+    let square = egui::Rect::from_min_max(map(356.0, 240.0), map(404.0, 288.0));
+    painter.rect_filled(square, rounded(12.0), theme::LOGO_BLUE);
+    painter.line_segment(
+        [map(368.0, 264.0), map(392.0, 264.0)],
+        egui::Stroke::new((4.0 * scale).max(0.6), egui::Color32::from_white_alpha(204)),
+    );
+
+    // 小尺寸下文字不可读，只在图标足够大时绘制。
+    // The caption is unreadable at small sizes, so draw it only on large icons.
+    if side >= 96.0 {
+        painter.text(
+            map(256.0, 476.0),
+            egui::Align2::CENTER_CENTER,
+            "SF STUDIO",
+            egui::FontId::proportional(20.0 * scale),
+            theme::TEXT_DIM,
+        );
+    }
+}
+
+/// 所属模块：app / 面板 / 应用栏控件
+/// 功能：绘制 16 点见方的软件图标；点击返回主页。
 /// 输入：`ui`：应用栏水平布局。
 /// 输出/副作用：分配 16×16 点空间并绘制；悬浮时显示提示并返回可点击响应。
 /// 复杂度：O(1)。
 ///
 /// Module: app / panels / app bar widgets
-/// Purpose: Draw the 16 pt logo: an IDEA-blue rounded square with a white waveform; clicking it
-/// returns to the home page.
+/// Purpose: Draw the 16 pt app logo; clicking it returns to the home page.
 /// Inputs: `ui`: horizontal layout of the app bar.
 /// Outputs / side effects: allocate 16×16 points and paint; show a tooltip and return a clickable
 /// response.
@@ -1050,23 +1123,7 @@ fn current_user_name() -> String {
 fn app_logo(ui: &mut egui::Ui) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::click());
     let logo = egui::Rect::from_center_size(rect.center(), egui::vec2(16.0, 16.0));
-    let painter = ui.painter();
-    painter.rect_filled(logo, egui::CornerRadius::from(3), theme::CHROME_ACCENT);
-    let wave = [0.58_f32, 0.30, 0.70, 0.32, 0.60];
-    let points: Vec<egui::Pos2> = wave
-        .iter()
-        .enumerate()
-        .map(|(index, y)| {
-            egui::pos2(
-                logo.left() + logo.width() * (0.16 + 0.17 * index as f32),
-                logo.top() + logo.height() * y,
-            )
-        })
-        .collect();
-    painter.add(egui::Shape::line(
-        points,
-        egui::Stroke::new(1.3_f32, egui::Color32::WHITE),
-    ));
+    paint_studio_logo(ui.painter(), logo);
     response
         .on_hover_text(format!(
             "SurfingStudio {} · 点击返回主页",
