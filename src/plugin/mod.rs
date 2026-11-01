@@ -409,7 +409,14 @@ mod tests {
         // 与宿主一致：先按 500×300 等比缩放，再摆放。
         // Same as the host: fit the editor into 500×300, then place it.
         let (fitted_width, fitted_height) = window.fit_embedded(500, 300);
-        assert!(fitted_width <= 500 && fitted_height <= 300);
+        eprintln!("fit_embedded(500x300) -> {fitted_width}x{fitted_height}");
+        // Pro-Q 4 的最小界面远大于卡片：内嵌时宿主应改用独立窗口，避免裁掉 GUI 与二级菜单。
+        // Pro-Q 4's minimum editor far exceeds a card, so the host must fall back to a standalone
+        // window; otherwise the GUI and its submenus get clipped.
+        assert!(
+            fitted_width > 500 || fitted_height > 300,
+            "expected Pro-Q to refuse shrinking into 500x300"
+        );
         window.set_embedded_bounds(40, 40, fitted_width, fitted_height);
         window.set_embedded_clip(0, 0, fitted_width / 2, fitted_height);
         window.set_embedded_visible(true);
@@ -923,5 +930,58 @@ mod tests {
                 .any(|p| p.vendor.contains("FabFilter") || p.name.contains("FabFilter")),
             "expected at least one FabFilter plugin"
         );
+    }
+
+    #[test]
+    #[ignore = "diagnostic: dumps default component state for reverse engineering"]
+    fn temp_capture_default_component_state() {
+        let targets = [
+            (
+                r"C:\Program Files\Common Files\VST3\FabFilter\FabFilter Pro-DS.vst3",
+                "default_prods.bin",
+            ),
+            (
+                r"C:\Program Files\Common Files\VST3\TDR Nova.vst3",
+                "default_tdr.bin",
+            ),
+        ];
+        for (path_text, name) in targets {
+            let path = PathBuf::from(path_text);
+            if !path.exists() {
+                eprintln!("missing {path_text}");
+                continue;
+            }
+            let mut runtime = PluginHost::load_plugin(
+                PluginFormat::Vst3,
+                &path,
+                "",
+                48_000.0,
+                512,
+                120.0,
+                (4, 4),
+            )
+            .expect("load plugin");
+            let (state, _) = runtime.capture_state();
+            if state.len() < 28 || !state.starts_with(b"VST3HOST_STATE\0\0") {
+                eprintln!(
+                    "{name}: unexpected state head {:02x?}",
+                    &state[..16.min(state.len())]
+                );
+                continue;
+            }
+            let component_len =
+                u32::from_le_bytes([state[20], state[21], state[22], state[23]]) as usize;
+            let component = &state[28..28 + component_len];
+            let dump = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("target")
+                .join("tooling")
+                .join(name);
+            let _ = std::fs::write(&dump, component);
+            eprintln!(
+                "{name}: component_len={} head={:02x?}",
+                component.len(),
+                &component[..component.len().min(48)]
+            );
+        }
     }
 }
