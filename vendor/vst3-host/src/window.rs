@@ -22,10 +22,11 @@ use winapi::{
     um::wingdi::CreateRectRgn,
     um::winuser::{
         ClientToScreen, CreateWindowExW, DefWindowProcW, DestroyWindow, GetForegroundWindow,
-        IsWindow, LoadCursorW, RedrawWindow, RegisterClassExW, SetFocus, SetForegroundWindow,
-        SetWindowPos, SetWindowRgn, ShowWindow, UpdateWindow, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT,
-        IDC_ARROW, RDW_ALLCHILDREN, RDW_INVALIDATE, SIZE_MINIMIZED, SWP_NOACTIVATE, SWP_NOMOVE,
-        SWP_NOZORDER, SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE, WM_CLOSE, WM_DPICHANGED, WM_SIZE,
+        GetWindowThreadProcessId, IsWindow, LoadCursorW, RedrawWindow, RegisterClassExW, SetFocus,
+        SetForegroundWindow, SetWindowPos, SetWindowRgn, ShowWindow, UpdateWindow, CS_HREDRAW,
+        CS_VREDRAW, CW_USEDEFAULT, IDC_ARROW, RDW_ALLCHILDREN, RDW_INVALIDATE, SC_KEYMENU,
+        SIZE_MINIMIZED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SW_HIDE, SW_SHOW,
+        SW_SHOWNOACTIVATE, VK_MENU, WM_CLOSE, WM_DPICHANGED, WM_SIZE, WM_SYSCOMMAND, WM_SYSKEYDOWN,
         WNDCLASSEXW, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_EX_TOOLWINDOW, WS_OVERLAPPEDWINDOW,
         WS_POPUP,
     },
@@ -109,6 +110,18 @@ unsafe extern "system" fn plugin_window_proc(
         if let Ok(mut requests) = close_requests().lock() {
             requests.insert(hwnd as usize);
         }
+        return 0;
+    }
+    // 编辑器窗口没有宿主菜单；吞掉 Alt 触发的系统菜单请求。
+    // 否则 DefWindowProc 会进入阻塞的菜单循环，整个应用看起来像卡死（按 Alt 时
+    // 弹窗反而能短暂出现，正是该循环在泵消息的表现）。
+    // The editor window has no host menu; swallow the system-menu request raised by Alt.
+    // Otherwise DefWindowProc enters a blocking menu loop and the whole app looks frozen
+    // (which is also why a pending popup briefly appears while Alt is held).
+    if msg == WM_SYSCOMMAND && (wparam & 0xFFF0) == SC_KEYMENU as WPARAM {
+        return 0;
+    }
+    if msg == WM_SYSKEYDOWN && wparam == VK_MENU as WPARAM {
         return 0;
     }
     if msg == WM_DPICHANGED {
@@ -1338,22 +1351,41 @@ impl PluginWindow {
     }
 
     /// 所属模块：vst3-host / 编辑器窗口
-    /// 功能：判断插件编辑器窗口是否已经是系统前台窗口。
+    /// 功能：判断插件编辑器是否处于“前台交互”状态。
     /// 输入：`self`。
     /// 输出/副作用：返回布尔值；非 Windows 恒为 `false`。
+    /// 前台窗口是编辑器本身，或是由同一 UI 线程创建的窗口（插件自己的弹出菜单/下拉列表）时
+    /// 都算前台：否则宿主会把菜单打开期间的编辑器当成后台窗口，每 200 ms 强制重绘，
+    /// 可能把菜单刷掉。
     /// 复杂度：时间 O(1)，空间 O(1)。
     ///
     /// Module: vst3-host / editor window
-    /// Purpose: Whether the plugin editor window is currently the foreground window.
+    /// Purpose: Whether the editor is in a foreground interaction state.
     /// Inputs: `self`.
-    /// Outputs / side effects: a boolean; always `false` off Windows.
+    /// Outputs / side effects: a boolean; always `false` off Windows. The editor counts as
+    /// foreground when it is the foreground window, or when the foreground window belongs to the
+    /// same UI thread (the plugin's own popup menus). Otherwise the host would treat an open menu
+    /// as a background editor and force a repaint every 200 ms, which can dismiss the menu.
     /// Complexity: O(1) time and space.
     pub fn is_foreground(&self) -> bool {
         #[cfg(target_os = "windows")]
         {
             if let Some(hwnd) = self.native_window {
-                // SAFETY: `GetForegroundWindow` has no preconditions and the handle is owned by us.
-                return unsafe { GetForegroundWindow() == hwnd };
+                // SAFETY: `GetForegroundWindow` / `GetWindowThreadProcessId` have no
+                // preconditions and all handles are owned by us.
+                unsafe {
+                    let foreground = GetForegroundWindow();
+                    if foreground == hwnd {
+                        return true;
+                    }
+                    if foreground.is_null() {
+                        return false;
+                    }
+                    let mut pid = 0u32;
+                    let editor_thread = GetWindowThreadProcessId(hwnd, &mut pid);
+                    let foreground_thread = GetWindowThreadProcessId(foreground, &mut pid);
+                    return editor_thread != 0 && editor_thread == foreground_thread;
+                }
             }
         }
         false

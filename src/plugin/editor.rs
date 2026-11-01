@@ -36,8 +36,9 @@ mod windows {
         AdjustWindowRectEx, CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindowLongPtrW,
         IsWindow, LoadCursorW, MoveWindow, RegisterClassExW, SetFocus, SetForegroundWindow,
         SetWindowLongPtrW, ShowWindow, UpdateWindow, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW,
-        CW_USEDEFAULT, IDC_ARROW, SW_HIDE, SW_RESTORE, SW_SHOW, WM_CLOSE, WM_NCCREATE, WM_SIZE,
-        WNDCLASSEXW, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+        CW_USEDEFAULT, IDC_ARROW, SC_KEYMENU, SW_HIDE, SW_RESTORE, SW_SHOW, VK_MENU, WM_CLOSE,
+        WM_NCCREATE, WM_SIZE, WM_SYSCOMMAND, WM_SYSKEYDOWN, WNDCLASSEXW, WS_CHILD, WS_CLIPCHILDREN,
+        WS_CLIPSIBLINGS, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
     };
 
     struct WindowState {
@@ -63,6 +64,15 @@ mod windows {
             }
         }
         let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const WindowState;
+        // 该窗口没有宿主菜单；吞掉 Alt 的系统菜单请求，避免 DefWindowProc 进入阻塞菜单循环。
+        // The window has no host menu; swallow Alt's system-menu request so DefWindowProc does not
+        // enter a blocking menu loop.
+        if message == WM_SYSCOMMAND && (wparam & 0xFFF0) == SC_KEYMENU as WPARAM {
+            return 0;
+        }
+        if message == WM_SYSKEYDOWN && wparam == VK_MENU as WPARAM {
+            return 0;
+        }
         if message == WM_CLOSE {
             if !state.is_null() {
                 (*state).closed.store(true, Ordering::SeqCst);
