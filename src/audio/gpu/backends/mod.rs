@@ -8,3 +8,4 @@
 //!   `GpuRuntime::standard`.
 
 pub mod wgpu_compute;
+pub mod wgpu_timbre;

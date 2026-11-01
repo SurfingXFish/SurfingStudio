@@ -122,6 +122,9 @@ pub struct Engine {
     /// 实时 GPU 主总线软限幅；`None` 表示使用 CPU。
     /// Realtime GPU master-bus limiter; `None` means the CPU path.
     gpu_realtime: Option<crate::audio::gpu::GpuRealtimeLimiter>,
+    /// GPU 神经音色训练器；与实时限幅共用同一配置，失败时神经音色退回 CPU 训练。
+    /// GPU neural timbre trainer; shares the realtime config and falls back to CPU training.
+    gpu_timbre: Option<crate::audio::gpu::GpuTimbreTrainer>,
     /// 当前实时 GPU 配置；与设置比较，避免每次同步都重建设备。
     /// Current realtime GPU config; compared with the settings so devices are not rebuilt every sync.
     gpu_realtime_config: Option<GpuRenderConfig>,
@@ -371,6 +374,7 @@ impl TrackEngine {
         bpm: f64,
         time_sig: (u8, u8),
         warnings: &mut Vec<String>,
+        gpu: Option<&mut crate::audio::gpu::GpuTimbreTrainer>,
     ) {
         let desired = track.instrument.key();
         if desired != self.instrument_key || force_reload {
@@ -419,6 +423,7 @@ impl TrackEngine {
                         entry,
                         sample.settings.clone(),
                         sample_rate as f32,
+                        gpu,
                     )),
                     None => {
                         let message = format!("未找到音色：{}", sample.bank);
@@ -729,6 +734,7 @@ impl Engine {
             stereo_scratch: vec![Vec::new(), Vec::new()],
             gpu_interleave_scratch: Vec::new(),
             gpu_realtime: None,
+            gpu_timbre: None,
             gpu_realtime_config: None,
             gpu_realtime_warning: None,
             gates_scratch: Vec::new(),
@@ -843,10 +849,18 @@ impl Engine {
             return;
         }
         self.gpu_realtime = None;
+        self.gpu_timbre = None;
         self.gpu_realtime_config = config.clone();
         let Some(config) = config else {
             return;
         };
+        // 神经音色训练器与实时限幅共用配置：打不开就静默退回 CPU 训练，不影响播放。
+        // The timbre trainer shares the config: when it cannot open, training silently stays on the
+        // CPU and playback is unaffected.
+        let (hidden_1, hidden_2) = crate::audio::synth::HIDDEN_WIDTHS;
+        self.gpu_timbre = crate::audio::gpu::GpuRuntime::standard()
+            .open_timbre_trainer(&config, hidden_1, hidden_2)
+            .ok();
         match crate::audio::gpu::GpuRealtimeLimiter::open(&config) {
             Ok(limiter) => {
                 self.gpu_realtime = Some(limiter);
@@ -1036,6 +1050,7 @@ impl Engine {
                 project.bpm,
                 time_sig,
                 &mut warnings,
+                self.gpu_timbre.as_mut(),
             );
             runtime.ensure_effects(
                 track,

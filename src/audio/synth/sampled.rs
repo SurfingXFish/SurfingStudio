@@ -27,6 +27,7 @@
 
 use super::neural::{NeuralTimbre, ToneShaper, model_for};
 use super::{GateKind, SynthEvent};
+use crate::audio::gpu::GpuTimbreTrainer;
 use crate::core::model::{BankInstrument, SampleSettings, bank_sample_bytes};
 use std::collections::HashMap;
 use std::io::Cursor;
@@ -185,6 +186,7 @@ impl SampledInstrument {
         instrument: &'static BankInstrument,
         settings: SampleSettings,
         sample_rate: f32,
+        gpu: Option<&mut GpuTimbreTrainer>,
     ) -> Self {
         let mut zones = Vec::with_capacity(instrument.zones.len());
         for zone in &instrument.zones {
@@ -217,7 +219,7 @@ impl SampledInstrument {
             pitch_bend_semitones: 0.0,
             // 模型按乐器缓存：同一音色的第二次实例化不再训练。
             // The model is cached per instrument, so a second instance does not retrain.
-            model: model_for(instrument),
+            model: model_for(instrument, gpu),
         }
     }
 
@@ -843,7 +845,8 @@ mod tests {
     #[test]
     fn grand_piano_renders_audible_audio() {
         let entry = bank_instrument("GrandPiano").expect("GrandPiano");
-        let mut instrument = SampledInstrument::new(entry, SampleSettings::default(), 48_000.0);
+        let mut instrument =
+            SampledInstrument::new(entry, SampleSettings::default(), 48_000.0, None);
         assert!(!instrument.zones.is_empty(), "应至少解码一个分区");
         let events = [SynthEvent {
             frame: 0,
@@ -867,7 +870,8 @@ mod tests {
     fn every_bank_instrument_renders() {
         for entry in crate::core::model::bank_instruments() {
             let pitch = (entry.range[0] + entry.range[1]) / 2;
-            let mut instrument = SampledInstrument::new(entry, SampleSettings::default(), 48_000.0);
+            let mut instrument =
+                SampledInstrument::new(entry, SampleSettings::default(), 48_000.0, None);
             assert!(!instrument.zones.is_empty(), "{} 没有可用分区", entry.id);
             let events = [SynthEvent {
                 frame: 0,
@@ -912,8 +916,8 @@ mod tests {
         };
         let mut difference = 0.0_f32;
         for pitch in entry.range[0]..=entry.range[1] {
-            let mut without = SampledInstrument::new(entry, plain.clone(), 48_000.0);
-            let mut with = SampledInstrument::new(entry, neural.clone(), 48_000.0);
+            let mut without = SampledInstrument::new(entry, plain.clone(), 48_000.0, None);
+            let mut with = SampledInstrument::new(entry, neural.clone(), 48_000.0, None);
             assert!(with.model.is_some(), "StringLeg 应训练出神经音色模型");
             let events = [SynthEvent {
                 frame: 0,
@@ -947,7 +951,8 @@ mod tests {
     fn sustained_instrument_loops_past_sample_length() {
         let entry = bank_instrument("StringLeg").expect("StringLeg");
         assert!(entry.looped, "StringLeg 应开启循环");
-        let mut instrument = SampledInstrument::new(entry, SampleSettings::default(), 48_000.0);
+        let mut instrument =
+            SampledInstrument::new(entry, SampleSettings::default(), 48_000.0, None);
         assert!(
             instrument
                 .zones
@@ -978,7 +983,8 @@ mod tests {
     #[test]
     fn out_of_range_note_is_silent() {
         let entry = bank_instrument("GrandPiano").expect("GrandPiano");
-        let mut instrument = SampledInstrument::new(entry, SampleSettings::default(), 48_000.0);
+        let mut instrument =
+            SampledInstrument::new(entry, SampleSettings::default(), 48_000.0, None);
         let events = [SynthEvent {
             frame: 0,
             kind: GateKind::On,
@@ -996,7 +1002,8 @@ mod tests {
     #[test]
     fn sustained_onset_ramps_smoothly() {
         let entry = bank_instrument("Violin").expect("Violin");
-        let mut instrument = SampledInstrument::new(entry, SampleSettings::default(), 48_000.0);
+        let mut instrument =
+            SampledInstrument::new(entry, SampleSettings::default(), 48_000.0, None);
         let events = [SynthEvent {
             frame: 0,
             kind: GateKind::On,
@@ -1027,7 +1034,8 @@ mod tests {
     #[test]
     fn percussive_attack_is_not_slowed() {
         let entry = bank_instrument("GrandPiano").expect("GrandPiano");
-        let mut instrument = SampledInstrument::new(entry, SampleSettings::default(), 48_000.0);
+        let mut instrument =
+            SampledInstrument::new(entry, SampleSettings::default(), 48_000.0, None);
         let events = [SynthEvent {
             frame: 0,
             kind: GateKind::On,

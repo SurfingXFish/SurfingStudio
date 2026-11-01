@@ -314,24 +314,7 @@ impl WgpuRealtimeLimiter {
     /// the CPU).
     /// Complexity: O(GPU device creation) time and O(buffer capacity) space.
     pub fn open(config: &GpuRenderConfig) -> Result<Self, String> {
-        let instance = create_instance(config.api);
-        let backends = match config.api {
-            Some(api) => backends_for_api(api),
-            None => host_backends(),
-        };
-        let adapters = pollster::block_on(instance.enumerate_adapters(backends));
-        if adapters.is_empty() {
-            return Err("未找到可用的 GPU 适配器".to_string());
-        }
-        let adapter = select_adapter(&adapters, config)
-            .ok_or_else(|| "未找到设置中指定的 GPU 设备".to_string())?;
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("SurfingStudio realtime GPU audio"),
-            required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::downlevel_defaults(),
-            ..Default::default()
-        }))
-        .map_err(|error| format!("创建 GPU 设备失败: {error:?}"))?;
+        let (device, queue) = create_compute_device(config, "SurfingStudio realtime GPU audio")?;
 
         let error_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -477,6 +460,41 @@ impl WgpuRealtimeLimiter {
         self.staging.unmap();
         Ok(())
     }
+}
+
+/// 所属模块：audio::gpu / wgpu 计算后端
+/// 功能：按配置创建计算用逻辑设备，供实时限幅与神经音色训练共用。
+/// 输入：`config` 设备/驱动/API 选择、`label` 调试名称。
+/// 输出/副作用：返回设备与队列；失败时返回中文原因。
+/// 复杂度：时间 O(GPU 设备创建)，空间 O(1)。
+///
+/// Module: audio::gpu / wgpu compute backend
+/// Purpose: Create a compute device for the realtime limiter and neural timbre training.
+/// Inputs: `config` device/driver/API, `label` debug name.
+/// Outputs / side effects: the device and queue; a Chinese reason on failure.
+/// Complexity: O(device creation) time and O(1) space.
+pub(super) fn create_compute_device(
+    config: &GpuRenderConfig,
+    label: &str,
+) -> Result<(wgpu::Device, wgpu::Queue), String> {
+    let instance = create_instance(config.api);
+    let backends = match config.api {
+        Some(api) => backends_for_api(api),
+        None => host_backends(),
+    };
+    let adapters = pollster::block_on(instance.enumerate_adapters(backends));
+    if adapters.is_empty() {
+        return Err("未找到可用的 GPU 适配器".to_string());
+    }
+    let adapter = select_adapter(&adapters, config)
+        .ok_or_else(|| "未找到设置中指定的 GPU 设备".to_string())?;
+    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some(label),
+        required_features: wgpu::Features::empty(),
+        required_limits: wgpu::Limits::downlevel_defaults(),
+        ..Default::default()
+    }))
+    .map_err(|error| format!("创建 GPU 设备失败: {error:?}"))
 }
 
 /// 所属模块：audio::gpu / wgpu 计算后端

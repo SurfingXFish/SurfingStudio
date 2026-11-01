@@ -12,6 +12,7 @@
 //! - `GpuRuntime::standard` / `devices` / `apply_master_limiter` / `open_realtime_limiter`：注册后端、
 //!   枚举设备、执行 GPU 处理。
 //! - `GpuRealtimeLimiter::open` / `process`：常驻实时限幅器。
+//! - `GpuTimbreTrainer::open` / `train`：神经音色模型的 GPU 训练。
 //!
 //! Module: audio / GPU rendering
 //! Purpose:
@@ -33,6 +34,7 @@
 mod backends;
 
 use backends::wgpu_compute::{WgpuComputeBackend, WgpuRealtimeLimiter};
+use backends::wgpu_timbre::{TimbreLayout, WgpuTimbreTrainer};
 use std::time::Duration;
 
 /// 实时 GPU 限幅的等待上限；超过后本块回退 CPU，避免音频回调被显卡拖住。
@@ -448,5 +450,78 @@ impl GpuRealtimeLimiter {
     /// Complexity: O(samples) time and O(samples) space.
     pub fn process(&mut self, samples: &mut [f32], timeout: Duration) -> Result<(), String> {
         self.inner.process(samples, timeout)
+    }
+}
+
+/// GPU 神经音色训练器：复用同一块显卡，按音色训练一次后回读权重。
+/// GPU timbre trainer: reuses one GPU device, trains once per instrument and reads back weights.
+pub struct GpuTimbreTrainer {
+    inner: WgpuTimbreTrainer,
+}
+
+impl GpuTimbreTrainer {
+    /// 所属模块：audio / GPU 渲染
+    /// 功能：按 GPU 配置创建训练器；设备与管线只创建一次，可连续训练多个音色。
+    /// 输入：`config` 设备/驱动/API 选择、`hidden_1` / `hidden_2` 两个隐藏层宽度。
+    /// 输出/副作用：创建 GPU 资源；失败时返回中文原因，调用方回退 CPU 训练。
+    /// 复杂度：时间 O(GPU 设备创建 + 着色器编译)，空间 O(训练集容量)。
+    ///
+    /// Module: audio / GPU rendering
+    /// Purpose: Create the trainer for a GPU config; the device and pipelines are built once and
+    /// reused for every instrument.
+    /// Inputs: `config` device/driver/API, `hidden_1` / `hidden_2` hidden widths.
+    /// Outputs / side effects: GPU resources; a Chinese reason on failure so the caller falls back
+    /// to CPU training.
+    /// Complexity: O(device creation + shader compilation) time, O(training capacity) space.
+    pub fn open(config: &GpuRenderConfig, hidden_1: u32, hidden_2: u32) -> Result<Self, String> {
+        WgpuTimbreTrainer::open(config, TimbreLayout::new(hidden_1, hidden_2))
+            .map(|inner| Self { inner })
+    }
+
+    /// 所属模块：audio / GPU 渲染
+    /// 功能：在显卡上训练一次神经音色模型并返回扁平权重。
+    /// 输入：`samples` 标准化样本、`initial` 初始权重、`epochs` 轮数、`learning_rate` / `decay`。
+    /// 输出/副作用：返回训练后的权重；失败时返回中文原因。
+    /// 复杂度：时间 O(轮数 × 样本数 × 参数量)（GPU 内并行），空间 O(参数量 + 样本数)。
+    ///
+    /// Module: audio / GPU rendering
+    /// Purpose: Train the neural timbre model once on the GPU and return flattened weights.
+    /// Inputs: `samples` normalized samples, `initial` weights, `epochs`, `learning_rate`, `decay`.
+    /// Outputs / side effects: the trained weights; a Chinese reason on failure.
+    /// Complexity: O(epochs × samples × parameters) time inside the GPU, O(parameters + samples)
+    /// space.
+    pub fn train(
+        &mut self,
+        samples: &[([f32; 4], [f32; 6])],
+        initial: &[f32],
+        epochs: u32,
+        learning_rate: f32,
+        decay: f32,
+    ) -> Result<Vec<f32>, String> {
+        self.inner
+            .train(samples, initial, epochs, learning_rate, decay)
+    }
+}
+
+impl GpuRuntime {
+    /// 所属模块：audio / GPU 渲染
+    /// 功能：打开神经音色训练器；当前由 wgpu 计算后端实现，设备创建失败时调用方回退 CPU。
+    /// 输入：`config` 设备/驱动/API 选择、`hidden_1` / `hidden_2` 隐藏层宽度。
+    /// 输出/副作用：返回训练器；失败时返回中文原因。
+    /// 复杂度：时间 O(GPU 设备创建)，空间 O(训练集容量)。
+    ///
+    /// Module: audio / GPU rendering
+    /// Purpose: Open the neural timbre trainer; the wgpu compute backend implements it today and
+    /// the caller falls back to the CPU when device creation fails.
+    /// Inputs: `config` device/driver/API, `hidden_1` / `hidden_2` hidden widths.
+    /// Outputs / side effects: the trainer; a Chinese reason on failure.
+    /// Complexity: O(device creation) time and O(training capacity) space.
+    pub fn open_timbre_trainer(
+        &self,
+        config: &GpuRenderConfig,
+        hidden_1: u32,
+        hidden_2: u32,
+    ) -> Result<GpuTimbreTrainer, String> {
+        GpuTimbreTrainer::open(config, hidden_1, hidden_2)
     }
 }

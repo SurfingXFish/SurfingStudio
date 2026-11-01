@@ -36,6 +36,7 @@
 //! - `analyse_zone` / `band_shape` / `fft` / `hann` / `next_random` / `unit_hash`: features.
 
 use super::sampled::load_sample;
+use crate::audio::gpu::GpuTimbreTrainer;
 use crate::core::model::BankInstrument;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -50,8 +51,12 @@ pub const FEATURE_COUNT: usize = 4;
 
 /// 两个隐藏层的宽度；固定宽度让实时推理可以用栈上数组，完全无分配。
 /// Width of both hidden layers; fixed so realtime inference can use stack arrays only.
-const HIDDEN_1: usize = 10;
-const HIDDEN_2: usize = 10;
+const HIDDEN_1: usize = 20;
+const HIDDEN_2: usize = 20;
+
+/// 隐藏层宽度（GPU 训练器按同一结构建管线，必须与 `HIDDEN_1` / `HIDDEN_2` 一致）。
+/// Hidden widths; the GPU trainer builds its pipelines with the same shapes.
+pub const HIDDEN_WIDTHS: (u32, u32) = (HIDDEN_1 as u32, HIDDEN_2 as u32);
 
 /// 分析窗长度（2 的幂，供基 2 FFT 使用）。
 /// Analysis window length (power of two for the radix-2 FFT).
@@ -225,52 +230,96 @@ impl TinyMlp {
     }
 
     /// 所属模块：audio / 神经音色模型
-    /// 功能：在给定样本上做带动量的 SGD 训练：先按频段标准化目标，训练后再把输出层换算回原始量纲。
+    /// 功能：按固定顺序把全部参数扁平化，供 GPU 训练上传。
+    /// 输入：`self`。
+    /// 输出/副作用：返回扁平权重；不修改网络。
+    /// 复杂度：时间 O(参数量)，空间 O(参数量)。
+    ///
+    /// Module: audio / neural timbre model
+    /// Purpose: Flatten every parameter in a fixed order for the GPU upload.
+    /// Inputs: `self`.
+    /// Outputs / side effects: flattened weights; the network is untouched.
+    /// Complexity: O(parameters) time and space.
+    fn flatten(&self) -> Vec<f32> {
+        let mut values = Vec::new();
+        for group in [&self.w1, &self.b1, &self.w2, &self.b2, &self.w3, &self.b3] {
+            values.extend_from_slice(group);
+        }
+        values
+    }
+
+    /// 所属模块：audio / 神经音色模型
+    /// 功能：由扁平参数重建网络；长度不符时返回 `None`。
+    /// 输入：`flat` 扁平权重（顺序与 `flatten` 一致）。
+    /// 输出/副作用：返回网络；不修改输入。
+    /// 复杂度：时间 O(参数量)，空间 O(参数量)。
+    ///
+    /// Module: audio / neural timbre model
+    /// Purpose: Rebuild the network from flattened weights; `None` when the length does not match.
+    /// Inputs: `flat` flattened weights in the `flatten` order.
+    /// Outputs / side effects: the network; the input is untouched.
+    /// Complexity: O(parameters) time and space.
+    fn from_flat(flat: &[f32]) -> Option<Self> {
+        if flat.len() != TinyMlp::parameter_count() {
+            return None;
+        }
+        let mut cursor = 0usize;
+        let mut take = |count: usize| {
+            let end = cursor + count;
+            let slice = flat[cursor..end].to_vec();
+            cursor = end;
+            slice
+        };
+        Some(Self {
+            w1: take(HIDDEN_1 * FEATURE_COUNT),
+            b1: take(HIDDEN_1),
+            w2: take(HIDDEN_2 * HIDDEN_1),
+            b2: take(HIDDEN_2),
+            w3: take(BAND_COUNT * HIDDEN_2),
+            b3: take(BAND_COUNT),
+            residual: 0.0,
+        })
+    }
+
+    /// 所属模块：audio / 神经音色模型
+    /// 功能：返回可训练参数总数。
+    /// 输入：无。
+    /// 输出/副作用：参数数量；不修改状态。
+    /// 复杂度：时间 O(1)，空间 O(1)。
+    ///
+    /// Module: audio / neural timbre model
+    /// Purpose: Total trainable parameter count.
+    /// Inputs: none.
+    /// Outputs / side effects: the parameter count; no state change.
+    /// Complexity: O(1) time and space.
+    fn parameter_count() -> usize {
+        HIDDEN_1 * FEATURE_COUNT
+            + HIDDEN_1
+            + HIDDEN_2 * HIDDEN_1
+            + HIDDEN_2
+            + BAND_COUNT * HIDDEN_2
+            + BAND_COUNT
+    }
+
+    /// 所属模块：audio / 神经音色模型
+    /// 功能：在已标准化的样本上做带动量的 Adam 训练，样本顺序按固定种子打乱。
     /// 输入：`data`（特征, 目标频谱形状）样本、`seed` 洗牌种子。
     /// 输出/副作用：更新网络权重并记录最终均方误差；不修改样本。
     /// 复杂度：时间 O(训练轮数 × 样本数 × 参数量)，空间 O(参数量 + 样本数)。
     ///
     /// Module: audio / neural timbre model
-    /// Purpose: Train with momentum SGD: standardize the band targets first, then fold the
-    /// normalisation back into the output layer so inference returns raw log-spectral units.
+    /// Purpose: Run Adam training on already-normalized samples, shuffling them with a fixed seed.
     /// Inputs: `data` (features, target shape) samples, `seed` shuffle seed.
     /// Outputs / side effects: updates the weights and stores the final MSE; samples are untouched.
     /// Complexity: O(epochs × samples × parameters) time, O(parameters + samples) space.
-    fn train(&mut self, data: &[([f32; FEATURE_COUNT], [f32; BAND_COUNT])], seed: u32) {
-        if data.is_empty() {
+    fn train_normalised(
+        &mut self,
+        normalised: &[([f32; FEATURE_COUNT], [f32; BAND_COUNT])],
+        seed: u32,
+    ) {
+        if normalised.is_empty() {
             return;
         }
-        // 目标标准化：各频段对数能量差异很大，不标准化时学习率稍大就会发散。
-        // Standardize targets: band log-energies differ a lot, and without normalisation even a
-        // moderate learning rate diverges.
-        let mut mean = [0.0_f32; BAND_COUNT];
-        for (_, target) in data {
-            for band in 0..BAND_COUNT {
-                mean[band] += target[band];
-            }
-        }
-        for value in &mut mean {
-            *value /= data.len() as f32;
-        }
-        let mut scale = [1.0_f32; BAND_COUNT];
-        for band in 0..BAND_COUNT {
-            let mut variance = 0.0;
-            for (_, target) in data {
-                let delta = target[band] - mean[band];
-                variance += delta * delta;
-            }
-            scale[band] = (variance / data.len() as f32).sqrt().max(1e-3);
-        }
-        let normalised: Vec<([f32; FEATURE_COUNT], [f32; BAND_COUNT])> = data
-            .iter()
-            .map(|(input, target)| {
-                let mut scaled = [0.0_f32; BAND_COUNT];
-                for band in 0..BAND_COUNT {
-                    scaled[band] = (target[band] - mean[band]) / scale[band];
-                }
-                (*input, scaled)
-            })
-            .collect();
         let mut order: Vec<usize> = (0..normalised.len()).collect();
         let mut state = seed | 1;
         let mut adam_w1 = AdamState::new(self.w1.len());
@@ -361,31 +410,108 @@ impl TinyMlp {
                 break;
             }
         }
-        // 把标准化折回输出层：y = (W·h + b) × scale + mean。
-        // Fold the normalisation into the output layer: y = (W·h + b) × scale + mean.
-        for band in 0..BAND_COUNT {
-            for unit in 0..HIDDEN_2 {
-                self.w3[band * HIDDEN_2 + unit] *= scale[band];
-            }
-            self.b3[band] = self.b3[band] * scale[band] + mean[band];
+    }
+}
+
+/// 所属模块：audio / 神经音色模型
+/// 功能：计算各频段的均值与标准差，并返回按频段标准化的样本。
+/// 输入：`data`（特征, 目标频谱形状）样本，长度大于 0。
+/// 输出/副作用：返回 `(均值, 标准差, 标准化样本)`；不修改输入。
+/// 复杂度：时间 O(样本数 × 频段数)，空间 O(样本数 × 频段数)。
+///
+/// Module: audio / neural timbre model
+/// Purpose: Compute per-band mean and standard deviation and return normalized samples.
+/// Inputs: `data` (features, target shape) samples; length must be positive.
+/// Outputs / side effects: `(mean, scale, normalized samples)`; the input is untouched.
+/// Complexity: O(samples × bands) time and space.
+fn normalise(
+    data: &[([f32; FEATURE_COUNT], [f32; BAND_COUNT])],
+) -> (
+    [f32; BAND_COUNT],
+    [f32; BAND_COUNT],
+    Vec<([f32; FEATURE_COUNT], [f32; BAND_COUNT])>,
+) {
+    let count = data.len().max(1) as f32;
+    let mut mean = [0.0_f32; BAND_COUNT];
+    for (_, target) in data {
+        for (band, value) in target.iter().enumerate() {
+            mean[band] += *value;
         }
-        // 残差按原始量纲统计，抖动幅度才与真实对数频谱误差对应。
-        // Measure the residual in raw units so the jitter matches the real log-spectral error.
-        let mut residual = 0.0_f32;
-        for (input, target) in data {
-            let mut output = [0.0_f32; BAND_COUNT];
-            self.forward(input, &mut output);
+    }
+    for value in &mut mean {
+        *value /= count;
+    }
+    let mut scale = [1.0_f32; BAND_COUNT];
+    for band in 0..BAND_COUNT {
+        let mut variance = 0.0;
+        for (_, target) in data {
+            let delta = target[band] - mean[band];
+            variance += delta * delta;
+        }
+        scale[band] = (variance / count).sqrt().max(1e-3);
+    }
+    let normalised = data
+        .iter()
+        .map(|(input, target)| {
+            let mut scaled = [0.0_f32; BAND_COUNT];
             for band in 0..BAND_COUNT {
-                let error = output[band] - target[band];
-                residual += error * error;
+                scaled[band] = (target[band] - mean[band]) / scale[band];
             }
+            (*input, scaled)
+        })
+        .collect();
+    (mean, scale, normalised)
+}
+
+/// 所属模块：audio / 神经音色模型
+/// 功能：把频段标准化折回输出层：`y = (W·h + b) × scale + mean`。
+/// 输入：`net` 待换算的网络、`mean` / `scale` 频段统计量。
+/// 输出/副作用：就地修改输出层权重与偏置；不分配内存。
+/// 复杂度：时间 O(BAND_COUNT × HIDDEN_2)，空间 O(1)。
+///
+/// Module: audio / neural timbre model
+/// Purpose: Fold the band normalisation into the output layer: `y = (W·h + b) × scale + mean`.
+/// Inputs: `net` network to convert, `mean` / `scale` band statistics.
+/// Outputs / side effects: rewrites the output weights and biases in place; no allocation.
+/// Complexity: O(BAND_COUNT × HIDDEN_2) time and O(1) space.
+fn fold_output(net: &mut TinyMlp, mean: [f32; BAND_COUNT], scale: [f32; BAND_COUNT]) {
+    for band in 0..BAND_COUNT {
+        for unit in 0..HIDDEN_2 {
+            net.w3[band * HIDDEN_2 + unit] *= scale[band];
         }
-        residual /= data.len() as f32 * BAND_COUNT as f32;
-        self.residual = if residual.is_finite() {
-            residual.max(0.0)
-        } else {
-            0.0
-        };
+        net.b3[band] = net.b3[band] * scale[band] + mean[band];
+    }
+}
+
+/// 所属模块：audio / 神经音色模型
+/// 功能：在原始量纲上统计均方误差，作为抖动幅度的依据。
+/// 输入：`net` 网络、`data` 原始样本。
+/// 输出/副作用：返回均方误差；不修改网络。
+/// 复杂度：时间 O(样本数 × 参数量)，空间 O(1)。
+///
+/// Module: audio / neural timbre model
+/// Purpose: Measure the mean squared error in raw units, which scales the jitter.
+/// Inputs: `net` network, `data` raw samples.
+/// Outputs / side effects: the MSE; the network is untouched.
+/// Complexity: O(samples × parameters) time and O(1) space.
+fn residual_of(net: &TinyMlp, data: &[([f32; FEATURE_COUNT], [f32; BAND_COUNT])]) -> f32 {
+    if data.is_empty() {
+        return 0.0;
+    }
+    let mut residual = 0.0_f32;
+    for (input, target) in data {
+        let mut output = [0.0_f32; BAND_COUNT];
+        net.forward(input, &mut output);
+        for band in 0..BAND_COUNT {
+            let error = output[band] - target[band];
+            residual += error * error;
+        }
+    }
+    residual /= data.len() as f32 * BAND_COUNT as f32;
+    if residual.is_finite() {
+        residual.max(0.0)
+    } else {
+        0.0
     }
 }
 
@@ -587,7 +713,10 @@ impl NeuralTimbre {
     /// few samples.
     /// Complexity: O(zones × frames × FFT length + epochs × samples × parameters) time,
     /// O(samples) space.
-    pub fn train(instrument: &'static BankInstrument) -> Option<Self> {
+    pub fn train(
+        instrument: &'static BankInstrument,
+        gpu: Option<&mut GpuTimbreTrainer>,
+    ) -> Option<Self> {
         let mut data: Vec<([f32; FEATURE_COUNT], [f32; BAND_COUNT])> = Vec::new();
         for zone in &instrument.zones {
             analyse_zone(zone.root, zone.lo_vel, zone.hi_vel, &zone.file, &mut data);
@@ -599,8 +728,30 @@ impl NeuralTimbre {
             ^ instrument.id.bytes().fold(0u32, |hash, byte| {
                 hash.wrapping_mul(31).wrapping_add(byte as u32)
             });
+        let (mean, scale, normalised) = normalise(&data);
         let mut net = TinyMlp::new(seed);
-        net.train(&data, seed.rotate_left(7));
+        // 优先在显卡上训练：一次提交跑完全部轮次，网络可以比 CPU 回退路径更大。
+        // Prefer the GPU: all epochs go out in one submission, so the network may be larger than
+        // the CPU fallback could afford.
+        let mut trained_on_gpu = false;
+        if let Some(trainer) = gpu {
+            if let Ok(weights) = trainer.train(
+                &normalised,
+                &net.flatten(),
+                TRAIN_EPOCHS as u32,
+                ADAM_RATE,
+                TRAIN_DECAY,
+            ) {
+                if let Some(restored) = TinyMlp::from_flat(&weights) {
+                    net = restored;
+                    trained_on_gpu = true;
+                }
+            }
+        }
+        if !trained_on_gpu {
+            net.train_normalised(&normalised, seed.rotate_left(7));
+        }
+        fold_output(&mut net, mean, scale);
         let mut reference = [0.0_f32; BAND_COUNT];
         // 参考点取中音区根音与中力度：与分区根音重合时修正量为 0，原采样音色不被改动。
         // The reference point is a mid-register root and mid velocity: on the root note the
@@ -612,7 +763,7 @@ impl NeuralTimbre {
             1.0,
         ];
         net.forward(&reference_input, &mut reference);
-        let residual = net.residual.sqrt();
+        let residual = residual_of(&net, &data).sqrt();
         Some(Self {
             net,
             reference,
@@ -884,14 +1035,17 @@ fn fft(real: &mut [f32], imaginary: &mut [f32]) {
 /// Outputs / side effects: the shared model; failures cache `None` so sync never retries.
 /// Complexity: O(training cost) on first use, O(1) afterwards; the `Mutex` is held only briefly
 /// during the sync phase.
-pub fn model_for(instrument: &'static BankInstrument) -> Option<Arc<NeuralTimbre>> {
+pub fn model_for(
+    instrument: &'static BankInstrument,
+    gpu: Option<&mut GpuTimbreTrainer>,
+) -> Option<Arc<NeuralTimbre>> {
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     if let Ok(cache) = cache.lock() {
         if let Some(cached) = cache.get(instrument.id.as_str()) {
             return cached.clone();
         }
     }
-    let trained = NeuralTimbre::train(instrument).map(Arc::new);
+    let trained = NeuralTimbre::train(instrument, gpu).map(Arc::new);
     if let Ok(mut cache) = cache.lock() {
         cache.insert(instrument.id.clone(), trained.clone());
     }
@@ -1206,7 +1360,7 @@ mod tests {
     /// Covers: forward inference is deterministic, bounded and stable across calls.
     #[test]
     fn forward_inference_is_deterministic_and_bounded() {
-        let model = NeuralTimbre::train(bank_instrument("GrandPiano").expect("GrandPiano"))
+        let model = NeuralTimbre::train(bank_instrument("GrandPiano").expect("GrandPiano"), None)
             .expect("trained model");
         let mut first = [0.0_f32; 3];
         let mut second = [0.0_f32; 3];
@@ -1226,28 +1380,30 @@ mod tests {
         for zone in &instrument.zones {
             analyse_zone(zone.root, zone.lo_vel, zone.hi_vel, &zone.file, &mut data);
         }
-        let mut net = TinyMlp::new(7);
-        let mut before = 0.0_f32;
-        for (input, target) in &data {
-            let mut output = [0.0_f32; BAND_COUNT];
-            net.forward(input, &mut output);
-            for band in 0..BAND_COUNT {
-                let error = output[band] - target[band];
-                before += error * error;
+        let model = NeuralTimbre::train(instrument, None).expect("trained model");
+        // 目标方差就是“永远预测均值”的误差；训练后必须明显低于它。
+        // The target variance is the error of always predicting the mean; training must beat it.
+        let mut mean = [0.0_f32; BAND_COUNT];
+        for (_, target) in &data {
+            for (band, value) in target.iter().enumerate() {
+                mean[band] += *value;
             }
         }
-        before /= (data.len() * BAND_COUNT) as f32;
-        net.train(&data, 11);
-        eprintln!(
-            "frames={} mse_before={before:.3} mse_after={:.3}",
-            data.len(),
-            net.residual
-        );
-        assert!(net.residual.is_finite());
+        for value in &mut mean {
+            *value /= data.len() as f32;
+        }
+        let mut variance = 0.0_f32;
+        for (_, target) in &data {
+            for (band, value) in target.iter().enumerate() {
+                let delta = value - mean[band];
+                variance += delta * delta;
+            }
+        }
+        variance /= (data.len() * BAND_COUNT) as f32;
+        let residual = model.residual * model.residual;
         assert!(
-            net.residual < before * 0.5,
-            "训练必须显著降低误差：before={before}, after={}",
-            net.residual
+            residual.is_finite() && residual < variance * 0.5,
+            "训练必须显著降低误差：variance={variance}, residual={residual}"
         );
     }
 
@@ -1255,7 +1411,7 @@ mod tests {
     /// Covers: on the root note at mid velocity and mid time the correction is zero.
     #[test]
     fn correction_is_zero_at_reference_point() {
-        let model = NeuralTimbre::train(bank_instrument("GrandPiano").expect("GrandPiano"))
+        let model = NeuralTimbre::train(bank_instrument("GrandPiano").expect("GrandPiano"), None)
             .expect("trained model");
         let mut bands = [0.0_f32; BAND_COUNT];
         model.correction(
@@ -1270,13 +1426,31 @@ mod tests {
         );
     }
 
+    /// 覆盖：在显卡上训练的模型同样能拟合采样数据（残差与 CPU 训练同一量级）。
+    /// Covers: a GPU-trained model also fits the sample data, with a residual on par with the CPU.
+    /// 需要可用的 GPU 与图形驱动。
+    /// Requires a usable GPU and graphics driver.
+    #[test]
+    #[ignore = "需要可用的 GPU 与图形驱动"]
+    fn gpu_trained_model_fits_samples() {
+        let instrument = bank_instrument("GrandPiano").expect("GrandPiano");
+        let config = crate::audio::gpu::GpuRenderConfig::new("", "", "");
+        let (hidden_1, hidden_2) = HIDDEN_WIDTHS;
+        let mut trainer = crate::audio::gpu::GpuTimbreTrainer::open(&config, hidden_1, hidden_2)
+            .expect("打开 GPU 训练器");
+        let model = NeuralTimbre::train(instrument, Some(&mut trainer)).expect("model");
+        eprintln!("gpu model residual={:.4}", model.residual);
+        assert!(model.residual.is_finite());
+        assert!(model.residual < 1.0, "GPU 训练残差过大：{}", model.residual);
+    }
+
     /// 覆盖：模型按乐器缓存，同一乐器两次获取得到同一份权重。
     /// Covers: models are cached per instrument, so two lookups share the same weights.
     #[test]
     fn models_are_cached_per_instrument() {
         let instrument = bank_instrument("GrandPiano").expect("GrandPiano");
-        let first = model_for(instrument).expect("model");
-        let second = model_for(instrument).expect("model");
+        let first = model_for(instrument, None).expect("model");
+        let second = model_for(instrument, None).expect("model");
         assert!(Arc::ptr_eq(&first, &second));
     }
 

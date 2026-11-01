@@ -16,6 +16,7 @@ mod sampled;
 
 pub use drums::DrumKit;
 pub use modeled::ModeledInstrument;
+pub use neural::HIDDEN_WIDTHS;
 pub use poly::PolySynth;
 pub use sampled::SampledInstrument;
 
