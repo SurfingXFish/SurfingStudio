@@ -213,6 +213,7 @@ impl TrackEngine {
     /// - `track`：轨道快照。
     /// - `position_beats`：当前播放位置，用于初始化事件游标。
     /// 输出/副作用：更新 `events`、`event_signature` 与 `event_cursor`；不修改乐器状态。
+    /// 同音高音符重叠时，较早的音符在较晚音符开始处结束，防止前一个 Note Off 把后一个音符掐断。
     /// 复杂度：时间 O(n log n)，空间 O(n)，`n` = 本轨音符数。
     ///
     /// Module: audio::engine / realtime render
@@ -222,7 +223,8 @@ impl TrackEngine {
     /// - `track`: track snapshot.
     /// - `position_beats`: current playhead used to initialise the event cursor.
     /// Outputs / side effects: updates `events`, `event_signature` and `event_cursor`;
-    /// instrument state is unchanged.
+    /// instrument state is unchanged. Overlapping same-pitch notes are shortened so the earlier
+    /// note ends where the later one starts, preventing its Note Off from cutting the later note.
     /// Complexity: O(n log n) time and O(n) space, `n` = notes in this track.
     pub(super) fn refresh_events(&mut self, track: &Track, position_beats: f64) {
         let signature = note_signature(track);
@@ -238,6 +240,10 @@ impl TrackEngine {
             .map(|clip| clip.notes.len())
             .sum();
         self.events.reserve(total_notes.saturating_mul(2));
+        // 先展开为绝对时间跨度，再按音高排序：同音高重叠时，较早的音符在较晚音符开始处结束。
+        // Expand into absolute spans first, then sort by pitch: for same-pitch overlaps the earlier
+        // note ends where the later one starts.
+        let mut spans: Vec<(u8, f64, f64, u8)> = Vec::with_capacity(total_notes);
         for clip in &track.clips {
             if clip.audio.is_some() {
                 continue;
@@ -249,19 +255,35 @@ impl TrackEngine {
                 if end <= start + 1e-9 {
                     continue;
                 }
-                self.events.push(NoteEvent {
-                    beat: start,
-                    pitch: note.pitch,
-                    velocity: note.velocity,
-                    on: true,
-                });
-                self.events.push(NoteEvent {
-                    beat: end,
-                    pitch: note.pitch,
-                    velocity: 0,
-                    on: false,
-                });
+                spans.push((note.pitch, start, end, note.velocity));
             }
+        }
+        spans.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.total_cmp(&b.1)));
+        for index in 0..spans.len().saturating_sub(1) {
+            let (next_pitch, next_start) = (spans[index + 1].0, spans[index + 1].1);
+            let current = &mut spans[index];
+            // 只截断真正重叠的同音高音符；完全重合的复制音符保持原样。
+            // Only trim genuinely overlapping same-pitch notes; exact duplicates stay untouched.
+            if next_pitch == current.0
+                && next_start > current.1 + 1e-9
+                && next_start < current.2 - 1e-9
+            {
+                current.2 = next_start;
+            }
+        }
+        for (pitch, start, end, velocity) in spans {
+            self.events.push(NoteEvent {
+                beat: start,
+                pitch,
+                velocity,
+                on: true,
+            });
+            self.events.push(NoteEvent {
+                beat: end,
+                pitch,
+                velocity: 0,
+                on: false,
+            });
         }
         // 同一 beat 上先关闭再开启，避免同音高重叠时把旧音误延长。
         // Close before opening on the same beat so overlapping same-pitch notes retrigger.
@@ -2130,5 +2152,89 @@ mod tests {
             render.samples.iter().any(|sample| sample.abs() > 1e-4),
             "the rendered clip should not be silent"
         );
+    }
+
+    /// 覆盖：同音高音符轻微重叠时，前一个音符在下一个音符开始处结束，后一个音符正常重新起音。
+    /// Covers: a slightly overlapping same-pitch pair trims the earlier note at the later start so
+    /// the later note retriggers instead of being cut off by the earlier Note Off.
+    #[test]
+    fn same_pitch_overlap_trims_the_earlier_note() {
+        let mut project = Project::default();
+        project.bpm = 120.0;
+        let mut track = Track::new(
+            1,
+            "Overlap",
+            [0, 0, 0],
+            InstrumentRef::Synth(SynthSettings::default()),
+        );
+        let mut clip = Clip::new(1, "clip", 0.0, 4.0);
+        clip.notes.push(Note {
+            start: 0.0,
+            length: 1.0,
+            pitch: 60,
+            velocity: 100,
+        });
+        clip.notes.push(Note {
+            start: 0.99,
+            length: 1.0,
+            pitch: 60,
+            velocity: 100,
+        });
+        track.clips.push(clip);
+        project.tracks.push(track);
+
+        let mut engine = Engine::new(48_000.0);
+        engine.sync_project(&project);
+        let events = &engine.tracks[0].events;
+        assert_eq!(events.len(), 4, "each note keeps two events");
+        assert!(
+            (events[1].beat - 0.99).abs() < 1e-9 && !events[1].on,
+            "the earlier note must close at the later note's start: {:?}",
+            events
+        );
+        assert!(
+            (events[2].beat - 0.99).abs() < 1e-9 && events[2].on,
+            "the later note must open right after that close: {:?}",
+            events
+        );
+        assert!(
+            (events[3].beat - 1.99).abs() < 1e-9 && !events[3].on,
+            "the later note keeps its own length: {:?}",
+            events
+        );
+    }
+
+    /// 覆盖：同音高相邻音符（首尾相接）仍各自保留 Note Off，先关后开。
+    /// Covers: touching same-pitch notes keep both Note Offs, with the close before the next open.
+    #[test]
+    fn same_pitch_adjacent_notes_keep_both_note_offs() {
+        let mut project = Project::default();
+        project.bpm = 120.0;
+        let mut track = Track::new(
+            1,
+            "Adjacent",
+            [0, 0, 0],
+            InstrumentRef::Synth(SynthSettings::default()),
+        );
+        let mut clip = Clip::new(1, "clip", 0.0, 4.0);
+        for start in [0.0, 1.0] {
+            clip.notes.push(Note {
+                start,
+                length: 1.0,
+                pitch: 60,
+                velocity: 100,
+            });
+        }
+        track.clips.push(clip);
+        project.tracks.push(track);
+
+        let mut engine = Engine::new(48_000.0);
+        engine.sync_project(&project);
+        let events = &engine.tracks[0].events;
+        assert_eq!(events.len(), 4);
+        assert!(events[0].on && events[0].beat.abs() < 1e-9);
+        assert!((events[1].beat - 1.0).abs() < 1e-9 && !events[1].on);
+        assert!((events[2].beat - 1.0).abs() < 1e-9 && events[2].on);
+        assert!((events[3].beat - 2.0).abs() < 1e-9 && !events[3].on);
     }
 }

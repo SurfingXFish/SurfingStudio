@@ -1569,4 +1569,49 @@ mod tests {
             );
         }
     }
+
+    /// 覆盖：同音高轻微重叠的两个音符，后一个音符必须重新起音而不是被前一个 Note Off 掐断。
+    /// Covers: a slightly overlapping same-pitch pair retriggers the later note instead of being
+    /// silenced by the earlier Note Off.
+    #[test]
+    fn overlapping_same_pitch_notes_retrigger() {
+        let mut project = Project::default();
+        project.bpm = 120.0;
+        let mut track = Track::new(
+            1,
+            "Overlap",
+            [0, 255, 0],
+            InstrumentRef::Synth(crate::core::model::SynthSettings::default()),
+        );
+        let mut clip = Clip::new(1, "clip", 0.0, 4.0);
+        for start in [0.0, 0.99] {
+            clip.notes.push(crate::core::model::Note {
+                start,
+                length: 1.0,
+                pitch: 60,
+                velocity: 100,
+            });
+        }
+        track.clips.push(clip);
+        project.tracks.push(track);
+
+        let mut engine = Engine::new(48_000.0);
+        engine.sync_project(&project);
+        engine.play();
+        let mut left = vec![0.0_f32; 512];
+        let mut right = vec![0.0_f32; 512];
+        let mut samples = Vec::new();
+        for _ in 0..140 {
+            left.fill(0.0);
+            right.fill(0.0);
+            engine.process(&mut left, &mut right);
+            samples.extend_from_slice(&left);
+        }
+        // 120 BPM 下第二个音符在 0.99 beat ≈ 0.495 s 起音，取 0.50–0.60 s 的 RMS。
+        // At 120 BPM the second note starts at 0.99 beat ≈ 0.495 s; measure 0.50–0.60 s RMS.
+        let window = &samples[24_000..28_800];
+        let rms =
+            (window.iter().map(|sample| sample * sample).sum::<f32>() / window.len() as f32).sqrt();
+        assert!(rms > 0.02, "the second note must be audible, rms={rms}");
+    }
 }
