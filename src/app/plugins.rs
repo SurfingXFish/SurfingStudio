@@ -363,7 +363,7 @@ impl EditorWindow {
     /// - `pixels_per_point`：DPI 缩放。
     /// 输出/副作用：移动/缩放子窗口并设置窗口区域；完全不可见时隐藏。
     /// 返回 `true` 表示插件界面无法缩到卡片内（如 Pro-Q 4 最小界面约 1484×811）：
-    /// 此时继续内嵌会把 GUI 与预设二级菜单裁到窗口外，调用方应改用独立窗口。
+    /// 此时调用方应隐藏内嵌窗口并在卡片提示用户双击标题打开独立窗口，不得自动弹窗。
     /// 复杂度：时间 O(1)，空间 O(1)。
     ///
     /// Module: app / plugin editor window
@@ -374,8 +374,8 @@ impl EditorWindow {
     /// - `pixels_per_point`: DPI scale.
     /// Outputs / side effects: moves/resizes the child window, sets its region, and hides it
     /// when the intersection is empty. Returns `true` when the editor cannot shrink into the
-    /// card (Pro-Q 4's minimum is about 1484×811): keeping it inline would clip the GUI and its
-    /// preset submenus outside the window, so the caller should use a standalone window instead.
+    /// card (Pro-Q 4's minimum is about 1484×811): the caller must hide the inline window and point
+    /// the user at the standalone window instead of opening it automatically.
     /// Complexity: O(1) time and space.
     pub(super) fn place_inline(
         &mut self,
@@ -831,14 +831,16 @@ impl SurfingApp {
     /// 所属模块：app / 插件编辑器
     /// 功能：按卡片主体与卷帘可见区域摆放内嵌编辑器。
     /// 输入：`track_id` / `slot` / `rect` / `clip` / `pixels_per_point`。
-    /// 输出/副作用：移动、裁剪并显示子窗口；插件界面无法缩到卡片内时关闭内嵌并改用独立窗口。
+    /// 输出/副作用：移动、裁剪并显示子窗口；插件界面无法缩到卡片内时关闭内嵌并记入 `inline_failed`，
+    /// 卡片显示提示，由用户双击标题手动打开独立窗口（不自动弹出）。
     /// 复杂度：时间 O(编辑器数量)，空间 O(1)。
     ///
     /// Module: app / plugin editor
     /// Purpose: Place an inline editor inside a card and clip it to the roll.
     /// Inputs: `track_id` / `slot` / `rect` / `clip` / `pixels_per_point`.
     /// Outputs / side effects: moves, clips and shows the child window; when the editor cannot
-    /// shrink into the card it closes the inline window and opens a standalone one instead.
+    /// shrink into the card it hides the inline window and records `inline_failed` so the card shows
+    /// a hint. The standalone window is only opened by an explicit double-click on the title.
     /// Complexity: O(editor count) time and O(1) space.
     pub fn place_inline_editor(
         &mut self,
@@ -857,13 +859,12 @@ impl SurfingApp {
             overflow = window.place_inline(rect, clip, pixels_per_point);
         }
         if overflow {
-            // 插件最小尺寸大于卡片：内嵌会裁掉界面与预设二级菜单，改用独立窗口。
-            // The plugin's minimum size exceeds the card: an inline window would clip the GUI and
-            // its preset submenus, so switch to a standalone window.
+            // 插件最小尺寸大于卡片：不自动弹独立窗口，只在卡片提示用户双击标题手动打开。
+            // The plugin's minimum size exceeds the card: never pop a standalone window
+            // automatically; the card hints that a double-click on the title opens one.
             self.inline_failed
-                .insert((track_id, slot), "插件界面大于卡片，已改用独立窗口".into());
-            self.status = "插件界面大于效果器卡片，已在独立窗口打开".into();
-            self.open_editor(track_id, slot);
+                .insert((track_id, slot), "插件界面大于卡片".into());
+            self.status = "插件界面大于效果器卡片，双击标题可在独立窗口打开".into();
             return;
         }
         self.inline_placed.insert((track_id, slot));
