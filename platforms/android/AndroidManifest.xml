@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- 所属模块：platforms/android / 应用清单
-     文件用途：把 Rust cdylib 声明为 NativeActivity 启动的应用；没有 Java 代码，因此 hasCode=false。
+     文件用途：声明 NativeActivity 启动的应用与桌面入口；SAF 需要的 `MainActivity` 子类随
+     `classes.dex` 一起打包，因此 hasCode=true。
      Module: platforms/android / app manifest
-     Purpose: Declare the Rust cdylib as a NativeActivity app; there is no Java code (hasCode=false). -->
+     Purpose: Declare the NativeActivity app and its launcher entry; the `MainActivity` subclass
+     used by SAF ships inside `classes.dex`, hence hasCode=true. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.surfingstudio.app"
     android:versionCode="3"
@@ -39,8 +41,13 @@
                 android:name="android.app.lib_name"
                 android:value="surfing_studio_android" />
 
+            <!-- 启动入口必须用 MAIN + LAUNCHER，否则安装后不会出现在桌面/应用列表；
+                 android.app.NativeActivity 只是系统内部的动作名，不能当作启动 action。
+                 The launcher entry must use MAIN + LAUNCHER, otherwise the app never shows up in
+                 the home screen or app list; android.app.NativeActivity is an internal action name,
+                 not a launcher action. -->
             <intent-filter>
-                <action android:name="android.app.NativeActivity" />
+                <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
