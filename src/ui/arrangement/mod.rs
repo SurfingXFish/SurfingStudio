@@ -2138,12 +2138,13 @@ impl SurfingApp {
                             self.view_start += step;
                             ui.ctx().request_repaint();
                         }
-                        // 纵向边缘自动滚动：让框选继续选中当前屏幕之外的轨道。
-                        // Vertical edge auto-scroll: keep selecting tracks beyond the screen.
-                        if pos.y < lane_top + 18.0 {
+                        // 纵向边缘自动滚动：指针移出画布后继续滚动，让框选延伸到屏幕之外。
+                        // Vertical edge auto-scroll: once the pointer leaves the canvas the view keeps
+                        // scrolling, so the marquee can reach tracks beyond the screen.
+                        if pos.y < lane_top {
                             self.arr_scroll = (self.arr_scroll - 12.0).max(0.0);
                             ui.ctx().request_repaint();
-                        } else if pos.y > rect.bottom() - 18.0 {
+                        } else if pos.y > rect.bottom() {
                             self.arr_scroll = (self.arr_scroll + 12.0).min(max_scroll);
                             ui.ctx().request_repaint();
                         }
@@ -2672,11 +2673,11 @@ impl SurfingApp {
                 ui.separator();
             }
             if theme::menu_button(ui, "剪切", "").clicked() {
-                self.cut_selection();
+                self.cut_selection_synced(ui.ctx());
                 ui.close();
             }
             if theme::menu_button(ui, "复制", &copy_shortcut).clicked() {
-                self.copy_selection();
+                self.copy_selection_synced(ui.ctx());
                 ui.close();
             }
             let paste = ui.add_enabled(
@@ -2702,7 +2703,7 @@ impl SurfingApp {
             if let Some(pos) = response.interact_pointer_pos() {
                 let start = egui::pos2(beat_to_x(*start_beat), lane_top + *start_offset - scroll);
                 let band = Rect::from_two_pos(start, pos).intersect(Rect::from_min_max(
-                    egui::pos2(lane_left, lane_top),
+                    egui::pos2(lane_left, rect.top()),
                     rect.max,
                 ));
                 if band.width() > 1.0 && band.height() > 1.0 {

@@ -4,7 +4,7 @@
 //! - 主页视图下屏蔽编辑/播放快捷键，避免误改后台工程。
 //!
 //! 函数清单：
-//! - `handle_keyboard`：可配置快捷键、撤销、复制粘贴、试听与空格播放/暂停。
+//! - `handle_keyboard`：可配置快捷键、撤销、复制粘贴（含 Copy/Cut/Paste 事件）、试听与空格播放/暂停。
 //! - `handle_controller_tool_shortcuts`：控制器画笔的循环/直选快捷键。
 //! - `cancel_or_close`：取消/关闭当前弹窗或卷帘。
 //! - `poll_midi`：消费 MIDI 输入队列。
@@ -18,7 +18,8 @@
 //!   by accident.
 //!
 //! Functions:
-//! - `handle_keyboard`: configurable shortcuts, undo, copy/paste, audition and Space play/pause.
+//! - `handle_keyboard`: configurable shortcuts, undo, clipboard shortcuts (Copy/Cut/Paste events),
+//!   audition and Space play/pause.
 //! - `handle_controller_tool_shortcuts`: cycle/select controller brush shortcuts.
 //! - `cancel_or_close`: close the current popup or roll.
 //! - `poll_midi`: consume the MIDI input queue.
@@ -60,6 +61,35 @@ impl SurfingApp {
                 .iter()
                 .any(|event| matches!(event, egui::Event::Key { pressed: true, .. }))
         });
+        // egui-winit 会把 Ctrl+C / Ctrl+X / Ctrl+V 转成 Copy / Cut / Paste 事件，
+        // 不再产生普通 Key 事件，因此剪贴板快捷键必须单独读取这些事件。
+        // egui-winit turns Ctrl+C / Ctrl+X / Ctrl+V into Copy / Cut / Paste events instead of key
+        // events, so clipboard shortcuts must read those events separately.
+        let (copy_event, cut_event, paste_event) = ctx.input(|i| {
+            let mut copy = false;
+            let mut cut = false;
+            let mut paste = false;
+            for event in &i.events {
+                match event {
+                    egui::Event::Copy => copy = true,
+                    egui::Event::Cut => cut = true,
+                    egui::Event::Paste(_) => paste = true,
+                    _ => {}
+                }
+            }
+            (copy, cut, paste)
+        });
+        if !typing {
+            if copy_event {
+                self.copy_selection_synced(ctx);
+            }
+            if cut_event {
+                self.cut_selection_synced(ctx);
+            }
+            if paste_event {
+                self.paste_clipboard();
+            }
+        }
 
         // 全部快捷键都读取设置中的绑定；输入框获得焦点时让给文本编辑。
         // Every shortcut reads its binding from the settings; text fields keep their own keys.
@@ -71,7 +101,7 @@ impl SurfingApp {
                 self.redo();
             }
             if self.settings.shortcut_pressed(ctx, ShortcutAction::Copy) {
-                self.copy_selection();
+                self.copy_selection_synced(ctx);
             }
             if self.settings.shortcut_pressed(ctx, ShortcutAction::Paste) {
                 self.paste_clipboard();

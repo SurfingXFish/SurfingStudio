@@ -512,56 +512,94 @@ impl SurfingApp {
     }
 
     /// 所属模块：app / 主页 / 项目页
-    /// 功能：绘制删除确认窗口：可从列表移除，也可同时删除本地工程文件。
+    /// 功能：绘制删除确认模态窗口：可从列表移除，也可同时删除本地工程文件。
     /// 输入：`ctx`：egui 上下文。
-    /// 输出/副作用：确认后调用 `delete_home_project`；取消时只关闭窗口。
+    /// 输出/副作用：确认后调用 `delete_home_project`；取消、按 Esc 或点击遮罩时只关闭窗口。
     /// 复杂度：每帧 O(路径长度)。
     ///
     /// Module: app / home page / projects
-    /// Purpose: Draw the delete confirmation: remove from the list and optionally delete the local
-    /// project file.
+    /// Purpose: Draw the delete confirmation modal: remove from the list and optionally delete the
+    /// local project file.
     /// Inputs: `ctx`: egui context.
-    /// Outputs / side effects: calls `delete_home_project` on confirm; cancel only closes the window.
+    /// Outputs / side effects: calls `delete_home_project` on confirm; cancel, Esc or a backdrop
+    /// click only closes the modal.
     /// Complexity: O(path length) per frame.
     fn ui_home_project_delete_prompt(&mut self, ctx: &egui::Context) {
         let Some(mut prompt) = self.home_project_delete.clone() else {
             return;
         };
         let mut decision: Option<bool> = None;
-        egui::Window::new("删除项目")
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        let name = project_display_name(&prompt.path);
+        let response = egui::Modal::new(egui::Id::new("home_project_delete"))
+            .backdrop_color(egui::Color32::from_black_alpha(150))
+            .frame(
+                egui::Frame::NONE
+                    .fill(theme::PANEL)
+                    .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
+                    .corner_radius(8)
+                    .inner_margin(egui::Margin::symmetric(18, 16)),
+            )
             .show(ctx, |ui| {
-                ui.label(format!(
-                    "确定要删除项目「{}」吗？",
-                    project_display_name(&prompt.path)
-                ));
+                ui.set_width(360.0);
+                ui.label(
+                    egui::RichText::new("删除项目")
+                        .size(14.0)
+                        .strong()
+                        .color(theme::TEXT),
+                );
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new(format!("确定要删除「{name}」吗？"))
+                        .size(12.0)
+                        .color(theme::TEXT),
+                );
+                ui.add_space(3.0);
                 ui.label(
                     egui::RichText::new(prompt.path.display().to_string())
                         .size(10.0)
                         .color(theme::TEXT_FAINT),
                 );
-                ui.add_space(4.0);
-                ui.checkbox(&mut prompt.delete_file, "同时删除本地工程文件（不可恢复）");
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    if ui
-                        .add(
-                            egui::Button::new(
-                                egui::RichText::new("删除").color(egui::Color32::WHITE),
-                            )
-                            .fill(theme::RED),
-                        )
-                        .clicked()
-                    {
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(8.0);
+                ui.checkbox(
+                    &mut prompt.delete_file,
+                    egui::RichText::new("同时删除本地工程文件").size(12.0),
+                );
+                ui.add_space(2.0);
+                ui.label(if prompt.delete_file {
+                    egui::RichText::new("本地文件删除后无法恢复")
+                        .size(10.0)
+                        .color(theme::RED)
+                } else {
+                    egui::RichText::new("仅从项目列表移除，本地文件保留")
+                        .size(10.0)
+                        .color(theme::TEXT_FAINT)
+                });
+                ui.add_space(12.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let delete = egui::Button::new(
+                        egui::RichText::new("删除")
+                            .size(12.0)
+                            .color(egui::Color32::WHITE),
+                    )
+                    .fill(theme::RED)
+                    .corner_radius(4)
+                    .min_size(egui::vec2(76.0, 26.0));
+                    if ui.add(delete).clicked() {
                         decision = Some(true);
                     }
-                    if ui.button("取消").clicked() {
+                    let cancel = egui::Button::new(egui::RichText::new("取消").size(12.0))
+                        .corner_radius(4)
+                        .min_size(egui::vec2(76.0, 26.0));
+                    if ui.add(cancel).clicked() {
                         decision = Some(false);
                     }
                 });
             });
+        if response.should_close() {
+            decision = Some(false);
+        }
         match decision {
             Some(true) => {
                 self.home_project_delete = None;

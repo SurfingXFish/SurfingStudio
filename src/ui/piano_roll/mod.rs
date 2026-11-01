@@ -791,11 +791,11 @@ impl SurfingApp {
         egui::Popup::context_menu(&response).show(|ui| {
             ui.set_min_width(168.0);
             if theme::menu_button(ui, "剪切", "").clicked() {
-                self.cut_selection();
+                self.cut_selection_synced(ui.ctx());
                 ui.close();
             }
             if theme::menu_button(ui, "复制", &copy_shortcut).clicked() {
-                self.copy_selection();
+                self.copy_selection_synced(ui.ctx());
                 ui.close();
             }
             let paste = ui.add_enabled(
@@ -1095,12 +1095,13 @@ impl SurfingApp {
                                 (self.piano_view_beat + step).min(content_end.max(1.0));
                             ui.ctx().request_repaint();
                         }
-                        // 纵向边缘自动滚动：让框选范围继续延伸到当前屏幕之外。
-                        // Vertical edge auto-scroll: let the marquee reach beyond the screen.
-                        if pos.y < grid_top + 20.0 {
+                        // 纵向边缘自动滚动：指针移出画布后继续滚动，让框选延伸到屏幕之外。
+                        // Vertical edge auto-scroll: once the pointer leaves the canvas the view keeps
+                        // scrolling, so the marquee can reach beyond the screen.
+                        if pos.y < grid_top {
                             self.piano_top_pitch = (self.piano_top_pitch + 1).clamp(24, 120);
                             ui.ctx().request_repaint();
-                        } else if pos.y > grid_bottom - 20.0 {
+                        } else if pos.y > grid_bottom {
                             self.piano_top_pitch = (self.piano_top_pitch - 1).clamp(24, 120);
                             ui.ctx().request_repaint();
                         }
@@ -1261,10 +1262,7 @@ impl SurfingApp {
                     beat_to_x(*start_beat),
                     grid_top + (top_pitch as f32 - *start_row) * note_h,
                 );
-                let band = Rect::from_two_pos(start, pos).intersect(Rect::from_min_max(
-                    egui::pos2(grid_left, grid_top),
-                    egui::pos2(rect.right(), grid_bottom),
-                ));
+                let band = Rect::from_two_pos(start, pos).intersect(rect);
                 if band.width() > 1.0 && band.height() > 1.0 {
                     painter.rect_filled(
                         band,

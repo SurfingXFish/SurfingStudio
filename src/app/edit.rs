@@ -9,7 +9,8 @@
 //! - `insert_track_below`：在指定轨道下方插入一条同类型新轨道。
 //! - `remove_effect_at` / `add_native_effect` / `remove_controller`：效果器与控制器子轨增删。
 //! - `copy_child_lane_selection` / `lane_points` / `apply_lane_paste`：子轨复制与覆盖粘贴。
-//! - `copy_selection` / `cut_selection` / `paste_clipboard`：复制、剪切与粘贴入口。
+//! - `copy_selection` / `cut_selection` / `copy_selection_synced` / `cut_selection_synced` /
+//!   `paste_clipboard`：复制、剪切与粘贴入口（含系统剪贴板同步）。
 //! - `validate_selection`：结构变化后校正失效选择。
 //!
 //! Module: app / editing commands
@@ -23,10 +24,20 @@
 //! - `insert_track_below`: insert a new track of the same kind below the given track.
 //! - `remove_effect_at` / `add_native_effect` / `remove_controller`: effect and controller lane editing.
 //! - `copy_child_lane_selection` / `lane_points` / `apply_lane_paste`: child-lane copy and overwrite paste.
-//! - `copy_selection` / `cut_selection` / `paste_clipboard`: copy, cut and paste entry points.
+//! - `copy_selection` / `cut_selection` / `copy_selection_synced` / `cut_selection_synced` /
+//!   `paste_clipboard`: copy, cut and paste entry points (with OS-clipboard sync).
 //! - `validate_selection`: fix stale selections after structural changes.
 
 use super::*;
+
+/// 写入系统剪贴板的占位文本。
+/// 说明：egui-winit 只有在系统剪贴板非空时才会把 Ctrl+V 转成 `Event::Paste`，
+/// 因此应用内复制/剪切后必须放一段非空文本，键盘粘贴才能被识别。
+///
+/// Placeholder text written to the OS clipboard.
+/// Why: egui-winit turns Ctrl+V into `Event::Paste` only when the OS clipboard is non-empty, so an
+/// in-app copy/cut must leave non-empty text for keyboard paste to be recognised.
+const SYSTEM_CLIPBOARD_MARKER: &str = "SurfingStudio 剪贴板";
 
 impl SurfingApp {
     /// 所属模块：app / 编辑命令
@@ -731,22 +742,64 @@ impl SurfingApp {
     /// 功能：剪切当前选中内容：先复制，再按删除优先级移除。
     /// 输入：`self`。
     /// 输出/副作用：可能替换剪贴板、删除控制器点位/音符/效果器/片段并标记脏；
-    /// 无可剪切内容时只更新状态栏。
+    /// 无可剪切内容时只更新状态栏；返回是否真的剪贴了内容。
     /// 复杂度：时间 O(选中项数量)，空间 O(选中项数量)。
     ///
     /// Module: app / editing commands
     /// Purpose: Cut the current selection: copy first, then delete in the priority order.
     /// Inputs: `self`.
     /// Outputs / side effects: may replace the clipboard, delete controller points/notes/effects/
-    /// clips and mark the project dirty; only the status bar changes when nothing can be cut.
+    /// clips and mark the project dirty; only the status bar changes when nothing can be cut;
+    /// returns whether anything was cut.
     /// Complexity: O(selected items) time and space.
-    pub fn cut_selection(&mut self) {
+    pub fn cut_selection(&mut self) -> bool {
         if !self.copy_selection() {
             self.status = "没有可剪切的内容".into();
-            return;
+            return false;
         }
         self.delete_selection();
         self.status = "已剪切".into();
+        true
+    }
+
+    /// 所属模块：app / 编辑命令
+    /// 功能：复制选中内容，并把占位文本写入系统剪贴板。
+    /// 输入：`ctx`：egui 上下文，用于提交系统剪贴板命令。
+    /// 输出/副作用：等同 `copy_selection`；成功时同时写系统剪贴板；返回是否复制成功。
+    /// 复杂度：时间 O(选中项数量)，空间 O(选中项数量)。
+    ///
+    /// Module: app / editing commands
+    /// Purpose: Copy the selection and put the placeholder text on the OS clipboard.
+    /// Inputs: `ctx`: egui context used to submit the clipboard command.
+    /// Outputs / side effects: same as `copy_selection`; also writes the OS clipboard on success;
+    /// returns whether the copy succeeded.
+    /// Complexity: O(selected items) time and space.
+    pub fn copy_selection_synced(&mut self, ctx: &egui::Context) -> bool {
+        if !self.copy_selection() {
+            return false;
+        }
+        ctx.copy_text(SYSTEM_CLIPBOARD_MARKER.to_string());
+        true
+    }
+
+    /// 所属模块：app / 编辑命令
+    /// 功能：剪切选中内容，并把占位文本写入系统剪贴板。
+    /// 输入：`ctx`：egui 上下文，用于提交系统剪贴板命令。
+    /// 输出/副作用：等同 `cut_selection`；成功时同时写系统剪贴板；返回是否剪切成功。
+    /// 复杂度：时间 O(选中项数量)，空间 O(选中项数量)。
+    ///
+    /// Module: app / editing commands
+    /// Purpose: Cut the selection and put the placeholder text on the OS clipboard.
+    /// Inputs: `ctx`: egui context used to submit the clipboard command.
+    /// Outputs / side effects: same as `cut_selection`; also writes the OS clipboard on success;
+    /// returns whether anything was cut.
+    /// Complexity: O(selected items) time and space.
+    pub fn cut_selection_synced(&mut self, ctx: &egui::Context) -> bool {
+        if !self.cut_selection() {
+            return false;
+        }
+        ctx.copy_text(SYSTEM_CLIPBOARD_MARKER.to_string());
+        true
     }
 
     /// Ctrl+V: paste the clipboard at the playhead.

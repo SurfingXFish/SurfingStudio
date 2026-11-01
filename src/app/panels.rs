@@ -394,7 +394,7 @@ impl SurfingApp {
             )
             .clicked()
             {
-                self.copy_selection();
+                self.copy_selection_synced(ui.ctx());
                 ui.close();
             }
             if menu_item(
