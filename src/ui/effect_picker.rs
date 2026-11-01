@@ -25,7 +25,7 @@
 
 use crate::app::SurfingApp;
 use crate::plugin::{PluginKind, ScannedPlugin};
-use crate::ui::{theme, EffectCategory, PluginTarget};
+use crate::ui::{EffectCategory, PluginTarget, theme};
 use eframe::egui::{self, Align, Layout, RichText, Sense, Vec2};
 
 /// 效果器窗口默认尺寸（逻辑点）。
