@@ -953,13 +953,14 @@ fn native_settings_ui(ui: &mut egui::Ui, native: &mut NativeInstrument) -> bool 
 }
 
 /// 所属模块：ui / 检查器 / 采样乐器
-/// 功能：绘制采样乐器的音量、音色、起音、释放与力度跟随滑杆。
+/// 功能：绘制采样乐器的音量、音色、起音、释放、力度跟随与神经音色滑杆。
 /// 输入：`ui`、`settings` 可调参数。
 /// 输出/副作用：可能修改参数；返回是否发生变化。
 /// 复杂度：时间 O(1)，空间 O(1)。
 ///
 /// Module: ui / inspector / sampled instrument
-/// Purpose: Draw level, tone, attack, release and velocity-follow sliders for a sampled instrument.
+/// Purpose: Draw level, tone, attack, release, velocity-follow and neural-timbre sliders for a
+/// sampled instrument.
 /// Inputs: `ui`, `settings` adjustable parameters.
 /// Outputs / side effects: may modify the settings; returns whether anything changed.
 /// Complexity: O(1) time and space.
@@ -970,6 +971,9 @@ fn sample_settings_ui(ui: &mut egui::Ui, settings: &mut SampleSettings) -> bool 
     changed |= labeled_slider(ui, "起音", &mut settings.attack, 0.001..=1.0, " s", true);
     changed |= labeled_slider(ui, "释放", &mut settings.release, 0.02..=4.0, " s", true);
     changed |= labeled_slider(ui, "力度", &mut settings.velocity, 0.0..=1.0, "", false);
+    // 神经音色：0 = 原始采样，1 = 完全按模型修正；滑杆名与文档保持一致。
+    // Neural timbre: 0 = raw sample, 1 = fully model-corrected; the label matches the docs.
+    changed |= labeled_slider(ui, "神经音色", &mut settings.neural, 0.0..=1.0, "", false);
     changed
 }
 

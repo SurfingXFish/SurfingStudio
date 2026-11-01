@@ -1,6 +1,7 @@
 //! 所属模块：audio / 采样乐器
 //! 文件用途：
 //! - 播放内置采样音色库：按音高与力度选择分区，做变速变调、AR 包络与简单低通。
+//! - 用神经音色模型修正频谱：补偿变速变调的共振峰偏移、力度层缺失与循环段的停滞感。
 //! - 首次使用时解码内嵌音频（Ogg Vorbis / WAV），并在进程内共享解码结果，避免多轨重复占用内存。
 //!
 //! 函数清单：
@@ -13,6 +14,8 @@
 //! Purpose:
 //! - Play the built-in sampled bank: select a zone by pitch and velocity, apply varispeed pitch
 //!   shifting, an AR envelope and a simple low-pass.
+//! - Correct the spectrum with the neural timbre model: compensate varispeed formant drift,
+//!   missing velocity layers and the frozen feel of the loop section.
 //! - Decode embedded WAVs on first use and share the decoded data process-wide so multiple tracks
 //!   do not duplicate memory.
 //!
@@ -22,6 +25,7 @@
 //! - `load_sample`: decode and cache embedded audio as mono floating-point samples.
 //! - `zone_for`: choose a zone by pitch and velocity.
 
+use super::neural::{NeuralTimbre, ToneShaper, model_for};
 use super::{GateKind, SynthEvent};
 use crate::core::model::{BankInstrument, SampleSettings, bank_sample_bytes};
 use std::collections::HashMap;
@@ -89,10 +93,33 @@ struct Voice {
     pending_release: bool,
     age: u64,
     tone_state: f32,
+    /// 音符已持续时间（秒），神经模型的时间特征由它推算。
+    /// Seconds since note-on; the neural model derives its time feature from it.
+    neural_time: f32,
+    /// 逐音符亮度抖动 `[-1, 1]`，由模型残差缩放。
+    /// Per-note brightness jitter in `[-1, 1]`, scaled by the model residual.
+    jitter: f32,
+    /// 逐音符音量增益倍数，用来打破“每个音完全一样”的机械感。
+    /// Per-note level gain that breaks the machine-gun repetition of identical notes.
+    jitter_level: f32,
+    /// 神经音色整形器（三段滤波器），状态随 voice 复用。
+    /// Neural tone shaper (three filters); its state travels with the voice.
+    shaper: ToneShaper,
 }
 
-impl Default for Voice {
-    fn default() -> Self {
+impl Voice {
+    /// 所属模块：audio / 采样乐器
+    /// 功能：创建未发声的 voice，并按引擎采样率初始化整形器。
+    /// 输入：`sample_rate` 引擎采样率（Hz）。
+    /// 输出/副作用：返回新 voice；不修改外部状态。
+    /// 复杂度：时间 O(1)，空间 O(1)。
+    ///
+    /// Module: audio / sampled instrument
+    /// Purpose: Create a silent voice and initialise its shaper for the engine sample rate.
+    /// Inputs: `sample_rate` engine rate in Hz.
+    /// Outputs / side effects: the new voice; no external state change.
+    /// Complexity: O(1) time and space.
+    fn new(sample_rate: f32) -> Self {
         Self {
             active: false,
             note: 60,
@@ -105,6 +132,10 @@ impl Default for Voice {
             pending_release: false,
             age: 0,
             tone_state: 0.0,
+            neural_time: 0.0,
+            jitter: 0.0,
+            jitter_level: 1.0,
+            shaper: ToneShaper::new(sample_rate),
         }
     }
 }
@@ -117,6 +148,10 @@ pub struct SampledInstrument {
     age_counter: u64,
     sustain_pedal: bool,
     pitch_bend_semitones: f32,
+    /// 该音色的神经音色模型；首次使用时训练并缓存，缺失时退回纯采样播放。
+    /// Neural timbre model of this instrument; trained and cached on first use, falling back to
+    /// plain sample playback when unavailable.
+    model: Option<Arc<NeuralTimbre>>,
 }
 
 impl SampledInstrument {
@@ -157,14 +192,18 @@ impl SampledInstrument {
                 loop_fade,
             });
         }
+        let sample_rate = sample_rate.max(1.0);
         Self {
-            sample_rate: sample_rate.max(1.0),
+            sample_rate,
             settings,
             zones,
-            voices: (0..MAX_VOICES).map(|_| Voice::default()).collect(),
+            voices: (0..MAX_VOICES).map(|_| Voice::new(sample_rate)).collect(),
             age_counter: 0,
             sustain_pedal: false,
             pitch_bend_semitones: 0.0,
+            // 模型按乐器缓存：同一音色的第二次实例化不再训练。
+            // The model is cached per instrument, so a second instance does not retrain.
+            model: model_for(instrument),
         }
     }
 
@@ -218,10 +257,30 @@ impl SampledInstrument {
         let semitones = note as f32 - zone.root;
         let base_step = (zone.sample_rate / self.sample_rate) * 2.0_f32.powf(semitones / 12.0);
         self.age_counter = self.age_counter.wrapping_add(1);
+        let velocity_norm = (velocity.max(1) as f32 / 127.0).powf(0.85);
+        let amount = self.settings.neural.clamp(0.0, 1.0);
+        // 逐音符抖动由模型残差给出：同音高重复时不再每次都完全一致。
+        // Per-note jitter comes from the model residual so repeated notes are never identical.
+        // 起音当下就按模型算一次增益：否则音符在第一个 block 里完全没有修正。
+        // Compute the first gains at note-on, otherwise the note starts uncorrected for one block.
+        let (jitter, jitter_level, gains) = match self.model.as_deref() {
+            Some(model) => {
+                let (brightness, level) = model.note_jitter(self.age_counter);
+                let mut gains = [0.0_f32; 3];
+                if amount > 0.0 {
+                    model.voice_gains(note as f32, velocity_norm, 0.0, brightness, &mut gains);
+                    for gain in &mut gains {
+                        *gain *= amount;
+                    }
+                }
+                (brightness, 1.0 + (level - 1.0) * amount, gains)
+            }
+            None => (0.0, 1.0, [0.0_f32; 3]),
+        };
         let voice = &mut self.voices[slot];
         voice.active = true;
         voice.note = note;
-        voice.velocity = (velocity.max(1) as f32 / 127.0).powf(0.85);
+        voice.velocity = velocity_norm;
         voice.zone = zone_index;
         voice.position = 0.0;
         voice.step = base_step as f64;
@@ -230,6 +289,13 @@ impl SampledInstrument {
         voice.pending_release = false;
         voice.age = self.age_counter;
         voice.tone_state = 0.0;
+        voice.neural_time = 0.0;
+        voice.jitter = jitter;
+        voice.jitter_level = jitter_level;
+        // 抢音后必须清空滤波器状态，否则上一个音的尾音会串进新音符。
+        // A stolen voice must clear its filter state or the previous tail leaks into the new note.
+        voice.shaper.reset();
+        voice.shaper.update(gains);
     }
 
     fn note_off(&mut self, note: u8) {
@@ -269,6 +335,34 @@ impl SampledInstrument {
         // tone=1 puts the cutoff near Nyquist (original sample); tone=0 is about 500 Hz.
         let cutoff = 500.0 * (sr * 0.45 / 500.0).powf(settings.tone.clamp(0.0, 1.0) as f32);
         let tone_a = 1.0 - (-std::f32::consts::TAU * cutoff.min(sr * 0.45) / sr).exp();
+        let neural_amount = settings.neural.clamp(0.0, 1.0);
+        let model = self.model.as_deref().filter(|_| neural_amount > 0.0);
+        // 神经音色每块只推理一次：逐采样推理会把开销放大两个数量级，而音色演化在 10 ms 尺度上足够。
+        // The neural model runs once per block: per-sample inference would cost two orders of
+        // magnitude more, while a 10 ms resolution is enough for timbre evolution.
+        if !out.is_empty() {
+            let block_seconds = out.len() as f32 / sr;
+            for voice in &mut self.voices {
+                if !voice.active {
+                    continue;
+                }
+                let mut gains = [0.0_f32; 3];
+                if let Some(model) = model {
+                    voice.neural_time += block_seconds;
+                    model.voice_gains(
+                        voice.note as f32,
+                        voice.velocity,
+                        voice.neural_time,
+                        voice.jitter,
+                        &mut gains,
+                    );
+                    for gain in &mut gains {
+                        *gain *= neural_amount;
+                    }
+                }
+                voice.shaper.update(gains);
+            }
+        }
 
         for (frame, sample_out) in out.iter_mut().enumerate() {
             while event_index < events.len() && events[event_index].frame <= frame {
@@ -344,8 +438,11 @@ impl SampledInstrument {
                 // 一阶低通：音色参数只改变亮度，不改变采样长度。
                 // One-pole low-pass: the tone control only changes brightness.
                 voice.tone_state += tone_a * (sample - voice.tone_state);
+                // 神经整形器在 0 dB 时是直通，因此关闭神经音色不改变原始采样。
+                // The neural shaper is transparent at 0 dB, so disabling it restores the raw sample.
+                let shaped = voice.shaper.process(voice.tone_state);
                 let gain = voice.env * (1.0 - velocity_amount + velocity_amount * voice.velocity);
-                mix += voice.tone_state * gain;
+                mix += shaped * gain * voice.jitter_level;
 
                 voice.position += voice.step * bend_ratio;
                 if looped && voice.position >= zone.loop_end as f64 {
@@ -460,7 +557,7 @@ static CACHE: OnceLock<Mutex<HashMap<String, Option<(Arc<Vec<f32>>, f32)>>>> = O
 /// Inputs: `file` relative manifest path.
 /// Outputs / side effects: samples and source rate; missing or invalid files cache `None`.
 /// Complexity: O(samples) on first use, O(1) plus an `Arc` clone afterwards.
-fn load_sample(file: &str) -> Option<(Arc<Vec<f32>>, f32)> {
+pub(super) fn load_sample(file: &str) -> Option<(Arc<Vec<f32>>, f32)> {
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     if let Ok(cache) = cache.lock() {
         if let Some(cached) = cache.get(file) {
@@ -761,6 +858,51 @@ mod tests {
             let (data, _) = load_sample(&zone.file).expect("decode zone");
             assert_eq!(data[0], 0.0, "{} 起音没有淡入", zone.file);
         }
+    }
+
+    /// 覆盖：开启神经音色后，部分音高的输出与纯采样播放不同，且仍然有界。
+    /// Covers: enabling the neural timbre changes the output of some pitches compared with plain
+    /// sample playback while keeping it bounded.
+    #[test]
+    fn neural_timbre_changes_transposed_output() {
+        let entry = bank_instrument("StringLeg").expect("StringLeg");
+        let plain = SampleSettings {
+            neural: 0.0,
+            ..SampleSettings::default()
+        };
+        let neural = SampleSettings {
+            neural: 1.0,
+            ..SampleSettings::default()
+        };
+        let mut difference = 0.0_f32;
+        for pitch in entry.range[0]..=entry.range[1] {
+            let mut without = SampledInstrument::new(entry, plain.clone(), 48_000.0);
+            let mut with = SampledInstrument::new(entry, neural.clone(), 48_000.0);
+            assert!(with.model.is_some(), "StringLeg 应训练出神经音色模型");
+            let events = [SynthEvent {
+                frame: 0,
+                kind: GateKind::On,
+                pitch,
+                velocity: 96,
+            }];
+            let mut plain_out = vec![0.0; 8_000];
+            let mut neural_out = vec![0.0; 8_000];
+            without.render(&mut plain_out, &events);
+            with.render(&mut neural_out, &events);
+            for (plain, neural) in plain_out.iter().zip(neural_out.iter()) {
+                difference = difference.max((plain - neural).abs());
+            }
+            assert!(
+                neural_out
+                    .iter()
+                    .all(|sample| sample.is_finite() && sample.abs() <= 1.0),
+                "音高 {pitch} 的神经音色输出越界"
+            );
+        }
+        assert!(
+            difference > 1e-4,
+            "神经音色没有改变输出：最大差值 {difference}"
+        );
     }
 
     /// 覆盖：持续类乐器超过采样长度后仍持续发声（交叉淡化循环），不会提前中断。

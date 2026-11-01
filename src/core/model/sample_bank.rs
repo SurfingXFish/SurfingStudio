@@ -6,7 +6,7 @@
 //!
 //! 函数清单：
 //! - `BankZone::matches`：判断分区是否覆盖指定音高与力度。
-//! - `SampleSettings` 的 `Default`：采样乐器通用默认参数。
+//! - `SampleSettings` 的 `Default` / `default_neural_amount`：采样乐器通用默认参数。
 //! - `SampleInstrument::new`：按音色 id 构造乐器引用。
 //! - `instruments` / `instrument` / `sample_bytes`：清单与音频数据查询。
 //!
@@ -19,7 +19,8 @@
 //!
 //! Functions:
 //! - `BankZone::matches`: whether a zone covers the given pitch and velocity.
-//! - `Default` for `SampleSettings`: shared defaults for sampled instruments.
+//! - `Default` for `SampleSettings` / `default_neural_amount`: shared defaults for sampled
+//!   instruments.
 //! - `SampleInstrument::new`: build an instrument reference from a bank id.
 //! - `instruments` / `instrument` / `sample_bytes`: manifest and audio lookups.
 
@@ -91,6 +92,10 @@ pub struct SampleSettings {
     /// 力度对音量的影响程度（0 = 固定音量，1 = 完全跟随）。
     /// How strongly velocity affects level (0 = fixed, 1 = full).
     pub velocity: f32,
+    /// 神经音色修正强度（0 = 关闭，1 = 完全按模型修正频谱）。
+    /// Strength of the neural timbre correction (0 = off, 1 = fully model-corrected).
+    #[serde(default = "default_neural_amount")]
+    pub neural: f32,
 }
 
 impl Default for SampleSettings {
@@ -101,8 +106,24 @@ impl Default for SampleSettings {
             attack: 0.002,
             release: 0.28,
             velocity: 0.7,
+            neural: default_neural_amount(),
         }
     }
+}
+
+/// 所属模块：core / 数据模型 / 采样音色库
+/// 功能：旧工程没有 `neural` 字段时的默认值。
+/// 输入：无。
+/// 输出/副作用：返回默认强度；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: core / data model / sampled sound bank
+/// Purpose: Default used when an older project has no `neural` field.
+/// Inputs: none.
+/// Outputs / side effects: the default strength; no state change.
+/// Complexity: O(1) time and space.
+fn default_neural_amount() -> f32 {
+    0.7
 }
 
 /// 采样乐器引用：只保存音色 id 与参数，工程文件不会重复清单内容。
@@ -424,6 +445,33 @@ mod tests {
         assert_eq!(decoded.name, "小提琴");
         assert!((decoded.settings.level - 0.8).abs() < 1e-6);
         assert!((decoded.settings.release - 0.35).abs() < 1e-6);
+    }
+
+    /// 覆盖：旧工程没有 `neural` 字段时按默认值补齐，不会读取失败。
+    /// Covers: settings written without `neural` fall back to the default instead of failing.
+    #[test]
+    fn settings_without_neural_use_default() {
+        #[derive(serde::Serialize)]
+        struct LegacySettings {
+            level: f32,
+            tone: f32,
+            attack: f32,
+            release: f32,
+            velocity: f32,
+        }
+        let legacy = LegacySettings {
+            level: 0.8,
+            tone: 0.9,
+            attack: 0.01,
+            release: 0.3,
+            velocity: 0.6,
+        };
+        let bytes = rmp_serde::to_vec(&legacy).expect("encode legacy settings");
+        let decoded: SampleSettings =
+            rmp_serde::from_slice(&bytes).expect("decode legacy settings");
+        assert_eq!(decoded.neural, 0.7, "缺字段时必须回落到默认强度");
+        assert!((decoded.level - 0.8).abs() < 1e-6);
+        assert!((decoded.velocity - 0.6).abs() < 1e-6);
     }
 
     /// 覆盖：旧工程中的 `Sampled` 变体可映射到新的 `Sample` 变体。

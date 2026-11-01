@@ -1,14 +1,16 @@
 //! 所属模块：audio / 内置乐器
 //! 文件用途：
-//! - 聚合内置复音合成器、鼓机、原生建模乐器与采样音色库播放器，并提供本块音符事件类型。
+//! - 聚合内置复音合成器、鼓机、原生建模乐器、采样音色库播放器与神经音色模型，
+//!   并提供本块音符事件类型。
 //!
 //! Module: audio / built-in instruments
 //! Purpose:
-//! - Aggregate the built-in polyphonic synth, drum kit, modeled native instruments and sampled
-//!   bank player, and expose the per-block note event type.
+//! - Aggregate the built-in polyphonic synth, drum kit, modeled native instruments, sampled
+//!   bank player and neural timbre model, and expose the per-block note event type.
 
 mod drums;
 mod modeled;
+mod neural;
 mod poly;
 mod sampled;
 
