@@ -10,6 +10,7 @@
 //! - `effect`：内置原生效果器与效果链引用。
 //! - `instrument`：内置合成器 / 鼓机 / 原生乐器设置与乐器引用。
 //! - `plugin`：插件引用与格式。
+//! - `sample_bank`：内置采样音色库清单与内部音频数据查询。
 //! - `track`：轨道、子轨与类型约束。
 //! - `project`：工程容器、默认值与 Demo 编曲。
 //! - `template`：主流音乐风格模板、范例工程与展开器。
@@ -27,6 +28,7 @@
 //! - `effect`: native effects and effect-chain references.
 //! - `instrument`: synth/drum/native instrument settings and references.
 //! - `plugin`: plugin references and formats.
+//! - `sample_bank`: built-in sampled instrument manifest and embedded audio lookups.
 //! - `track`: tracks, child lanes and type constraints.
 //! - `project`: project container, defaults and demo arrangement.
 //! - `template`: mainstream music templates, example projects and the expander.
@@ -38,6 +40,7 @@ mod effect;
 mod instrument;
 mod plugin;
 mod project;
+mod sample_bank;
 pub mod template;
 mod track;
 
@@ -53,6 +56,10 @@ pub use instrument::{
 };
 pub use plugin::{PluginFormat, PluginRef};
 pub use project::Project;
+pub use sample_bank::{
+    BankInstrument, BankZone, SampleInstrument, SampleSettings, instrument as bank_instrument,
+    instruments as bank_instruments, sample_bytes as bank_sample_bytes,
+};
 pub use template::{
     ChordQuality, ChordSpec, ExampleProject, MusicTemplate, TemplateFamily, TemplateId,
 };

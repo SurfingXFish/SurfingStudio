@@ -282,7 +282,7 @@ impl SurfingApp {
             });
 
         if let Some((format, path, name, uid)) = chosen {
-            self.apply_plugin(browser.target, format, path, name, uid);
+            self.apply_plugin(browser.target, format, path, name, uid, None);
         } else if open {
             self.browser = Some(browser);
         }

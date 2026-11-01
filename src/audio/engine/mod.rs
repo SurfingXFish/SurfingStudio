@@ -41,7 +41,9 @@ pub use render::{OfflineRender, OfflineRenderOptions, OfflineRenderSession, Rend
 use crate::audio::fx::NativeEffectProcessor;
 use crate::audio::gpu::GpuRenderConfig;
 use crate::audio::io::{AudioFile, AudioRuntime};
-use crate::audio::synth::{DrumKit, GateKind, ModeledInstrument, PolySynth, SynthEvent};
+use crate::audio::synth::{
+    DrumKit, GateKind, ModeledInstrument, PolySynth, SampledInstrument, SynthEvent,
+};
 use crate::core::model::{
     ChannelLayout, ControllerKind, ControllerLanes, EffectRef, InstrumentRef, Project, Track,
     TrackId, evaluate_automation,
@@ -191,6 +193,7 @@ enum InstrumentRuntime {
     Synth(PolySynth),
     Drums(DrumKit),
     Native(ModeledInstrument),
+    Sample(SampledInstrument),
     Plugin(PluginRuntime),
     Failed(String),
 }
@@ -411,6 +414,18 @@ impl TrackEngine {
                     native.settings.clone(),
                     sample_rate as f32,
                 )),
+                InstrumentRef::Sample(sample) => match sample.entry() {
+                    Some(entry) => InstrumentRuntime::Sample(SampledInstrument::new(
+                        entry,
+                        sample.settings.clone(),
+                        sample_rate as f32,
+                    )),
+                    None => {
+                        let message = format!("未找到音色：{}", sample.bank);
+                        warnings.push(format!("{}: {}", track.name, message));
+                        InstrumentRuntime::Failed(message)
+                    }
+                },
                 InstrumentRef::Plugin(pref) => {
                     // 逐插件记录加载开始/结束：插件在加载中崩溃时，最后一条 begin 就是现场。
                     // Log each instrument load: when a plugin crashes while loading, the last begin
@@ -436,10 +451,13 @@ impl TrackEngine {
                     ) {
                         Ok(mut runtime) => {
                             // 导入的未验证状态只保留数据，不自动恢复，避免插件崩溃；
-                            // 此时用导入的程序号尽量还原预设选择。
+                            // 此时用导入的程序号尽量还原预设选择。空状态同样回退到程序号，
+                            // 否则“先选工厂预设、再打开编辑器”会让插件重置为默认音色。
                             // Unverified imported state is preserved but not applied; the imported
-                            // program number is used to restore the preset selection instead.
-                            if pref.restore_state {
+                            // program number is used to restore the preset selection instead. Empty
+                            // state also falls back to the program so opening the editor after
+                            // choosing a factory preset cannot reset the plug-in to its default.
+                            if pref.restore_state && !pref.state.is_empty() {
                                 runtime.restore_state(&pref.state, &pref.params);
                             } else if let Some(program) = pref.program {
                                 runtime.select_program(program);
@@ -470,6 +488,9 @@ impl TrackEngine {
                 }
                 (InstrumentRuntime::Native(native), InstrumentRef::Native(instrument)) => {
                     native.set_settings(instrument.settings.clone());
+                }
+                (InstrumentRuntime::Sample(sample), InstrumentRef::Sample(reference)) => {
+                    sample.set_settings(reference.settings.clone());
                 }
                 _ => {}
             }
@@ -586,6 +607,7 @@ impl TrackEngine {
             InstrumentRuntime::Synth(synth) => synth.all_notes_off(),
             InstrumentRuntime::Drums(drums) => drums.all_notes_off(),
             InstrumentRuntime::Native(native) => native.all_notes_off(),
+            InstrumentRuntime::Sample(sample) => sample.all_notes_off(),
             InstrumentRuntime::Plugin(plugin) => plugin.panic(),
             InstrumentRuntime::Failed(_) => {}
         }
@@ -1426,6 +1448,38 @@ mod tests {
         assert!(
             peak > 0.01,
             "native chain should produce audio, peak={peak}"
+        );
+    }
+
+    /// 覆盖：采样音色库乐器可经由引擎渲染链产生输出。
+    /// Covers: a sampled-bank instrument renders through the engine chain.
+    #[test]
+    fn sampled_instrument_renders_through_the_engine() {
+        let mut project = Project::default();
+        project.bpm = 120.0;
+        let mut track = Track::new(
+            1,
+            "Sampled",
+            [0, 0, 0],
+            InstrumentRef::Sample(crate::core::model::SampleInstrument::new("GrandPiano")),
+        );
+        let mut clip = Clip::new(1, "clip", 0.0, 2.0);
+        clip.notes.push(crate::core::model::Note {
+            start: 0.0,
+            length: 1.0,
+            pitch: 60,
+            velocity: 100,
+        });
+        track.clips.push(clip);
+        project.tracks.push(track);
+
+        let samples = Engine::render_offline(&project, 48_000.0).expect("offline render");
+        let peak = samples
+            .iter()
+            .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
+        assert!(
+            peak > 0.01,
+            "sampled instrument should produce audio, peak={peak}"
         );
     }
 

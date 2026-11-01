@@ -715,6 +715,10 @@ impl Engine {
                     native.render(&mut track_l, &gates);
                     track_r.copy_from_slice(&track_l);
                 }
+                InstrumentRuntime::Sample(sample) => {
+                    sample.render(&mut track_l, &gates);
+                    track_r.copy_from_slice(&track_l);
+                }
                 InstrumentRuntime::Plugin(plugin) => {
                     plugin.process(
                         sample_rate,
@@ -1761,6 +1765,7 @@ fn apply_controller_state(runtime: &mut TrackEngine, track: &Track, block_start:
         match &mut runtime.instrument {
             InstrumentRuntime::Synth(synth) => synth.set_sustain(sustain),
             InstrumentRuntime::Native(native) => native.set_sustain(sustain),
+            InstrumentRuntime::Sample(sample) => sample.set_sustain(sustain),
             InstrumentRuntime::Drums(drums) => drums.set_sustain(sustain),
             InstrumentRuntime::Plugin(plugin) => {
                 plugin.send_cc(64, if sustain { 127 } else { 0 });
@@ -1778,6 +1783,7 @@ fn apply_controller_state(runtime: &mut TrackEngine, track: &Track, block_start:
         match &mut runtime.instrument {
             InstrumentRuntime::Synth(synth) => synth.set_pitch_bend(bend_semitones),
             InstrumentRuntime::Native(native) => native.set_pitch_bend(bend_semitones),
+            InstrumentRuntime::Sample(sample) => sample.set_pitch_bend(bend_semitones),
             InstrumentRuntime::Drums(drums) => drums.set_pitch_bend(bend_semitones),
             InstrumentRuntime::Plugin(plugin) => plugin.send_pitch_bend(bend),
             InstrumentRuntime::Failed(_) => {}

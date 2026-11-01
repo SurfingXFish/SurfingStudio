@@ -1,19 +1,21 @@
 //! 所属模块：audio / 内置乐器
 //! 文件用途：
-//! - 聚合内置复音合成器、鼓机与原生建模乐器，并提供本块音符事件类型。
+//! - 聚合内置复音合成器、鼓机、原生建模乐器与采样音色库播放器，并提供本块音符事件类型。
 //!
 //! Module: audio / built-in instruments
 //! Purpose:
-//! - Aggregate the built-in polyphonic synth, drum kit and modeled native instruments,
-//!   and expose the per-block note event type.
+//! - Aggregate the built-in polyphonic synth, drum kit, modeled native instruments and sampled
+//!   bank player, and expose the per-block note event type.
 
 mod drums;
 mod modeled;
 mod poly;
+mod sampled;
 
 pub use drums::DrumKit;
 pub use modeled::ModeledInstrument;
 pub use poly::PolySynth;
+pub use sampled::SampledInstrument;
 
 /// A note gate scheduled at a frame offset inside the current block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

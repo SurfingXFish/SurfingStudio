@@ -132,6 +132,7 @@ impl Project {
         let name = match &instrument {
             InstrumentRef::Drums(_) => format!("鼓组 {}", id),
             InstrumentRef::Native(native) => format!("{} {}", native.kind.label(), id),
+            InstrumentRef::Sample(sample) => format!("{} {}", sample.name, id),
             InstrumentRef::Plugin(_) => format!("插件轨道 {}", id),
             InstrumentRef::Synth(_) => format!("MIDI 轨道 {}", id),
         };

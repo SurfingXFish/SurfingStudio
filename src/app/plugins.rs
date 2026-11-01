@@ -1077,6 +1077,7 @@ impl SurfingApp {
         path: PathBuf,
         name: String,
         uid: String,
+        program: Option<i32>,
     ) {
         if self.engine_sync_rx.is_some() {
             self.status = "正在加载插件，请稍候…".into();
@@ -1094,6 +1095,12 @@ impl SurfingApp {
         self.inline_failed.clear();
         let mut pref = PluginRef::new(format, path, name);
         pref.uid = uid;
+        pref.program = program;
+        // 工厂预设以程序号恢复；空状态不应覆盖插件的预设选择。
+        // Factory presets restore through the program index; the empty state must not override it.
+        if program.is_some() {
+            pref.restore_state = false;
+        }
         let format_label = match pref.format {
             PluginFormat::Vst3 => "vst3",
             PluginFormat::Vst2 => "vst2",
@@ -1244,7 +1251,12 @@ impl SurfingApp {
                             crate::ui::PluginTarget::Instrument => {
                                 if let Some(track) = self.project.tracks.get_mut(track_index) {
                                     if let InstrumentRef::Plugin(pref) = &mut track.instrument {
-                                        pref.name = name.clone();
+                                        // 工厂预设保留“插件 · 预设名”，避免被插件显示名覆盖。
+                                        // Factory presets keep "plug-in · preset" instead of being
+                                        // overwritten by the plug-in display name.
+                                        if pref.program.is_none() {
+                                            pref.name = name.clone();
+                                        }
                                     }
                                 }
                             }

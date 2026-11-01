@@ -171,23 +171,28 @@ impl PluginRef {
     }
 
     /// 所属模块：core / 数据模型 / 插件引用
-    /// 功能：返回插件身份键（格式 + uid + 路径），用于判断运行时实例能否复用。
+    /// 功能：返回插件身份键（格式 + uid + 路径 + 程序号），用于判断运行时实例能否复用。
     /// 输入：`self`。
     /// 输出/副作用：身份字符串；不修改状态。
     /// 复杂度：时间 O(路径长度)，空间 O(身份字符串长度)。
     ///
     /// Module: core / data model / plugin reference
-    /// Purpose: Return the plugin identity key (format + uid + path) used to decide whether a
-    /// runtime instance can be reused.
+    /// Purpose: Return the plugin identity key (format + uid + path + program) used to decide
+    /// whether a runtime instance can be reused.
     /// Inputs: `self`.
     /// Outputs / side effects: identity string; no state change.
     /// Complexity: O(path length) time and O(key length) space.
     pub fn key(&self) -> String {
+        let program = self
+            .program
+            .map(|program| format!(":p{program}"))
+            .unwrap_or_default();
         format!(
-            "{}:{}:{}",
+            "{}:{}:{}{}",
             self.format.label(),
             self.uid,
-            self.path.to_string_lossy()
+            self.path.to_string_lossy(),
+            program
         )
     }
 }
@@ -214,6 +219,21 @@ mod tests {
             plugin.program.is_none(),
             "legacy projects have no program index"
         );
+    }
+
+    /// 覆盖：程序号参与插件身份键，切换工厂预设会触发运行时重建。
+    /// Covers: the program index is part of the identity key so preset switches reload the runtime.
+    #[test]
+    fn program_is_part_of_the_identity_key() {
+        let mut plugin = PluginRef::new(
+            PluginFormat::Vst3,
+            std::path::PathBuf::from("C:/plugins/SomeSynth.vst3"),
+            "SomeSynth".into(),
+        );
+        let base = plugin.key();
+        plugin.program = Some(7);
+        assert_ne!(base, plugin.key());
+        assert!(plugin.key().ends_with(":p7"));
     }
 
     /// 覆盖：`.sfsd` 使用 rmp 紧凑数组编码时，旧工程（缺少末尾的 `program`）仍能读取。
