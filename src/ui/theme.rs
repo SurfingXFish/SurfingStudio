@@ -38,6 +38,10 @@ pub const LOGO_BG: Color32 = Color32::from_rgb(46, 46, 51);
 /// 软件图标音柱蓝色，与 `assets/icon.svg` 一致（#0078D4）。
 /// App-logo bar blue, matching `assets/icon.svg` (#0078D4).
 pub const LOGO_BLUE: Color32 = Color32::from_rgb(0, 120, 212);
+/// 软件图标描边，与 `assets/icon.svg` 一致（#5C5C66）：避免深灰底与深色面板融为一体。
+/// App-logo border, matching `assets/icon.svg` (#5C5C66); keeps the dark grey tile from blending
+/// into dark panels.
+pub const LOGO_BORDER: Color32 = Color32::from_rgb(92, 92, 102);
 /// 编辑区/中央面板底色（#1E1F22）。
 /// Editor and central panel background (#1E1F22).
 pub const BG: Color32 = Color32::from_rgb(30, 31, 34);

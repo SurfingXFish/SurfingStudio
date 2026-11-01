@@ -1055,9 +1055,15 @@ pub(crate) fn paint_studio_logo(painter: &egui::Painter, rect: egui::Rect) {
     let rounded =
         |radius: f32| egui::CornerRadius::from((radius * scale).round().clamp(0.0, 255.0) as u8);
 
-    // 深灰圆角底与背景网格：与 SVG 的 512 坐标系保持一致。
-    // Dark grey rounded background and grid, keeping the SVG's 512-unit coordinate system.
+    // 深灰圆角底与描边：描边保证图标贴在深色面板上时仍有轮廓。
+    // Dark grey rounded background plus a border, so the tile keeps its outline on dark panels.
     painter.rect_filled(rect, rounded(112.0), theme::LOGO_BG);
+    painter.rect_stroke(
+        rect,
+        rounded(112.0),
+        egui::Stroke::new((10.0 * scale).max(1.0), theme::LOGO_BORDER),
+        egui::StrokeKind::Inside,
+    );
     let grid = egui::Stroke::new(
         (2.0 * scale).max(0.5),
         theme::with_alpha(theme::TEXT_DIM, 46),
