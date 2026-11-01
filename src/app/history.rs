@@ -158,14 +158,25 @@ impl SurfingApp {
 
     pub fn undo(&mut self) {
         let Some(previous) = self.undo_stack.pop() else {
+            diag::info(
+                "app.input",
+                "history.undo",
+                &[("result", "empty"), ("stack", "0")],
+            );
             self.status = "没有可撤销的操作".into();
             return;
         };
+        let remaining = self.undo_stack.len().to_string();
         let focus_clip = self.selected_clip().map(|clip| clip.id);
         self.redo_stack
             .push(std::mem::replace(&mut self.project, previous));
         self.after_history_apply();
         self.reconcile_focus_after_history(focus_clip);
+        diag::info(
+            "app.input",
+            "history.undo",
+            &[("result", "applied"), ("stack", &remaining)],
+        );
         self.status = "已撤销".into();
     }
 

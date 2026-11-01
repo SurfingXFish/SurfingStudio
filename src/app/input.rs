@@ -52,7 +52,10 @@ impl SurfingApp {
         if self.view == WorkspaceView::Home {
             return;
         }
-        let typing = ctx.egui_wants_keyboard_input();
+        // 只有真正处于文本编辑状态时才让出快捷键；普通按钮/画布获得焦点不应阻断撤销。
+        // Yield shortcuts only while a text field is actually being edited; focus on buttons or the
+        // canvas must not block undo.
+        let typing = ctx.text_edit_focused();
         // 没有按键事件时跳过全部绑定匹配，避免每帧为每个动作分配默认绑定。
         // Skip binding matching when no key event arrived, so no per-frame default-binding
         // allocations are made for every action.
@@ -61,6 +64,30 @@ impl SurfingApp {
                 .iter()
                 .any(|event| matches!(event, egui::Event::Key { pressed: true, .. }))
         });
+        // 诊断：记录每次 Ctrl+Z 被识别时的焦点与撤销栈状态，便于定位“概率不生效”。
+        // Diagnostics: record focus and undo-stack state whenever Ctrl+Z is recognised, so
+        // intermittent failures can be diagnosed from the log.
+        let undo_pressed = self.settings.shortcut_pressed(ctx, ShortcutAction::Undo);
+        if undo_pressed {
+            let stack = self.undo_stack.len().to_string();
+            let focused = if ctx.memory(|memory| memory.focused().is_some()) {
+                "1"
+            } else {
+                "0"
+            };
+            diag::info(
+                "app.input",
+                "shortcut.undo",
+                &[
+                    ("typing", if typing { "1" } else { "0" }),
+                    ("focused", focused),
+                    ("stack", &stack),
+                ],
+            );
+            if typing {
+                self.status = "文本编辑中，按 Esc 退出后可撤销工程".into();
+            }
+        }
         // egui-winit 会把 Ctrl+C / Ctrl+X / Ctrl+V 转成 Copy / Cut / Paste 事件，
         // 不再产生普通 Key 事件，因此剪贴板快捷键必须单独读取这些事件。
         // egui-winit turns Ctrl+C / Ctrl+X / Ctrl+V into Copy / Cut / Paste events instead of key
@@ -91,10 +118,10 @@ impl SurfingApp {
             }
         }
 
-        // 全部快捷键都读取设置中的绑定；输入框获得焦点时让给文本编辑。
-        // Every shortcut reads its binding from the settings; text fields keep their own keys.
+        // 全部快捷键都读取设置中的绑定；文本编辑期间让给输入框。
+        // Every shortcut reads its binding from the settings; text edits keep their own keys.
         if !typing && any_key {
-            if self.settings.shortcut_pressed(ctx, ShortcutAction::Undo) {
+            if undo_pressed {
                 self.undo();
             }
             if self.settings.shortcut_pressed(ctx, ShortcutAction::Redo) {
