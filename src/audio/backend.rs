@@ -42,6 +42,11 @@ const DEFAULT_SAMPLE_RATE: f64 = 48_000.0;
 /// Default output buffer size in frames.
 const DEFAULT_BUFFER_FRAMES: u32 = 512;
 
+/// 缓冲区的最小时长（毫秒）：高采样率下固定帧数会短到无法调度。
+/// Minimum buffer duration in milliseconds: at high sample rates a fixed frame count becomes too
+/// short to schedule reliably.
+const MIN_BUFFER_MILLIS: u32 = 6;
+
 /// 音频系统：决定使用哪一条宿主路径打开设备。
 /// Audio system: selects which host path opens the device.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -679,8 +684,14 @@ fn start_cpal(
 
     let channels = config.channels as usize;
     let sample_rate = config.sample_rate;
-    config.buffer_size =
-        cpal::BufferSize::Fixed(options.buffer_frames.unwrap_or(DEFAULT_BUFFER_FRAMES));
+    // 缓冲至少覆盖 6 ms：192 kHz 下 512 帧只有 2.7 ms，回调稍有抖动就欠载，
+    // 驱动会把输出延迟越拉越大（听感上整首歌“晚半秒”）。
+    // Keep at least 6 ms of buffer: 512 frames at 192 kHz is only 2.7 ms, so any callback jitter
+    // underruns and the driver keeps growing the output latency.
+    let requested_frames = options.buffer_frames.unwrap_or(DEFAULT_BUFFER_FRAMES);
+    let minimum_frames = (sample_rate as u64 * MIN_BUFFER_MILLIS as u64 / 1000) as u32;
+    let buffer_frames = requested_frames.max(minimum_frames.min(8192));
+    config.buffer_size = cpal::BufferSize::Fixed(buffer_frames);
 
     let stream = match sample_format {
         cpal::SampleFormat::F32 => build::<f32>(&device, &config, router.clone(), channels),
@@ -703,7 +714,9 @@ fn start_cpal(
 
     Ok(AudioOutput {
         _stream: AudioStream::Cpal(stream),
-        description: format!("{device_name} · {sample_rate} Hz · {channels} ch"),
+        description: format!(
+            "{device_name} · {sample_rate} Hz · {channels} ch · {buffer_frames} 帧"
+        ),
     })
 }
 
