@@ -38,6 +38,12 @@ pub struct Vst3Runtime {
     /// 实时线程复用的处理缓冲；块大小变化时才重新分配。
     /// Processing buffers reused by the realtime thread; reallocated only when the block size changes.
     pub audio_buffers: Option<vst3_host::AudioBuffers>,
+    /// 尚未送达插件的播放状态：插件锁被音频/界面线程占用时保留，由下一块补发。
+    /// Playing state not yet delivered: kept while the plugin lock is busy and sent on the next block.
+    pub pending_playing: Option<bool>,
+    /// 尚未送达插件的走带位置：同上，避免定位被静默丢弃。
+    /// Transport position not yet delivered: same as above, so a seek is never silently dropped.
+    pub pending_transport: Option<vst3_host::TransportPosition>,
 }
 
 /// 单实例插件的可复用实例：关闭工程时不终止，下一个工程按路径取回同一实例，
@@ -174,6 +180,8 @@ impl PluginRuntime {
             kind: entry.kind,
             path_key: entry.path_key,
             audio_buffers: None,
+            pending_playing: None,
+            pending_transport: None,
         }))
     }
 }
@@ -510,35 +518,42 @@ impl PluginRuntime {
     /// 所属模块：plugin / 运行时
     /// 功能：把走带播放状态写进插件收到的 ProcessContext（只在状态变化时调用）。
     /// 输入：`playing` 是否正在播放。
-    /// 输出/副作用：可能调用插件的 `set_playing`；插件忙时跳过本次。
+    /// 输出/副作用：先记入待发送状态；拿到插件锁时立即发送，否则由下一块补发。
     /// 复杂度：时间 O(1)，空间 O(1)。
     ///
     /// Module: plugin / runtime
     /// Purpose: Push the transport playing state into the plugin's ProcessContext; call it only
     /// when the state changes.
     /// Inputs: `playing`.
-    /// Outputs / side effects: may call `set_playing`; skipped while the plugin is busy.
+    /// Outputs / side effects: records it as pending, sends immediately when the lock is free and
+    /// otherwise by the next block.
     /// Complexity: O(1) time and space.
     pub fn set_playing(&mut self, playing: bool) {
         let PluginRuntime::Vst3(v) = self else {
             return;
         };
+        // 插件锁被占用时不能丢弃状态：VOCALOID 等插件收不到 kPlaying 就不会推进内部时间轴。
+        // Never drop the state when the lock is busy: without kPlaying, plugins such as VOCALOID
+        // never advance their internal timeline.
+        v.pending_playing = Some(playing);
         if let Some(mut plugin) = lock_plugin(&v.plugin) {
             let _ = plugin.set_playing(playing);
+            v.pending_playing = None;
         }
     }
 
     /// 所属模块：plugin / 运行时
     /// 功能：把走带位置写进插件 ProcessContext；只在定位、开始播放与循环回绕时调用。
     /// 输入：`quarter_notes` 四分音符位置（拍）、`samples` 工程采样位置。
-    /// 输出/副作用：可能调用 `set_transport_position`；插件忙时跳过。
+    /// 输出/副作用：先记入待发送状态；拿到插件锁时立即发送，否则由下一块补发。
     /// 复杂度：时间 O(1)，空间 O(1)。
     ///
     /// Module: plugin / runtime
     /// Purpose: Push the transport position into the plugin ProcessContext; call it only on seek,
     /// playback start and loop wrap.
     /// Inputs: `quarter_notes` (beats), `samples` (project sample position).
-    /// Outputs / side effects: may call `set_transport_position`; skipped while the plugin is busy.
+    /// Outputs / side effects: records it as pending, sends immediately when the lock is free and
+    /// otherwise by the next block.
     /// Complexity: O(1) time and space.
     pub fn seek_transport(&mut self, quarter_notes: f64, samples: i64) {
         let PluginRuntime::Vst3(v) = self else {
@@ -546,14 +561,19 @@ impl PluginRuntime {
         };
         // 每个 block 都调用会让插件反复重置内部定位（VOCALOID 6 会直接卡住并产生巨大延迟），
         // 因此位置只在时间轴不连续时发送，连续播放由插件自行推进。
+        // 锁被占用时保留待发送位置：定位丢了会让插件从旧位置继续播放，听感上就是“不跟随走带”。
         // Calling this every block makes plugins re-seek constantly (VOCALOID 6 freezes and adds
         // huge latency), so the position is sent only on discontinuities and the plugin advances on
-        // its own during continuous playback.
+        // its own during continuous playback. A busy lock keeps the position pending: a dropped seek
+        // makes the plugin keep playing from the old position, heard as "not following the host".
+        let position = vst3_host::TransportPosition {
+            samples,
+            quarter_notes,
+        };
+        v.pending_transport = Some(position);
         if let Some(mut plugin) = lock_plugin(&v.plugin) {
-            let _ = plugin.set_transport_position(vst3_host::TransportPosition {
-                samples,
-                quarter_notes,
-            });
+            let _ = plugin.set_transport_position(position);
+            v.pending_transport = None;
         }
     }
 
@@ -809,8 +829,22 @@ impl PluginRuntime {
                 // block instead of waiting, otherwise the whole output stream stalls (heard as silence
                 // with plugins such as Kontakt).
                 let Some(mut plugin) = lock_plugin(&v.plugin) else {
+                    // 本块该插件没有参与处理：统计一次，播放时的“缺块”可从日志定位。
+                    // This plugin did not process the block: count it so playback dropouts are visible.
+                    crate::diag::note_plugin_lock_miss();
                     return;
                 };
+                // 补发此前因插件忙而没能送达的走带状态：播放状态与定位都必须最终送到插件，
+                // 否则编辑器停在旧位置、音频也停在旧位置。
+                // Deliver transport state that could not be sent earlier because the plugin was busy:
+                // the playing flag and the position must eventually arrive, otherwise the editor and
+                // the audio both stay at the old position.
+                if let Some(playing) = v.pending_playing.take() {
+                    let _ = plugin.set_playing(playing);
+                }
+                if let Some(position) = v.pending_transport.take() {
+                    let _ = plugin.set_transport_position(position);
+                }
                 for gate in gates {
                     let event = match gate.kind {
                         GateKind::On => Vst3MidiEvent::NoteOn {
@@ -827,23 +861,35 @@ impl PluginRuntime {
                     let _ = plugin.send_midi_event_at(event, gate.frame as i32);
                 }
 
-                // 实时线程只在块大小变化时分配缓冲，其余时间复用并清零。
-                // The realtime thread allocates only when the block size changes and reuses the
-                // buffers otherwise.
-                let needs_buffers = match &v.audio_buffers {
-                    Some(buffers) => {
-                        buffers.block_size != frames
-                            || buffers.inputs.len() < 2
-                            || buffers.outputs.len() < 2
+                // 实时线程只在容量不足时分配缓冲，其余时间复用：块长在 512/512/128 之间
+                // 来回变化时，按块长重建会让每个插件每块做多次堆分配。
+                // The realtime thread allocates only when the capacity is too small and reuses the
+                // buffers otherwise: rebuilding by block length makes every plugin allocate several
+                // times per callback while the block length alternates between 512/512/128.
+                let capacity = v.audio_buffers.as_ref().map(|buffers| buffers.block_size);
+                let needs_buffers = match capacity {
+                    Some(capacity) => {
+                        capacity < frames
+                            || v.audio_buffers.as_ref().is_none_or(|buffers| {
+                                buffers.inputs.len() < 2 || buffers.outputs.len() < 2
+                            })
                     }
                     None => true,
                 };
                 if needs_buffers {
-                    v.audio_buffers = Some(vst3_host::AudioBuffers::new(2, 2, frames, sample_rate));
+                    let block_size = capacity.unwrap_or(0).max(frames);
+                    v.audio_buffers =
+                        Some(vst3_host::AudioBuffers::new(2, 2, block_size, sample_rate));
                 }
                 if let Some(buffers) = v.audio_buffers.as_mut() {
                     buffers.sample_rate = sample_rate;
-                    buffers.clear();
+                    // 先清零再按本块长度收缩/展开：容量保留，插件看到的仍是本块真实帧数。
+                    // Clear, then shrink/grow to this block's length: capacity is kept while the
+                    // plugin still sees the true frame count of this block.
+                    for channel in buffers.inputs.iter_mut().chain(buffers.outputs.iter_mut()) {
+                        channel.clear();
+                        channel.resize(frames, 0.0);
+                    }
                     if let Some((l, r)) = input {
                         if let Some(dst) = buffers.inputs.get_mut(0) {
                             dst[..frames.min(l.len())].copy_from_slice(&l[..frames.min(l.len())]);

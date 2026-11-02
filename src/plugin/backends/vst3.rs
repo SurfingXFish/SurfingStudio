@@ -192,5 +192,7 @@ pub(super) fn load(
         kind,
         path_key,
         audio_buffers: None,
+        pending_playing: None,
+        pending_transport: None,
     }))
 }

@@ -193,6 +193,9 @@ struct AsioCallbackContext {
     /// ASIO sample type of every output channel.
     output_types: Vec<i32>,
     frames: usize,
+    /// 驱动采样率（Hz），用于音频遥测。
+    /// Driver sample rate in Hz, used for audio telemetry.
+    sample_rate: f64,
     last_l: f32,
     last_r: f32,
     recovering: bool,
@@ -508,6 +511,7 @@ pub fn start(
             output_buffers: Vec::with_capacity(channels),
             output_types,
             frames,
+            sample_rate: current_rate,
             last_l: 0.0,
             last_r: 0.0,
             recovering: false,
@@ -547,6 +551,9 @@ pub fn start(
         let _ = ((*table).get_sample_rate)(driver as *mut c_void, &mut actual_rate);
         if actual_rate >= MIN_REASONABLE_RATE {
             current_rate = actual_rate;
+            // 遥测用采样率同步为驱动真正运行的速率。
+            // Keep the telemetry rate in step with the rate the driver actually runs at.
+            (*context_ptr).sample_rate = current_rate;
         }
         router.set_sample_rate(current_rate);
         Ok(AsioStream {
@@ -643,12 +650,18 @@ unsafe fn render_block(context: &mut AsioCallbackContext) {
     }
     let frames = context.frames;
     let mut processed = false;
+    let mut render = std::time::Duration::ZERO;
     if let Some(engine) = &context.active {
         if let Some(mut engine) = lock_engine(engine) {
+            let started = std::time::Instant::now();
             engine.process(&mut context.left, &mut context.right);
+            render = started.elapsed();
             processed = true;
         }
     }
+    // ASIO 驱动不提供 playback 时间戳：只记录回调帧数与渲染耗时。
+    // The ASIO driver does not expose a playback timestamp: record frames and render time only.
+    crate::diag::note_audio_callback(context.sample_rate, frames, render, None, processed);
     let fade = (frames / 8).max(1) as f32;
     if processed {
         if context.recovering {
