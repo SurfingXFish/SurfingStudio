@@ -134,6 +134,9 @@ pub struct Engine {
     /// 插件当前是否收到“正在播放”的走带状态；停止时只补发一次 kPlaying=false。
     /// Whether plugins were last told the transport is playing; stop is sent once.
     plugin_transport_playing: bool,
+    /// 下一次插件渲染是否需要补发位置（开始播放、定位、循环回绕、新实例）。
+    /// Whether the next plugin render must resend the position (play, seek, loop wrap, new instance).
+    plugin_transport_seek: bool,
     /// Reused MIDI gate buffer for direct (live) playback.
     gates_scratch: Vec<SynthEvent>,
     /// 工程输出声道布局。
@@ -741,6 +744,7 @@ impl Engine {
             gpu_realtime_config: None,
             gpu_realtime_warning: None,
             plugin_transport_playing: false,
+            plugin_transport_seek: true,
             gates_scratch: Vec::new(),
             output_layout: ChannelLayout::Stereo,
             defer_master_clip: false,
@@ -1156,6 +1160,12 @@ impl Engine {
             self.audio_requests.push(path);
         }
 
+        // 本轮新建过插件实例时补发一次位置：新实例的 ProcessContext 还没有工程定位。
+        // Resend the position after this pass created plugin instances: their ProcessContext has no
+        // project position yet.
+        if budget.created > 0 {
+            self.plugin_transport_seek = true;
+        }
         (warnings, budget.pending)
     }
 
@@ -1206,6 +1216,7 @@ impl Engine {
             self.live_timeout = 0.0;
             self.auto_stopped = false;
             self.audio_cursors.clear();
+            self.plugin_transport_seek = true;
             self.reset_note_state(self.position_beats);
         }
     }
@@ -1241,6 +1252,7 @@ impl Engine {
     /// Complexity: O(tracks + log events) time and O(1) space.
     pub fn seek(&mut self, beat: f64) {
         self.position_beats = beat.max(0.0);
+        self.plugin_transport_seek = true;
         self.audio_cursors.clear();
         self.auto_stopped = false;
         self.reset_note_state(self.position_beats);

@@ -539,11 +539,10 @@ impl Engine {
     /// Complexity: O(tracks) time and O(1) space.
     fn send_plugin_transport_stopped(&mut self) {
         self.plugin_transport_playing = false;
-        let position = self.position_beats;
-        let samples = (position * 60.0 / self.project.bpm.max(1.0) * self.sample_rate) as i64;
+        self.plugin_transport_seek = true;
         for runtime in &mut self.tracks {
             if let InstrumentRuntime::Plugin(plugin) = &mut runtime.instrument {
-                plugin.set_transport(false, position, samples);
+                plugin.set_playing(false);
             }
         }
     }
@@ -577,6 +576,7 @@ impl Engine {
 
             if loop_active && self.position_beats >= self.project.loop_end - 1e-9 {
                 self.position_beats = self.project.loop_start.max(0.0);
+                self.plugin_transport_seek = true;
                 self.audio_cursors.clear();
                 self.reset_note_state(self.position_beats);
             }
@@ -747,15 +747,19 @@ impl Engine {
                     track_r.copy_from_slice(&track_l);
                 }
                 InstrumentRuntime::Plugin(plugin) => {
-                    // 把走带写给插件：VOCALOID 等 VSTi 的编辑器时间线依赖 ProcessContext 的
-                    // kPlaying 与位置；宿主此前只发送速度与拍号，编辑器因此不会跟随播放。
-                    // Feed the transport: VSTi editor timelines such as VOCALOID rely on kPlaying and
-                    // the position in the ProcessContext; the host only sent tempo and time signature
-                    // before, so those editors never followed playback.
-                    let transport_samples =
-                        (block_start * 60.0 / self.project.bpm.max(1.0) * sample_rate) as i64;
-                    plugin.set_transport(true, block_start, transport_samples);
-                    self.plugin_transport_playing = true;
+                    // 走带只在状态变化或定位时发送：每块都发位置会让 VOCALOID 等插件反复重置
+                    // 内部定位，表现为编辑器冻结并附带明显延迟。连续播放由插件自行推进。
+                    // Send the transport only on state changes or seeks: sending the position every
+                    // block makes plugins such as VOCALOID re-seek constantly, which freezes the
+                    // editor and adds latency. Continuous playback advances inside the plugin.
+                    if !self.plugin_transport_playing {
+                        plugin.set_playing(true);
+                    }
+                    if self.plugin_transport_seek {
+                        let transport_samples =
+                            (block_start * 60.0 / self.project.bpm.max(1.0) * sample_rate) as i64;
+                        plugin.seek_transport(block_start, transport_samples);
+                    }
                     plugin.process(
                         sample_rate,
                         frames,
@@ -880,6 +884,8 @@ impl Engine {
         }
 
         self.gates_scratch = gates;
+        self.plugin_transport_playing = true;
+        self.plugin_transport_seek = false;
         self.audio_scratch_l = track_l;
         self.audio_scratch_r = track_r;
         self.wet_scratch_l = wet_l;

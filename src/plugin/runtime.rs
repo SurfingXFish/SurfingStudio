@@ -508,27 +508,48 @@ impl PluginRuntime {
     }
 
     /// 所属模块：plugin / 运行时
-    /// 功能：把走带的播放状态与位置写进插件收到的 ProcessContext，供 VSTi 编辑器与时间线跟随。
-    /// 输入：`playing` 是否正在播放、`quarter_notes` 四分音符位置（拍）、`samples` 工程采样位置。
-    /// 输出/副作用：可能调用插件的 `set_playing` / `set_transport_position`；插件忙时跳过本块。
+    /// 功能：把走带播放状态写进插件收到的 ProcessContext（只在状态变化时调用）。
+    /// 输入：`playing` 是否正在播放。
+    /// 输出/副作用：可能调用插件的 `set_playing`；插件忙时跳过本次。
     /// 复杂度：时间 O(1)，空间 O(1)。
     ///
     /// Module: plugin / runtime
-    /// Purpose: Push the transport playing state and position into the plugin's ProcessContext so
-    /// VSTi editors and timelines (VOCALOID 6 and similar) follow the host.
-    /// Inputs: `playing`, `quarter_notes` (beats), `samples` (project sample position).
-    /// Outputs / side effects: may call `set_playing` / `set_transport_position`; skipped while the
-    /// plugin is busy.
+    /// Purpose: Push the transport playing state into the plugin's ProcessContext; call it only
+    /// when the state changes.
+    /// Inputs: `playing`.
+    /// Outputs / side effects: may call `set_playing`; skipped while the plugin is busy.
     /// Complexity: O(1) time and space.
-    pub fn set_transport(&mut self, playing: bool, quarter_notes: f64, samples: i64) {
+    pub fn set_playing(&mut self, playing: bool) {
         let PluginRuntime::Vst3(v) = self else {
             return;
         };
-        // 实时线程只用 try_lock：编辑器初始化期间插件可能长时间持锁，等待会让整条输出停住。
-        // The realtime thread only uses try_lock: a plugin initialising its editor may hold the lock
-        // for a long time and waiting would stall the whole output.
         if let Some(mut plugin) = lock_plugin(&v.plugin) {
             let _ = plugin.set_playing(playing);
+        }
+    }
+
+    /// 所属模块：plugin / 运行时
+    /// 功能：把走带位置写进插件 ProcessContext；只在定位、开始播放与循环回绕时调用。
+    /// 输入：`quarter_notes` 四分音符位置（拍）、`samples` 工程采样位置。
+    /// 输出/副作用：可能调用 `set_transport_position`；插件忙时跳过。
+    /// 复杂度：时间 O(1)，空间 O(1)。
+    ///
+    /// Module: plugin / runtime
+    /// Purpose: Push the transport position into the plugin ProcessContext; call it only on seek,
+    /// playback start and loop wrap.
+    /// Inputs: `quarter_notes` (beats), `samples` (project sample position).
+    /// Outputs / side effects: may call `set_transport_position`; skipped while the plugin is busy.
+    /// Complexity: O(1) time and space.
+    pub fn seek_transport(&mut self, quarter_notes: f64, samples: i64) {
+        let PluginRuntime::Vst3(v) = self else {
+            return;
+        };
+        // 每个 block 都调用会让插件反复重置内部定位（VOCALOID 6 会直接卡住并产生巨大延迟），
+        // 因此位置只在时间轴不连续时发送，连续播放由插件自行推进。
+        // Calling this every block makes plugins re-seek constantly (VOCALOID 6 freezes and adds
+        // huge latency), so the position is sent only on discontinuities and the plugin advances on
+        // its own during continuous playback.
+        if let Some(mut plugin) = lock_plugin(&v.plugin) {
             let _ = plugin.set_transport_position(vst3_host::TransportPosition {
                 samples,
                 quarter_notes,
