@@ -491,6 +491,9 @@ impl Engine {
         }
 
         if !self.playing {
+            if self.plugin_transport_playing {
+                self.send_plugin_transport_stopped();
+            }
             if self.live_timeout > 0.0 {
                 self.render_live(out, frames);
                 self.live_timeout -= frames as f32 / self.sample_rate as f32;
@@ -518,6 +521,30 @@ impl Engine {
         let budget = frames as f32 / self.sample_rate as f32;
         if budget > 0.0 {
             self.cpu_load = self.cpu_load * 0.9 + (elapsed / budget) * 0.1;
+        }
+    }
+
+    /// 所属模块：audio::engine / 实时渲染
+    /// 功能：停止时向插件补发一次 kPlaying=false，编辑器时间线不会一直停在播放态。
+    /// 输入：`self`。
+    /// 输出/副作用：调用插件的 `set_transport` 并清除 `plugin_transport_playing`。
+    /// 复杂度：时间 O(轨道数)，空间 O(1)。
+    ///
+    /// Module: audio::engine / realtime render
+    /// Purpose: Send kPlaying=false once when the transport stops so editor timelines do not stay
+    /// in the playing state.
+    /// Inputs: `self`.
+    /// Outputs / side effects: calls the plugin `set_transport` and clears
+    /// `plugin_transport_playing`.
+    /// Complexity: O(tracks) time and O(1) space.
+    fn send_plugin_transport_stopped(&mut self) {
+        self.plugin_transport_playing = false;
+        let position = self.position_beats;
+        let samples = (position * 60.0 / self.project.bpm.max(1.0) * self.sample_rate) as i64;
+        for runtime in &mut self.tracks {
+            if let InstrumentRuntime::Plugin(plugin) = &mut runtime.instrument {
+                plugin.set_transport(false, position, samples);
+            }
         }
     }
 
@@ -720,6 +747,15 @@ impl Engine {
                     track_r.copy_from_slice(&track_l);
                 }
                 InstrumentRuntime::Plugin(plugin) => {
+                    // 把走带写给插件：VOCALOID 等 VSTi 的编辑器时间线依赖 ProcessContext 的
+                    // kPlaying 与位置；宿主此前只发送速度与拍号，编辑器因此不会跟随播放。
+                    // Feed the transport: VSTi editor timelines such as VOCALOID rely on kPlaying and
+                    // the position in the ProcessContext; the host only sent tempo and time signature
+                    // before, so those editors never followed playback.
+                    let transport_samples =
+                        (block_start * 60.0 / self.project.bpm.max(1.0) * sample_rate) as i64;
+                    plugin.set_transport(true, block_start, transport_samples);
+                    self.plugin_transport_playing = true;
                     plugin.process(
                         sample_rate,
                         frames,

@@ -889,6 +889,28 @@ fn soft_clip(sample: f32) -> f32 {
 mod tests {
     use super::*;
 
+    /// 覆盖：内置效果器的干信号从第 0 个采样就出现，链上不会引入额外延迟。
+    /// Covers: every native effect passes the dry signal from sample 0, so the chain adds no latency.
+    #[test]
+    fn native_effects_pass_dry_signal_without_latency() {
+        for kind in NativeEffectKind::ALL {
+            let settings = NativeEffectSettings::for_kind(kind);
+            let mut processor = NativeEffectProcessor::new(kind, settings, 48_000.0);
+            let frames = 256;
+            let mut input_l = vec![0.0_f32; frames];
+            input_l[0] = 0.5;
+            let input_r = input_l.clone();
+            let mut out_l = vec![0.0_f32; frames];
+            let mut out_r = vec![0.0_f32; frames];
+            processor.process(frames, &input_l, &input_r, &mut out_l, &mut out_r);
+            assert!(
+                out_l[0].abs() > 1e-6 && out_r[0].abs() > 1e-6,
+                "{} 第 0 个采样缺少干信号，说明引入了延迟",
+                kind.label()
+            );
+        }
+    }
+
     /// 覆盖：每种内置效果器都能处理信号且不产生 NaN/Inf。
     /// Covers: every native effect processes audio without NaN/Inf.
     #[test]

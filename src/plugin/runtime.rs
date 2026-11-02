@@ -507,6 +507,35 @@ impl PluginRuntime {
         }
     }
 
+    /// 所属模块：plugin / 运行时
+    /// 功能：把走带的播放状态与位置写进插件收到的 ProcessContext，供 VSTi 编辑器与时间线跟随。
+    /// 输入：`playing` 是否正在播放、`quarter_notes` 四分音符位置（拍）、`samples` 工程采样位置。
+    /// 输出/副作用：可能调用插件的 `set_playing` / `set_transport_position`；插件忙时跳过本块。
+    /// 复杂度：时间 O(1)，空间 O(1)。
+    ///
+    /// Module: plugin / runtime
+    /// Purpose: Push the transport playing state and position into the plugin's ProcessContext so
+    /// VSTi editors and timelines (VOCALOID 6 and similar) follow the host.
+    /// Inputs: `playing`, `quarter_notes` (beats), `samples` (project sample position).
+    /// Outputs / side effects: may call `set_playing` / `set_transport_position`; skipped while the
+    /// plugin is busy.
+    /// Complexity: O(1) time and space.
+    pub fn set_transport(&mut self, playing: bool, quarter_notes: f64, samples: i64) {
+        let PluginRuntime::Vst3(v) = self else {
+            return;
+        };
+        // 实时线程只用 try_lock：编辑器初始化期间插件可能长时间持锁，等待会让整条输出停住。
+        // The realtime thread only uses try_lock: a plugin initialising its editor may hold the lock
+        // for a long time and waiting would stall the whole output.
+        if let Some(mut plugin) = lock_plugin(&v.plugin) {
+            let _ = plugin.set_playing(playing);
+            let _ = plugin.set_transport_position(vst3_host::TransportPosition {
+                samples,
+                quarter_notes,
+            });
+        }
+    }
+
     /// Poll plugin editors for parameter gestures made behind our back.
     ///
     /// `full_scan` additionally compares every VST3 parameter value against the

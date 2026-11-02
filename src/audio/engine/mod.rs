@@ -131,6 +131,9 @@ pub struct Engine {
     /// 最近一次实时 GPU 限幅失败原因；由 UI 取走后清空。
     /// Last realtime GPU limiter failure; cleared once the UI takes it.
     gpu_realtime_warning: Option<String>,
+    /// 插件当前是否收到“正在播放”的走带状态；停止时只补发一次 kPlaying=false。
+    /// Whether plugins were last told the transport is playing; stop is sent once.
+    plugin_transport_playing: bool,
     /// Reused MIDI gate buffer for direct (live) playback.
     gates_scratch: Vec<SynthEvent>,
     /// 工程输出声道布局。
@@ -737,6 +740,7 @@ impl Engine {
             gpu_timbre: None,
             gpu_realtime_config: None,
             gpu_realtime_warning: None,
+            plugin_transport_playing: false,
             gates_scratch: Vec::new(),
             output_layout: ChannelLayout::Stereo,
             defer_master_clip: false,
