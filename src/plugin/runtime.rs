@@ -47,6 +47,9 @@ pub struct Vst3Runtime {
     /// 插件上报的处理延迟（采样数）缓存；插件忙时沿用上一次的值。
     /// Cached reported processing latency in samples; the last value is kept while the plugin is busy.
     pub latency_samples: usize,
+    /// 插件拒绝（`kResultFalse`）恢复的状态；编辑器就绪后重试。
+    /// State the plugin declined (`kResultFalse`); retried once its editor is ready.
+    pub pending_state: Option<Vec<u8>>,
 }
 
 /// 单实例插件的可复用实例：关闭工程时不终止，下一个工程按路径取回同一实例，
@@ -186,6 +189,7 @@ impl PluginRuntime {
             pending_playing: None,
             pending_transport: None,
             latency_samples: 0,
+            pending_state: None,
         }))
     }
 }
@@ -442,7 +446,28 @@ impl PluginRuntime {
                 // the host header are restored.
                 if !state.is_empty() && state.starts_with(VST3_STATE_MAGIC) {
                     let mut plugin = v.plugin.lock().unwrap_or_else(|p| p.into_inner());
-                    let _ = plugin.load_state(state);
+                    // `setState` 可能返回 `kResultFalse`（VOCALOID 6 在编辑器尚未就绪时会拒绝），
+                    // 此时状态没有被应用：记下字节，等编辑器起来后再重试，并写日志而不是静默丢弃。
+                    // `setState` may return `kResultFalse` (VOCALOID 6 declines it until its editor is
+                    // ready). The state is then NOT applied: keep the bytes, retry once the editor is
+                    // up, and log it instead of dropping it silently.
+                    match plugin.load_state(state) {
+                        Ok(()) => v.pending_state = None,
+                        Err(error) => {
+                            v.pending_state = Some(state.to_vec());
+                            let bytes = state.len().to_string();
+                            crate::diag::warn(
+                                "app.plugin",
+                                "plugin.state",
+                                &[
+                                    ("name", &v.name),
+                                    ("status", "declined"),
+                                    ("bytes", &bytes),
+                                    ("error", &error.to_string()),
+                                ],
+                            );
+                        }
+                    }
                     // 恢复状态后同步参数快照，否则加载完成后的首次全量扫描会把
                     // 恢复出来的值当成用户改动，触发一次多余的重新同步。
                     // Refresh the snapshot after restoring so the first full scan
@@ -601,6 +626,41 @@ impl PluginRuntime {
             v.latency_samples = plugin.latency_samples() as usize;
         }
         v.latency_samples
+    }
+
+    /// 所属模块：plugin / 统一运行时
+    /// 功能：重试此前被插件拒绝的状态恢复（编辑器就绪后通常即可成功）。
+    /// 输入：`self`。
+    /// 输出/副作用：成功时清空待恢复字节并写 `plugin.state`（`phase=retry`）；
+    /// 插件忙或仍未接受时保持原样。
+    /// 复杂度：时间 O(状态长度)，空间 O(1)。
+    ///
+    /// Module: plugin / unified runtime
+    /// Purpose: Retry a state restore the plugin declined earlier (usually succeeds once its editor
+    /// is ready).
+    /// Inputs: `self`.
+    /// Outputs / side effects: clears the pending bytes and writes `plugin.state`
+    /// (`phase=retry`) on success; leaves everything as is while the plugin is busy or still
+    /// declines.
+    /// Complexity: O(state length) time and O(1) space.
+    pub fn retry_state_restore(&mut self) {
+        let PluginRuntime::Vst3(v) = self else {
+            return;
+        };
+        let Some(state) = v.pending_state.clone() else {
+            return;
+        };
+        let Some(mut plugin) = lock_plugin(&v.plugin) else {
+            return;
+        };
+        if plugin.load_state(&state).is_ok() {
+            v.pending_state = None;
+            crate::diag::info(
+                "app.plugin",
+                "plugin.state",
+                &[("name", &v.name), ("status", "ok"), ("phase", "retry")],
+            );
+        }
     }
 
     /// 所属模块：plugin / 运行时

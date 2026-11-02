@@ -594,6 +594,10 @@ impl SurfingApp {
             // their previous frame, so feed every plugin that has an editor once a frame.
             if let Ok(mut engine) = self.engine.try_lock() {
                 engine.service_all_editor_feedback();
+                // VOCALOID 6 在编辑器就绪前会拒绝 setState；窗口出现后重试一次，让歌曲/歌手真正载入。
+                // VOCALOID 6 declines setState until its editor is ready; retry once the window is up
+                // so its song and singer are actually loaded.
+                engine.retry_all_state_restores();
             }
         }
         let now = Instant::now();

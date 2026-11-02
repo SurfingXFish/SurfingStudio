@@ -123,6 +123,53 @@ impl Engine {
         }
     }
 
+    /// 所属模块：audio::engine / 插件生命周期
+    /// 功能：重试所有插件被拒绝的状态恢复（VOCALOID 这类插件要等自己的编辑器就绪才接受）。
+    /// 输入：`self`。
+    /// 输出/副作用：可能再次调用插件 `setState`；成功后写 `plugin.state`。
+    /// 复杂度：时间 O(轨道数 + 效果器数)，空间 O(1)。
+    ///
+    /// Module: audio::engine / plugin lifecycle
+    /// Purpose: Retry every state restore a plugin declined (plugins such as VOCALOID accept it only
+    /// once their own editor is ready).
+    /// Inputs: `self`.
+    /// Outputs / side effects: may call the plugin's `setState` again; logs `plugin.state` on success.
+    /// Complexity: O(tracks + effects) time and O(1) space.
+    pub fn retry_all_state_restores(&mut self) {
+        // 每秒最多重试一次：状态块可能有几十 KB，不能每帧都塞给插件。
+        // At most one retry per second: the state blob can be tens of KB and must not be pushed
+        // every frame.
+        static LAST: std::sync::OnceLock<std::sync::Mutex<Option<Instant>>> =
+            std::sync::OnceLock::new();
+        {
+            let last = LAST.get_or_init(|| std::sync::Mutex::new(None));
+            let mut guard = match last.lock() {
+                Ok(guard) => guard,
+                Err(poison) => poison.into_inner(),
+            };
+            let now = Instant::now();
+            if let Some(previous) = *guard {
+                if now.duration_since(previous) < Duration::from_millis(1000) {
+                    return;
+                }
+            }
+            *guard = Some(now);
+        }
+        for track in &mut self.tracks {
+            if let InstrumentRuntime::Plugin(plugin) = &mut track.instrument {
+                plugin.retry_state_restore();
+            }
+            for effect in &mut track.effects {
+                if let EffectRuntime::Plugin(plugin) = effect {
+                    plugin.retry_state_restore();
+                }
+            }
+        }
+        if let Some(EffectRuntime::Plugin(plugin)) = &mut self.master_effect {
+            plugin.retry_state_restore();
+        }
+    }
+
     /// 所属模块：audio::engine / 播放探查
     /// 功能：每 5 秒写一条播放探查：插件乐器的内部走带位置与各轨电平。
     /// 输入：`self`。
