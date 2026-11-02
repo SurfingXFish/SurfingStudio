@@ -1515,13 +1515,14 @@ impl Engine {
         // way, so only a global look-ahead can cancel it.
         let ahead = max_latency.saturating_add(master_latency);
         if ahead != self.render_ahead_samples {
+            let grew = ahead > self.render_ahead_samples;
             self.render_ahead_samples = ahead;
-            // 播放中改变前瞻量（例如打开/关闭效果器）时重新预卷：否则延迟线长度变了，
-            // 新旧内容错位，听感会突然跳一下并留下偏移。
-            // Re-pre-roll when the amount changes during playback (for example toggling an effect):
-            // otherwise the delay lines hold a different length and the audible result jumps once and
-            // keeps an offset.
-            if self.playing {
+            // 只有变长时才需要重新预卷（把更长的延迟线填满）；变短时旧内容本来就在线里，
+            // 再预卷反而会额外丢掉一段声音，听感更碎。
+            // Only a longer look-ahead needs a pre-roll (to fill the longer delay lines). When it
+            // shrinks the existing lines already hold the content, and pre-rolling again would drop
+            // another chunk of audio and sound worse.
+            if self.playing && grew {
                 self.begin_preroll();
             }
         }
