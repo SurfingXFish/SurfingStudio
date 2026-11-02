@@ -576,10 +576,26 @@ impl SurfingApp {
         // friends) are not in `self.editors` but rely on this thread's timers too; skipping them is
         // observed as "nothing refreshes and the playhead never follows unless clicked".
         crate::plugin::pump_editor_timers();
+        // WPF 的 Dispatcher 只在自己的窗口收到消息时才执行排队工作项；winit 只处理它自己的窗口，
+        // VOCALOID6 Editor 这类插件在本线程创建的 WPF 窗口因此从不被执行——
+        // 现象就是“不点击完全不动、播放头不跟随”。这里只派发 WPF 类名窗口的消息，不影响输入。
+        // WPF's Dispatcher only runs queued work when its own windows receive messages; winit only
+        // handles its own windows, so WPF windows created on this thread by plugins (VOCALOID6
+        // Editor) never run — observed as "nothing moves unless clicked, playhead never follows".
+        // Only WPF-class windows are drained here, so input handling is untouched.
+        crate::plugin::pump_plugin_thread_windows();
         // 插件自建的窗口在后台不会自行重绘：每 200 ms 强制失效一次并记录其线程 id。
         // Plugin-created windows never repaint in the background: invalidate them every 200 ms and
         // record their thread ids.
-        crate::plugin::nudge_external_windows();
+        if crate::plugin::nudge_external_windows() {
+            // 这类窗口不在 `self.editors` 的槽位表里，按槽位转发反馈会让它停在上一帧；
+            // 只要存在插件自建窗口，就给所有带编辑器的插件转发一次输出参数反馈。
+            // Such windows are not in `self.editors` by slot; forwarding by slot leaves them stuck on
+            // their previous frame, so feed every plugin that has an editor once a frame.
+            if let Ok(mut engine) = self.engine.try_lock() {
+                engine.service_all_editor_feedback();
+            }
+        }
         let now = Instant::now();
         for (key, window) in &mut self.editors {
             let repaint = self

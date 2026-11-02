@@ -90,6 +90,39 @@ impl Engine {
         }
     }
 
+    /// 所属模块：audio::engine / 插件编辑器
+    /// 功能：给**所有**带编辑器的插件转发一次处理器输出参数反馈。
+    /// 输入：`self`。
+    /// 输出/副作用：可能调用 `setParamNormalized`；插件忙时跳过本轮。
+    /// 复杂度：时间 O(轨道数 + 效果器数)，空间 O(1)。
+    ///
+    /// Module: audio::engine / plugin editors
+    /// Purpose: Forward processor output-parameter feedback for **every** plugin that has an editor.
+    /// Inputs: `self`.
+    /// Outputs / side effects: may call `setParamNormalized`; skips plugins currently busy.
+    /// Complexity: O(tracks + effects) time and O(1) space.
+    ///
+    /// 插件**自己创建**的编辑器窗口（VOCALOID6 Editor 等）不在宿主的编辑器槽位表里，
+    /// 只按槽位转发会让这类窗口收不到反馈而停在上一帧。
+    /// Windows created by plugins themselves (VOCALOID6 Editor and friends) are not in the host's
+    /// editor-slot table; forwarding by slot alone leaves such windows without feedback, stuck on
+    /// their previous frame.
+    pub fn service_all_editor_feedback(&mut self) {
+        for track in &mut self.tracks {
+            if let InstrumentRuntime::Plugin(plugin) = &mut track.instrument {
+                plugin.pump_editor_feedback();
+            }
+            for effect in &mut track.effects {
+                if let EffectRuntime::Plugin(plugin) = effect {
+                    plugin.pump_editor_feedback();
+                }
+            }
+        }
+        if let Some(EffectRuntime::Plugin(plugin)) = &mut self.master_effect {
+            plugin.pump_editor_feedback();
+        }
+    }
+
     pub fn has_editor(&self, track_id: TrackId, slot: SlotKind) -> bool {
         self.runtime_for(track_id, slot)
             .map(|runtime| runtime.has_editor())

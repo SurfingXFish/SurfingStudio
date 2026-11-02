@@ -432,10 +432,62 @@ mod windows {
     }
 
     /// 所属模块：plugin / 编辑器窗口
+    /// 功能：每帧把本线程里 **WPF 创建** 的窗口消息全部取出并派发。
+    /// 输入：无。
+    /// 输出/副作用：只派发类名属于 WPF（`HwndWrapper…` / `MS.Win32…`）的窗口消息；
+    /// winit 自己的窗口消息仍由 winit 处理。
+    /// 复杂度：时间 O(本线程窗口数 + 消息数)，空间 O(1)。
+    ///
+    /// Module: plugin / editor windows
+    /// Purpose: Every frame, drain and dispatch messages of **WPF-created** windows on this thread.
+    /// Inputs: none.
+    /// Outputs / side effects: only windows whose class name belongs to WPF (`HwndWrapper…` /
+    /// `MS.Win32…`) are dispatched; winit's own windows keep their messages.
+    /// Complexity: O(thread windows + messages) time and O(1) space.
+    ///
+    /// 背景：VOCALOID6 Editor 这类 WPF 窗口由插件在本线程创建，但 WPF 的 Dispatcher 只有在
+    /// 自己的隐藏窗口收到消息时才会执行排队的工作项（绑定、定时器、动画、播放头刷新）。
+    /// winit 只处理它自己的窗口，这些消息没人派发，窗口就表现为“不点击完全不动、不跟随播放”。
+    pub fn pump_plugin_thread_windows() {
+        use winapi::shared::minwindef::{BOOL, LPARAM, TRUE};
+        use winapi::shared::windef::HWND;
+        use winapi::um::processthreadsapi::GetCurrentThreadId;
+        use winapi::um::winuser::{
+            DispatchMessageW, EnumThreadWindows, GetClassNameW, MSG, PM_REMOVE, PeekMessageW,
+            TranslateMessage,
+        };
+
+        unsafe extern "system" fn collect(hwnd: HWND, _lparam: LPARAM) -> BOOL {
+            let mut class = [0u16; 256];
+            let length = unsafe { GetClassNameW(hwnd, class.as_mut_ptr(), class.len() as i32) };
+            if length <= 0 {
+                return TRUE;
+            }
+            let class = String::from_utf16_lossy(&class[..length as usize]);
+            let wpf = class.starts_with("HwndWrapper") || class.starts_with("MS.Win32");
+            if !wpf {
+                return TRUE;
+            }
+            let mut message: MSG = unsafe { std::mem::zeroed() };
+            while unsafe { PeekMessageW(&mut message, hwnd, 0, 0, PM_REMOVE) } != 0 {
+                unsafe {
+                    TranslateMessage(&message);
+                    DispatchMessageW(&message);
+                }
+            }
+            TRUE
+        }
+
+        unsafe {
+            EnumThreadWindows(GetCurrentThreadId(), Some(collect), 0);
+        }
+    }
+
+    /// 所属模块：plugin / 编辑器窗口
     /// 功能：每 200 ms 让插件**自建**的顶层窗口（VOCALOID6 Editor 等）重绘一次，并记录它们的线程 id。
     /// 输入：无。
     /// 输出/副作用：对本进程内非宿主窗口调用 `RedrawWindow`；窗口集合变化时写
-    /// `plugin.window.external`（`titles` / `threads`）。
+    /// `plugin.window.external`（`titles` / `threads`）。返回是否找到了这类窗口。
     /// 复杂度：时间 O(本进程窗口数)，空间 O(窗口数)。
     ///
     /// Module: plugin / editor windows
@@ -452,7 +504,7 @@ mod windows {
     /// background; only an input message wakes them, observed as "no response at all unless clicked,
     /// and the playhead never follows". Forced invalidation plus dispatching this thread's timers
     /// keeps them alive.
-    pub fn nudge_external_windows() {
+    pub fn nudge_external_windows() -> bool {
         use std::sync::{Mutex, OnceLock};
         use winapi::shared::minwindef::{BOOL, DWORD, LPARAM, TRUE};
         use winapi::shared::windef::HWND;
@@ -464,7 +516,10 @@ mod windows {
 
         static LAST_RUN: OnceLock<Mutex<Option<std::time::Instant>>> = OnceLock::new();
         static LAST_SIGNATURE: OnceLock<Mutex<String>> = OnceLock::new();
+        static LAST_FOUND: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
         const INTERVAL_MS: u64 = 200;
+        use std::sync::atomic::Ordering;
 
         let last_run = LAST_RUN.get_or_init(|| Mutex::new(None));
         {
@@ -475,7 +530,9 @@ mod windows {
             let now = std::time::Instant::now();
             if let Some(previous) = *last {
                 if now.duration_since(previous).as_millis() < INTERVAL_MS as u128 {
-                    return;
+                    // 节流期间沿用上一次结果，调用方仍能持续服务编辑器。
+                    // Reuse the previous result while throttled so the caller keeps servicing editors.
+                    return LAST_FOUND.load(Ordering::Relaxed);
                 }
             }
             *last = Some(now);
@@ -536,8 +593,10 @@ mod windows {
         };
         unsafe { EnumWindows(Some(collect), &mut state as *mut _ as LPARAM) };
         if state.windows.is_empty() {
-            return;
+            LAST_FOUND.store(false, Ordering::Relaxed);
+            return false;
         }
+        LAST_FOUND.store(true, Ordering::Relaxed);
         let titles = state
             .windows
             .iter()
@@ -558,7 +617,7 @@ mod windows {
                 Err(poison) => poison.into_inner(),
             };
             if *previous == signature {
-                return;
+                return true;
             }
             *previous = signature;
         }
@@ -567,6 +626,7 @@ mod windows {
             "plugin.window.external",
             &[("titles", &titles), ("threads", &threads)],
         );
+        true
     }
 }
 
@@ -610,10 +670,20 @@ mod fallback {
 
     /// 非 Windows 平台的占位实现。
     /// Placeholder implementation off Windows.
-    pub fn nudge_external_windows() {}
+    pub fn nudge_external_windows() -> bool {
+        false
+    }
+
+    /// 非 Windows 平台没有 WPF 窗口需要派发。
+    /// No WPF windows to dispatch off Windows.
+    pub fn pump_plugin_thread_windows() {}
 }
 
 #[cfg(not(target_os = "windows"))]
-pub use fallback::{Vst2EditorWindow, nudge_external_windows, pump_editor_timers};
+pub use fallback::{
+    Vst2EditorWindow, nudge_external_windows, pump_editor_timers, pump_plugin_thread_windows,
+};
 #[cfg(target_os = "windows")]
-pub use windows::{Vst2EditorWindow, nudge_external_windows, pump_editor_timers};
+pub use windows::{
+    Vst2EditorWindow, nudge_external_windows, pump_editor_timers, pump_plugin_thread_windows,
+};
