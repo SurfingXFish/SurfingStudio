@@ -143,7 +143,7 @@ mod tests {
             velocity: 100,
         };
         for _ in 0..32 {
-            instrument.process(48_000.0, 512, None, &[gate], &mut left, &mut right);
+            instrument.process(48_000.0, 512, None, &[gate], &mut left, &mut right, None);
             for (l, r) in left.iter().zip(right.iter()) {
                 peak = peak.max(l.abs()).max(r.abs());
             }
@@ -176,6 +176,7 @@ mod tests {
             &[],
             &mut left,
             &mut right,
+            None,
         );
         assert!(left.iter().chain(right.iter()).all(|s| s.is_finite()));
     }
@@ -699,7 +700,7 @@ mod tests {
         };
         let mut peak = 0.0_f32;
         for _ in 0..16 {
-            instrument.process(48_000.0, 512, None, &[gate], &mut left, &mut right);
+            instrument.process(48_000.0, 512, None, &[gate], &mut left, &mut right, None);
             for (l, r) in left.iter().zip(right.iter()) {
                 peak = peak.max(l.abs()).max(r.abs());
             }

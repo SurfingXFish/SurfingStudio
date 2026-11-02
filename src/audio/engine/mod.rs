@@ -61,6 +61,22 @@ pub enum SlotKind {
     Master,
 }
 
+/// 内部渲染块长：约 10 ms 音频，限制在 512 ~ 4096 帧。
+/// 512 帧在 192 kHz 下只有 2.67 ms，每秒要调用插件 375 次（48 kHz 只有 94 次）；
+/// 桥接类插件（VOCALOID / ACE Bridge）每次 `process` 都要与外部编辑器进程同步，
+/// 高频调用会把它们和编辑器一起拖慢。按采样率放大块长后，高采样率下的调用频率
+/// 回到与 48 kHz 同一量级，回调内的块长也保持恒定（避免 512/512/128 这类尾块）。
+/// Internal render block: about 10 ms of audio, clamped to 512 ~ 4096 frames.
+/// 512 frames is only 2.67 ms at 192 kHz, so plugins would be called 375 times a second
+/// (94 times at 48 kHz). Bridge plugins (VOCALOID / ACE Bridge) synchronise with an external editor
+/// process on every `process` call, and that rate drags both the plugin and its editor down.
+/// Scaling the block with the sample rate brings the call rate back to the 48 kHz ballpark and keeps
+/// the block length constant (no 512/512/128 tail blocks).
+fn render_block_size(sample_rate: f64) -> usize {
+    let frames = (sample_rate.max(1.0) * 0.010).round() as usize;
+    frames.clamp(512, 4096)
+}
+
 pub struct Engine {
     pub sample_rate: f64,
     pub block_size: usize,
@@ -347,7 +363,7 @@ impl EffectRuntime {
     ) {
         match self {
             EffectRuntime::Plugin(plugin) => {
-                plugin.process(sample_rate, frames, input, gates, out_l, out_r)
+                plugin.process(sample_rate, frames, input, gates, out_l, out_r, None)
             }
             EffectRuntime::Native(native) => match input {
                 Some((left, right)) => native.process(frames, left, right, out_l, out_r),
@@ -898,7 +914,7 @@ impl Engine {
     fn build(sample_rate: f64) -> Self {
         Self {
             sample_rate,
-            block_size: 512,
+            block_size: render_block_size(sample_rate),
             project: Project::default(),
             tracks: Vec::new(),
             master_effect: None,
@@ -964,6 +980,7 @@ impl Engine {
     pub fn set_sample_rate(&mut self, sample_rate: f64) {
         if (self.sample_rate - sample_rate).abs() > 1.0 {
             self.sample_rate = sample_rate;
+            self.block_size = render_block_size(sample_rate);
             self.plugins_sample_rate = 0.0;
         }
     }
@@ -1760,6 +1777,19 @@ mod tests {
         delay.process(&mut left, &mut right);
         assert_eq!(left, expected);
         assert!(!delay.is_active());
+    }
+
+    /// 覆盖：内部块长按采样率放大到约 10 ms，低采样率不低于 512 帧。
+    /// Covers: the internal block scales to roughly 10 ms and never drops below 512 frames.
+    #[test]
+    fn render_block_size_tracks_the_sample_rate() {
+        assert_eq!(render_block_size(44_100.0), 512);
+        assert_eq!(render_block_size(48_000.0), 512);
+        assert_eq!(render_block_size(96_000.0), 960);
+        assert_eq!(render_block_size(192_000.0), 1920);
+        // 极端采样率也不会越界。
+        assert_eq!(render_block_size(8_000.0), 512);
+        assert_eq!(render_block_size(768_000.0), 4096);
     }
 
     /// 覆盖：Demo 工程可离线渲染出可听音频。

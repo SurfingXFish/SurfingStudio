@@ -844,6 +844,7 @@ impl PluginRuntime {
         gates: &[SynthEvent],
         out_l: &mut [f32],
         out_r: &mut [f32],
+        transport: Option<vst3_host::TransportPosition>,
     ) {
         out_l.fill(0.0);
         out_r.fill(0.0);
@@ -855,21 +856,43 @@ impl PluginRuntime {
                 // block instead of waiting, otherwise the whole output stream stalls (heard as silence
                 // with plugins such as Kontakt).
                 let Some(mut plugin) = lock_plugin(&v.plugin) else {
-                    // 本块该插件没有参与处理：统计一次，播放时的“缺块”可从日志定位。
-                    // This plugin did not process the block: count it so playback dropouts are visible.
+                    // 本块该插件没有参与处理：统计一次，并记下宿主位置。
+                    // 插件内部的走带只在真正处理时推进，跳过一块它就会落后一份；
+                    // 不补发位置的话，每跳过一次就永久多欠一截，听感是“越放越晚”，
+                    // VOCALOID 这类插件连编辑器都停在旧位置。
+                    // This plugin did not process the block: count it and remember the host position.
+                    // Its internal timeline only advances while it processes, so a skipped block makes
+                    // it lag; without re-sending the position every skip adds permanent delay ("gets
+                    // later and later") and editors such as VOCALOID stay at the old position.
                     crate::diag::note_plugin_lock_miss();
+                    if let Some(position) = transport {
+                        v.pending_transport = Some(position);
+                    }
                     return;
                 };
-                // 补发此前因插件忙而没能送达的走带状态：播放状态与定位都必须最终送到插件，
-                // 否则编辑器停在旧位置、音频也停在旧位置。
-                // Deliver transport state that could not be sent earlier because the plugin was busy:
-                // the playing flag and the position must eventually arrive, otherwise the editor and
-                // the audio both stay at the old position.
+                // 只有在插件内部位置与宿主位置不一致时才补写：正常连播时插件的走带由
+                // ProcessContext 自行推进，不需要每块重置；一旦有块被跳过（锁被占）或发生定位，
+                // 这里立刻把插件拉回宿主位置，偏移不会被永久累积。
+                // Only rewrite the position when the plugin's internal position disagrees with the
+                // host: during continuous playback the plugin advances itself through the
+                // ProcessContext and needs no reset, but after a skipped block (busy lock) or a seek
+                // this pulls it straight back to the host position, so no offset accumulates.
+                if let Some(position) = transport {
+                    let current = plugin.transport_position().unwrap_or(position);
+                    if (current.samples - position.samples).abs() > 1 {
+                        let _ = plugin.set_transport_position(position);
+                    }
+                    v.pending_transport = None;
+                } else if let Some(position) = v.pending_transport.take() {
+                    // 没有本块位置时（效果器）才补发旧记录，绝不覆盖新的宿主位置。
+                    // Only without a current block position (effects) is the older record delivered;
+                    // it must never override the fresh host position.
+                    let _ = plugin.set_transport_position(position);
+                }
+                // 补发此前因插件忙而没能送达的播放状态。
+                // Deliver the playing state that could not be sent earlier because the plugin was busy.
                 if let Some(playing) = v.pending_playing.take() {
                     let _ = plugin.set_playing(playing);
-                }
-                if let Some(position) = v.pending_transport.take() {
-                    let _ = plugin.set_transport_position(position);
                 }
                 for gate in gates {
                     let event = match gate.kind {

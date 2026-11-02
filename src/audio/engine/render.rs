@@ -750,17 +750,19 @@ impl Engine {
                     track_r.copy_from_slice(&track_l);
                 }
                 InstrumentRuntime::Plugin(plugin) => {
-                    // 走带只在状态变化或定位时发送：每块都发位置会让 VOCALOID 等插件反复重置
-                    // 内部定位，表现为编辑器冻结并附带明显延迟。连续播放由插件自行推进。
-                    // Send the transport only on state changes or seeks: sending the position every
-                    // block makes plugins such as VOCALOID re-seek constantly, which freezes the
-                    // editor and adds latency. Continuous playback advances inside the plugin.
+                    // 走带位置每块都作为参数交给插件，但只在插件内部位置与宿主不一致时才真正写入：
+                    // 连续播放由插件的 ProcessContext 自行推进，不会反复重置；一旦某块因插件忙被跳过，
+                    // 下一块立即把插件拉回宿主位置，避免“每跳一次就永久晚一截”的累积延迟。
+                    // The host position is handed to the plugin every block, but only written when the
+                    // plugin's internal position disagrees: continuous playback advances inside the
+                    // plugin without repeated resets, while a block skipped for a busy lock is
+                    // corrected on the next call so no delay accumulates.
                     if !self.plugin_transport_playing {
                         plugin.set_playing(true);
                     }
+                    let transport_samples =
+                        (block_start * 60.0 / self.project.bpm.max(1.0) * sample_rate) as i64;
                     if self.plugin_transport_seek {
-                        let transport_samples =
-                            (block_start * 60.0 / self.project.bpm.max(1.0) * sample_rate) as i64;
                         plugin.seek_transport(block_start, transport_samples);
                     }
                     plugin.process(
@@ -770,6 +772,10 @@ impl Engine {
                         &gates,
                         &mut track_l,
                         &mut track_r,
+                        Some(vst3_host::TransportPosition {
+                            samples: transport_samples,
+                            quarter_notes: block_start,
+                        }),
                     );
                 }
                 InstrumentRuntime::Failed(_) => {}
