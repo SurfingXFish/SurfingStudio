@@ -34,7 +34,7 @@ mod scan;
 
 pub use backend::{PluginBackend, PluginBackendInfo};
 pub use catalog::{CatalogEntry, lookup as lookup_catalog};
-pub use editor::{Vst2EditorWindow, pump_editor_timers};
+pub use editor::{Vst2EditorWindow, nudge_external_windows, pump_editor_timers};
 pub use host::PluginHost;
 pub(crate) use runtime::stash_reusable;
 pub use runtime::{PluginRuntime, Vst2Runtime, Vst3Runtime};

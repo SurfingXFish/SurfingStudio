@@ -568,11 +568,18 @@ impl SurfingApp {
         diag::set_activity("plugin.editors");
         // 先派发本线程到期的 WM_TIMER：Win32 的低优先级定时器不会唤醒空闲等待，
         // 插件的悬停计时（二级菜单延迟）会一直不触发，直到有输入把消息循环叫醒。
+        // **无条件派发**：插件自建的窗口（VOCALOID6 Editor 等）不在 `self.editors` 里，
+        // 但它们同样依赖本线程的定时器；漏掉这一步会表现为“不点击就完全不刷新、不跟随播放”。
         // Dispatch due WM_TIMER first: Win32's low-priority timers do not wake an idle wait, so
         // plugin hover timers (submenu delays) never fire until input wakes the loop.
-        if !self.editors.is_empty() {
-            crate::plugin::pump_editor_timers();
-        }
+        // Do this **unconditionally**: windows created by plugins themselves (VOCALOID6 Editor and
+        // friends) are not in `self.editors` but rely on this thread's timers too; skipping them is
+        // observed as "nothing refreshes and the playhead never follows unless clicked".
+        crate::plugin::pump_editor_timers();
+        // 插件自建的窗口在后台不会自行重绘：每 200 ms 强制失效一次并记录其线程 id。
+        // Plugin-created windows never repaint in the background: invalidate them every 200 ms and
+        // record their thread ids.
+        crate::plugin::nudge_external_windows();
         let now = Instant::now();
         for (key, window) in &mut self.editors {
             let repaint = self

@@ -430,6 +430,144 @@ mod windows {
             }
         }
     }
+
+    /// 所属模块：plugin / 编辑器窗口
+    /// 功能：每 200 ms 让插件**自建**的顶层窗口（VOCALOID6 Editor 等）重绘一次，并记录它们的线程 id。
+    /// 输入：无。
+    /// 输出/副作用：对本进程内非宿主窗口调用 `RedrawWindow`；窗口集合变化时写
+    /// `plugin.window.external`（`titles` / `threads`）。
+    /// 复杂度：时间 O(本进程窗口数)，空间 O(窗口数)。
+    ///
+    /// Module: plugin / editor windows
+    /// Purpose: Every 200 ms force a repaint of top-level windows **created by plugins** (VOCALOID6
+    /// Editor and friends) and record their thread ids.
+    /// Inputs: none.
+    /// Outputs / side effects: `RedrawWindow` on this process's non-host windows; writes
+    /// `plugin.window.external` (`titles` / `threads`) when the set changes.
+    /// Complexity: O(process windows) time and space.
+    ///
+    /// 背景：这类窗口不在宿主创建的编辑器列表里，后台时不会自行刷新——只有输入消息到来才重绘，
+    /// 表现为“不点击就完全没反应、也不跟随播放”。强制失效 + 派发本线程定时器可以让它们持续工作。
+    /// Background: such windows are not in the host's editor list and do not repaint while in the
+    /// background; only an input message wakes them, observed as "no response at all unless clicked,
+    /// and the playhead never follows". Forced invalidation plus dispatching this thread's timers
+    /// keeps them alive.
+    pub fn nudge_external_windows() {
+        use std::sync::{Mutex, OnceLock};
+        use winapi::shared::minwindef::{BOOL, DWORD, LPARAM, TRUE};
+        use winapi::shared::windef::HWND;
+        use winapi::um::processthreadsapi::GetCurrentProcessId;
+        use winapi::um::winuser::{
+            EnumWindows, GW_OWNER, GetWindow, GetWindowTextW, GetWindowThreadProcessId,
+            IsWindowVisible, RDW_ALLCHILDREN, RDW_INVALIDATE, RedrawWindow,
+        };
+
+        static LAST_RUN: OnceLock<Mutex<Option<std::time::Instant>>> = OnceLock::new();
+        static LAST_SIGNATURE: OnceLock<Mutex<String>> = OnceLock::new();
+        const INTERVAL_MS: u64 = 200;
+
+        let last_run = LAST_RUN.get_or_init(|| Mutex::new(None));
+        {
+            let mut last = match last_run.lock() {
+                Ok(guard) => guard,
+                Err(poison) => poison.into_inner(),
+            };
+            let now = std::time::Instant::now();
+            if let Some(previous) = *last {
+                if now.duration_since(previous).as_millis() < INTERVAL_MS as u128 {
+                    return;
+                }
+            }
+            *last = Some(now);
+        }
+
+        struct State {
+            pid: DWORD,
+            windows: Vec<(HWND, u32, String)>,
+        }
+
+        unsafe extern "system" fn collect(hwnd: HWND, lparam: LPARAM) -> BOOL {
+            let state = unsafe { &mut *(lparam as *mut State) };
+            let mut pid: DWORD = 0;
+            let tid = unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+            if pid != state.pid || unsafe { IsWindowVisible(hwnd) } == 0 {
+                return TRUE;
+            }
+            let mut buffer = [0u16; 256];
+            let length = unsafe { GetWindowTextW(hwnd, buffer.as_mut_ptr(), buffer.len() as i32) };
+            if length <= 0 {
+                return TRUE;
+            }
+            let title = String::from_utf16_lossy(&buffer[..length as usize]);
+            // 跳过宿主自己的窗口（标题统一带 SurfingStudio）与其附属窗口。
+            // Skip the host's own windows (titles contain SurfingStudio) and their owned windows.
+            if title.contains("SurfingStudio") {
+                return TRUE;
+            }
+            let owner = unsafe { GetWindow(hwnd, GW_OWNER) };
+            if !owner.is_null() {
+                let mut owner_buffer = [0u16; 256];
+                let owner_length = unsafe {
+                    GetWindowTextW(owner, owner_buffer.as_mut_ptr(), owner_buffer.len() as i32)
+                };
+                if owner_length > 0 {
+                    let owner_title =
+                        String::from_utf16_lossy(&owner_buffer[..owner_length as usize]);
+                    if owner_title.contains("SurfingStudio") {
+                        return TRUE;
+                    }
+                }
+            }
+            unsafe {
+                RedrawWindow(
+                    hwnd,
+                    std::ptr::null(),
+                    std::ptr::null_mut(),
+                    RDW_INVALIDATE | RDW_ALLCHILDREN,
+                );
+            }
+            state.windows.push((hwnd, tid, title));
+            TRUE
+        }
+
+        let mut state = State {
+            pid: unsafe { GetCurrentProcessId() },
+            windows: Vec::new(),
+        };
+        unsafe { EnumWindows(Some(collect), &mut state as *mut _ as LPARAM) };
+        if state.windows.is_empty() {
+            return;
+        }
+        let titles = state
+            .windows
+            .iter()
+            .map(|(_, _, title)| title.clone())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        let threads = state
+            .windows
+            .iter()
+            .map(|(_, tid, _)| tid.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let signature = format!("{titles}#{threads}");
+        let last_signature = LAST_SIGNATURE.get_or_init(|| Mutex::new(String::new()));
+        {
+            let mut previous = match last_signature.lock() {
+                Ok(guard) => guard,
+                Err(poison) => poison.into_inner(),
+            };
+            if *previous == signature {
+                return;
+            }
+            *previous = signature;
+        }
+        crate::diag::info(
+            "app.plugin",
+            "plugin.window.external",
+            &[("titles", &titles), ("threads", &threads)],
+        );
+    }
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -469,9 +607,13 @@ mod fallback {
     /// 非 Windows 平台没有原生定时器需要派发。
     /// No native timers to dispatch off Windows.
     pub fn pump_editor_timers() {}
+
+    /// 非 Windows 平台的占位实现。
+    /// Placeholder implementation off Windows.
+    pub fn nudge_external_windows() {}
 }
 
 #[cfg(not(target_os = "windows"))]
-pub use fallback::{Vst2EditorWindow, pump_editor_timers};
+pub use fallback::{Vst2EditorWindow, nudge_external_windows, pump_editor_timers};
 #[cfg(target_os = "windows")]
-pub use windows::{Vst2EditorWindow, pump_editor_timers};
+pub use windows::{Vst2EditorWindow, nudge_external_windows, pump_editor_timers};
