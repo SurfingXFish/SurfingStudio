@@ -468,8 +468,16 @@ mod windows {
             if !wpf {
                 return TRUE;
             }
+            // 单帧最多派发 5 ms：WPF 队列可能积压大量工作项，全部在本宿主的界面线程执行会
+            // 让一帧停顿数秒到数十秒（实测 VOCALOID6 Editor 加载期间）。
+            // Dispatch at most 5 ms per frame: the WPF queue may hold a large backlog, and running
+            // all of it on the host UI thread freezes a frame for seconds (observed while
+            // VOCALOID6 Editor loads).
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(5);
             let mut message: MSG = unsafe { std::mem::zeroed() };
-            while unsafe { PeekMessageW(&mut message, hwnd, 0, 0, PM_REMOVE) } != 0 {
+            while std::time::Instant::now() < deadline
+                && unsafe { PeekMessageW(&mut message, hwnd, 0, 0, PM_REMOVE) } != 0
+            {
                 unsafe {
                     TranslateMessage(&message);
                     DispatchMessageW(&message);
@@ -511,7 +519,7 @@ mod windows {
         use winapi::um::processthreadsapi::GetCurrentProcessId;
         use winapi::um::winuser::{
             EnumWindows, GW_OWNER, GetWindow, GetWindowTextW, GetWindowThreadProcessId,
-            IsWindowVisible, RDW_ALLCHILDREN, RDW_INVALIDATE, RedrawWindow,
+            IsHungAppWindow, IsWindowVisible, RDW_ALLCHILDREN, RDW_INVALIDATE, RedrawWindow,
         };
 
         static LAST_RUN: OnceLock<Mutex<Option<std::time::Instant>>> = OnceLock::new();
@@ -574,6 +582,14 @@ mod windows {
                         return TRUE;
                     }
                 }
+            }
+            // 卡住的窗口不要再调用 RedrawWindow：它会同步等待窗口线程处理非客户区绘制，
+            // VOCALOID6 Editor 加载歌曲时可能几十秒不响应，把宿主界面一起拖死。
+            // Never call RedrawWindow on a hung window: it waits for the window thread to handle
+            // non-client painting, and VOCALOID6 Editor can be unresponsive for tens of seconds
+            // while loading a song, freezing the host UI with it.
+            if unsafe { IsHungAppWindow(hwnd) } != 0 {
+                return TRUE;
             }
             unsafe {
                 RedrawWindow(
