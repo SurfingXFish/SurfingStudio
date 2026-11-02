@@ -756,6 +756,10 @@ impl SurfingApp {
         self.ui_auto_stopped = engine.auto_stopped();
         self.ui_audio_loading = engine.is_loading_audio();
         let audio_warnings = engine.take_audio_warnings();
+        // 每 5 秒记录插件内部走带与各轨电平：用于确认插件是否跟随、某轨到底有没有出声。
+        // Log the plugin transport and per-track levels every 5 s: confirms whether a plugin follows
+        // the host and whether a track produces any level at all.
+        engine.log_playback_probe();
 
         let (left, right, master) = engine.stereo_levels();
         self.ui_levels_l.clear();

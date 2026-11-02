@@ -603,6 +603,29 @@ impl PluginRuntime {
         v.latency_samples
     }
 
+    /// 所属模块：plugin / 运行时
+    /// 功能：读取插件内部走带位置（采样数与拍），用于确认插件是否跟随宿主播放。
+    /// 输入：`self`。
+    /// 输出/副作用：插件忙或非 VST3 时返回 `None`；不修改插件状态。
+    /// 复杂度：时间 O(1)，空间 O(1)。
+    ///
+    /// Module: plugin / runtime
+    /// Purpose: Read the plugin's internal transport position (samples and beats) to verify it
+    /// follows host playback.
+    /// Inputs: `self`.
+    /// Outputs / side effects: `None` when the plugin is busy or not VST3; no state change.
+    /// Complexity: O(1) time and space.
+    pub fn transport_snapshot(&self) -> Option<(i64, f64)> {
+        let PluginRuntime::Vst3(v) = self else {
+            return None;
+        };
+        let plugin = v.plugin.try_lock().ok()?;
+        plugin
+            .transport_position()
+            .ok()
+            .map(|position| (position.samples, position.quarter_notes))
+    }
+
     /// Poll plugin editors for parameter gestures made behind our back.
     ///
     /// `full_scan` additionally compares every VST3 parameter value against the

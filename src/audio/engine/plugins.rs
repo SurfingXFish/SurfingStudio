@@ -123,6 +123,87 @@ impl Engine {
         }
     }
 
+    /// 所属模块：audio::engine / 播放探查
+    /// 功能：每 5 秒写一条播放探查：插件乐器的内部走带位置与各轨电平。
+    /// 输入：`self`。
+    /// 输出/副作用：在播放中写 `engine.plugin.transport` 与 `engine.track.levels`；不改引擎状态。
+    /// 复杂度：时间 O(轨道数)，空间 O(轨道数)。
+    ///
+    /// Module: audio::engine / playback probe
+    /// Purpose: Every 5 s log each plugin instrument's internal transport position and every track's
+    /// level.
+    /// Inputs: `self`.
+    /// Outputs / side effects: writes `engine.plugin.transport` and `engine.track.levels` while
+    /// playing; no engine state changes.
+    /// Complexity: O(tracks) time and space.
+    ///
+    /// 这两条记录用来回答两个问题：插件自己的走带有没有跟着宿主走、某一轨到底有没有出声。
+    /// These two records answer two questions: does the plugin's own transport follow the host, and
+    /// does a given track produce any level at all.
+    pub fn log_playback_probe(&self) {
+        if !self.playing {
+            return;
+        }
+        static LAST: std::sync::OnceLock<std::sync::Mutex<Option<Instant>>> =
+            std::sync::OnceLock::new();
+        let last = LAST.get_or_init(|| std::sync::Mutex::new(None));
+        {
+            let mut guard = match last.lock() {
+                Ok(guard) => guard,
+                Err(poison) => poison.into_inner(),
+            };
+            let now = Instant::now();
+            if let Some(previous) = *guard {
+                if now.duration_since(previous) < Duration::from_secs(5) {
+                    return;
+                }
+            }
+            *guard = Some(now);
+        }
+        let host_beats = self.position_beats;
+        for track in &self.tracks {
+            let InstrumentRuntime::Plugin(plugin) = &track.instrument else {
+                continue;
+            };
+            let name = plugin.display_name().to_string();
+            let (samples, music) = plugin
+                .transport_snapshot()
+                .map(|(samples, music)| (samples.to_string(), format!("{music:.3}")))
+                .unwrap_or_else(|| ("?".into(), "?".into()));
+            let host = format!("{host_beats:.3}");
+            crate::diag::info(
+                "app.engine",
+                "engine.plugin.transport",
+                &[
+                    ("name", &name),
+                    ("plugin_samples", &samples),
+                    ("plugin_music", &music),
+                    ("host_beats", &host),
+                ],
+            );
+        }
+        let levels: Vec<String> = self
+            .tracks
+            .iter()
+            .enumerate()
+            .map(|(index, runtime)| {
+                let name = self
+                    .project
+                    .tracks
+                    .get(index)
+                    .map(|track| track.name.as_str())
+                    .unwrap_or("?");
+                format!("{name}={:.4}", runtime.level)
+            })
+            .collect();
+        let levels_text = levels.join(" ");
+        crate::diag::info(
+            "app.engine",
+            "engine.track.levels",
+            &[("levels", &levels_text)],
+        );
+    }
+
     pub fn has_editor(&self, track_id: TrackId, slot: SlotKind) -> bool {
         self.runtime_for(track_id, slot)
             .map(|runtime| runtime.has_editor())
