@@ -590,10 +590,10 @@ fn sync_ara_timeline(runtime: &mut PluginRuntime, track: &Track, bpm: f64, time_
     let (start, length) = ara_span_seconds(track, bpm);
     let _ = runtime.set_ara_tempo(bpm, time_sig);
     let _ = runtime.set_ara_timeline(start, length);
-    // 在控制器线程上按需导出归档：插件报告内容变化后才真正调用，避免每帧做一次大拷贝。
-    // Export the archive on the controller thread when needed: the plug-in's content-change
-    // counter gates the actual call so this is not a large copy every frame.
-    let _ = runtime.refresh_ara_archive();
+    // 归档导出只在保存工程时执行：部分插件（VOCALOID Bridge）导出时会同步等待编辑器应用，
+    // 放在音频/界面同步路径上会导致界面长时间无响应。
+    // Archive export happens only when saving: some plug-ins (VOCALOID Bridge) block while their
+    // editor app serialises, so doing it in the sync path freezes the UI.
 }
 
 /// 所属模块：audio::engine / ARA
@@ -799,7 +799,6 @@ impl TrackEngine {
                                 warnings.push(format!("{}: {}", track.name, error));
                             }
                             let _ = runtime.set_ara_tempo(bpm, time_sig);
-                            let _ = runtime.refresh_ara_archive();
                             span.end(&[("status", "ok")]);
                             InstrumentRuntime::Plugin(runtime)
                         }
@@ -877,9 +876,21 @@ impl TrackEngine {
         force_reload: bool,
         bpm: f64,
         time_sig: (u8, u8),
+        defer_plugin_effects: bool,
         warnings: &mut Vec<String>,
     ) {
         let desired: Vec<String> = track.effects.iter().map(EffectRef::key).collect();
+        if defer_plugin_effects {
+            // 界面线程的加载时间片不要实例化插件效果器：ARA 插件（VOCALOID Bridge）的文档
+            // 初始化会同步等待编辑器应用，实测可让界面停顿十几秒。保留现有链，由后台同步线程
+            // 在下一次同步时加载。
+            // Do not instantiate plug-in effects in the UI-thread load slice: ARA plug-ins
+            // (VOCALOID Bridge) block while initialising their document/editor app (observed as a
+            // multi-second UI freeze). Keep the current chain and let the background sync load it.
+            if desired.iter().any(|key| !self.effect_keys.contains(key)) {
+                return;
+            }
+        }
         if desired == self.effect_keys && !force_reload {
             // 参数变化不会改变身份键；内置效果需每帧同步参数，插件效果同步 ARA 时间线。
             // Parameter edits do not change the identity key: native effects sync settings every
@@ -1433,6 +1444,7 @@ impl Engine {
                 force_reload,
                 project.bpm,
                 time_sig,
+                defer_plugin_instruments,
                 &mut warnings,
             );
             runtime.has_audio_clips = track.has_audio_clips();
