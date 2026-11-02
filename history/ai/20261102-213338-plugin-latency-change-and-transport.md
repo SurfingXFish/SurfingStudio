@@ -23,7 +23,7 @@
 | `src/plugin/runtime.rs` | 修改 | 新增 `PluginRuntime::refresh_host_requests`：在插件控制线程上 `service_host_requests`，刷新 `latency_samples` 并报告变化；`process` 改为每块写回 `TransportPosition` |
 | `src/audio/engine/mod.rs` | 修改 | 抽出 `apply_latency_compensation`（补偿量 + 前瞻量）；`report_plugin_latency` 改为接收最慢轨名；新增 `Engine::refresh_plugin_latency`（刷新链延迟并立即并入补偿） |
 | `src/audio/engine/plugins.rs` | 修改 | `poll_parameter_changes` 每次轮询先调用 `refresh_plugin_latency`（UI 线程，乐器插件的控制线程） |
-| `src/app/transport.rs` | 修改 | `run_sync_service` 空闲分支每 200 ms `try_lock` 引擎并调用 `refresh_plugin_latency`（效果器插件的控制线程） |
+| `src/app/transport.rs` | 修改 | `run_sync_service` 空闲分支每 200 ms `try_lock` 引擎并调用 `refresh_plugin_latency`（效果器插件的控制线程）；`audition_on` 在引擎同步中/未就绪时改为把试听事件排队，由每帧的 `flush_pending_auditions` 补发，不再直接丢弃 |
 | `doc/技术文档.md` | 修改 | 4.7 增加“插件延迟变化”“每块写回宿主位置”，替换旧的“跳过块后才纠正位置”描述 |
 | `doc/关键常量.md` | 修改 | 插件延迟表补 Pro-Q 4 三档实测值；新增延迟轮询间隔 |
 | `doc/框架工作流.md` | 修改 | 5.3 参数轮询流程加入延迟刷新；插件 API 表补充 |
@@ -36,6 +36,7 @@
 | 插件延迟变化 | 只在工程同步时读取一次 `latency_samples` | 每 200 ms 读取 `restartComponent` 并立即重算补偿/前瞻 | Pro-Q 4 切到线性相位后不再按 0 延迟发声 |
 | 插件位置 | 仅当插件内部位置与宿主相差 > 1 采样时才写回 | 每个块都写回宿主位置（只改结构体字段） | 编辑器播放头与宿主严格同步，跳过块也不会累积偏差 |
 | 引擎锁占用 | 后台同步线程只在同步时持锁 | 空闲时每 200 ms `try_lock` 一次做延迟刷新 | 只在 `restartComponent` 真正到达时才做停用/重启用，`try_lock` 失败直接跳过 |
+| 放置音符试听 | 引擎正在同步或未就绪时直接丢弃试听事件 | 事件排队，引擎可用后由每帧 flush 补发 | 刚改完工程就试听不会再完全没有声音 |
 
 ## 5. 关键常量变化
 

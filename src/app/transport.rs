@@ -905,13 +905,6 @@ impl SurfingApp {
     /// make this window the audio output target.
     /// Complexity: O(pending events) time and O(1) space.
     pub fn audition_on(&mut self, pitch: u8, velocity: u8) {
-        if self.engine_sync_rx.is_some() {
-            return;
-        }
-        if self.engine_stale {
-            self.begin_engine_load();
-            return;
-        }
         let Some(track_id) = self.current_track_id() else {
             return;
         };
@@ -926,7 +919,33 @@ impl SurfingApp {
         // 同一音高重复触发时先补一条 Note Off 再发送 Note On：插件会重新起音，且不会留下挂音。
         // A repeated Note On for a held pitch first sends a Note Off, so plugins retrigger the note
         // without leaving a hanging voice.
-        if !self.held_pitches.insert(pitch) {
+        let retrigger = !self.held_pitches.insert(pitch);
+        if self.engine_sync_rx.is_some() || self.engine_stale {
+            // 引擎还没跟上工程：事件排队，同步完成后的每帧 `flush_pending_auditions` 补发。
+            // 以前这里直接返回，导致“刚改完就试听”完全没有声音。
+            // The engine has not caught up with the project yet: queue the events; the per-frame
+            // `flush_pending_auditions` sends them once the sync finishes. Previously this returned
+            // immediately, so auditioning right after an edit stayed silent.
+            if retrigger {
+                self.pending_auditions.push(PendingAudition {
+                    track_id,
+                    pitch,
+                    on: false,
+                    velocity: 0,
+                });
+            }
+            self.pending_auditions.push(PendingAudition {
+                track_id,
+                pitch,
+                on: true,
+                velocity,
+            });
+            if self.engine_stale {
+                self.begin_engine_load();
+            }
+            return;
+        }
+        if retrigger {
             self.queue_audition(track_id, pitch, false, 0);
         }
         self.queue_audition(track_id, pitch, true, velocity);
