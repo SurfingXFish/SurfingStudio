@@ -90,7 +90,7 @@ jni = "0.21"
 # `psapi` / `handleapi` / `tlhelp32` 用于诊断日志的进程资源采样（内存/句柄/线程）。
 # `winreg` / `minwinbase` / `fileapi` / `timezoneapi` power ASIO driver discovery and local time;
 # `psapi` / `handleapi` / `tlhelp32` power diagnostic resource sampling (memory/handles/threads).
-winapi = { version = "0.3", features = ["winuser", "windef", "libloaderapi", "minwindef", "objbase", "combaseapi", "processthreadsapi", "winreg", "winnt", "minwinbase", "fileapi", "timezoneapi", "errhandlingapi", "psapi", "handleapi", "tlhelp32"] }
+winapi = { version = "0.3", features = ["winuser", "windef", "libloaderapi", "minwindef", "objbase", "combaseapi", "processthreadsapi", "winreg", "winnt", "minwinbase", "fileapi", "timezoneapi", "errhandlingapi", "psapi", "handleapi", "tlhelp32", "memoryapi"] }
 
 # Local patch: pin plugin editor content scale to 100 % so plugins that manage
 # their own GUI zoom (e.g. Serum 2) are not double-scaled by the OS DPI.

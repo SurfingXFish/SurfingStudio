@@ -26,6 +26,15 @@ const MAX_EDITOR_FEEDBACK_UPDATES: usize = 64;
 const VST3_STATE_MAGIC: &[u8; 16] = b"VST3HOST_STATE\0\0";
 
 pub struct Vst3Runtime {
+    /// 已绑定的 ARA 文档会话；插件不支持 ARA 时为 `None`。
+    /// Bound ARA document session; `None` when the plug-in does not support ARA.
+    ///
+    /// 必须声明在 `plugin` 之前：Rust 按字段声明顺序析构，ARA 文档控制器必须在插件
+    /// 卸载模块之前销毁，否则销毁回调会访问已卸载的插件代码。
+    /// Must be declared before `plugin`: Rust drops fields in declaration order, and the ARA
+    /// document controller has to be destroyed before the plug-in unloads its module, otherwise
+    /// the teardown callbacks would execute unmapped plug-in code.
+    pub ara: Option<crate::plugin::ara::AraSession>,
     pub plugin: Arc<Mutex<Vst3Plugin>>,
     pub name: String,
     pub params: Vec<ParamView>,
@@ -53,9 +62,6 @@ pub struct Vst3Runtime {
     /// 已重试次数；超过上限后放弃，避免每秒把几十 KB 状态塞给插件。
     /// Retry count; after the cap the retry stops so tens of KB are not pushed every second.
     pub state_retries: u32,
-    /// 已绑定的 ARA 文档会话；插件不支持 ARA 时为 `None`。
-    /// Bound ARA document session; `None` when the plug-in does not support ARA.
-    pub ara: Option<crate::plugin::ara::AraSession>,
 }
 
 /// 单实例插件的可复用实例：关闭工程时不终止，下一个工程按路径取回同一实例，

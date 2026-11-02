@@ -573,6 +573,24 @@ fn ara_span_seconds(track: &Track, bpm: f64) -> (f64, f64) {
     )
 }
 
+/// 所属模块：audio::engine / ARA
+/// 功能：把轨道时间线与速度同步给插件效果器的 ARA 文档。
+/// 输入：`runtime` 插件运行时、`track` 轨道、`bpm` 速度、`time_sig` 拍号。
+/// 输出/副作用：只在值变化时调用插件；线程不符等错误被忽略（效果器可能在另一线程创建）。
+/// 复杂度：时间 O(片段数)（仅在变化时），空间 O(1)。
+///
+/// Module: audio::engine / ARA
+/// Purpose: Push the track timeline and tempo into a plug-in effect's ARA document.
+/// Inputs: `runtime`, `track`, `bpm`, `time_sig`.
+/// Outputs / side effects: calls the plug-in only when values changed; errors such as a thread
+/// mismatch are ignored (an effect may have been created on another thread).
+/// Complexity: O(clips) time (only when changed) and O(1) space.
+fn sync_ara_timeline(runtime: &mut PluginRuntime, track: &Track, bpm: f64, time_sig: (u8, u8)) {
+    let (start, length) = ara_span_seconds(track, bpm);
+    let _ = runtime.set_ara_tempo(bpm, time_sig);
+    let _ = runtime.set_ara_timeline(start, length);
+}
+
 impl TrackEngine {
     fn new(id: TrackId) -> Self {
         Self {
@@ -817,13 +835,18 @@ impl TrackEngine {
     ) {
         let desired: Vec<String> = track.effects.iter().map(EffectRef::key).collect();
         if desired == self.effect_keys && !force_reload {
-            // 参数变化不会改变身份键；内置效果需每帧同步参数。
-            // Parameter edits do not change the identity key, so native effects sync settings.
+            // 参数变化不会改变身份键；内置效果需每帧同步参数，插件效果同步 ARA 时间线。
+            // Parameter edits do not change the identity key: native effects sync settings every
+            // pass and plug-in effects sync their ARA timeline.
             for (runtime, effect) in self.effects.iter_mut().zip(track.effects.iter()) {
-                if let (EffectRuntime::Native(native), EffectRef::Native(reference)) =
-                    (runtime, effect)
-                {
-                    native.set_settings(reference.settings.clone());
+                match (runtime, effect) {
+                    (EffectRuntime::Native(native), EffectRef::Native(reference)) => {
+                        native.set_settings(reference.settings.clone());
+                    }
+                    (EffectRuntime::Plugin(plugin), EffectRef::Plugin(_)) => {
+                        sync_ara_timeline(plugin, track, bpm, time_sig);
+                    }
+                    _ => {}
                 }
             }
             return;
@@ -882,9 +905,14 @@ impl TrackEngine {
         }
         self.effects = effects;
         for (runtime, effect) in self.effects.iter_mut().zip(track.effects.iter()) {
-            if let (EffectRuntime::Native(native), EffectRef::Native(reference)) = (runtime, effect)
-            {
-                native.set_settings(reference.settings.clone());
+            match (runtime, effect) {
+                (EffectRuntime::Native(native), EffectRef::Native(reference)) => {
+                    native.set_settings(reference.settings.clone());
+                }
+                (EffectRuntime::Plugin(plugin), EffectRef::Plugin(_)) => {
+                    sync_ara_timeline(plugin, track, bpm, time_sig);
+                }
+                _ => {}
             }
         }
     }

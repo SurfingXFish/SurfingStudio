@@ -124,6 +124,26 @@ struct IPlugInEntryPoint2Vtbl {
         ) -> *const AraPlugInExtensionInstance,
 }
 
+/// 未继承 `IPlugInEntryPoint` 的 `IPlugInEntryPoint2` vtable。
+/// `IPlugInEntryPoint2` vtable without inheriting `IPlugInEntryPoint`.
+///
+/// 这是 ARA 2.0 草稿期部分插件（实测 VOCALOID Bridge 6.5）的实际布局：接口只声明
+/// `bindToDocumentControllerWithRoles` 一个方法，因此它位于第 3 槽（`FUnknown` 之后）。
+/// This is the layout used by some plug-ins from the ARA 2.0 draft era (VOCALOID Bridge 6.5
+/// observed): the interface declares only `bindToDocumentControllerWithRoles`, so it sits in
+/// slot 3 (right after `FUnknown`).
+#[repr(C)]
+struct IPlugInEntryPoint2StandaloneVtbl {
+    base: vst3::Steinberg::FUnknownVtbl,
+    bind_to_document_controller_with_roles:
+        unsafe extern "system" fn(
+            *mut c_void,
+            AraRef,
+            i32,
+            i32,
+        ) -> *const AraPlugInExtensionInstance,
+}
+
 /// 插件通过 `IPlugInEntryPoint` 暴露的 ARA 工厂信息。
 /// ARA factory metadata exposed by the plug-in through `IPlugInEntryPoint`.
 #[derive(Clone, Debug, Default)]
@@ -273,29 +293,38 @@ struct SessionStrings {
 unsafe impl Send for AraSession {}
 
 /// 所属模块：plugin / ARA2 宿主
-/// 功能：判断是否启用 ARA 绑定（默认关闭，环境变量 `SURFING_ARA_HOST=1` 开启）。
-/// 输入：无。
-/// 输出/副作用：返回布尔值；读取进程环境变量。
-/// 复杂度：时间 O(1)，空间 O(1)。
+/// 功能：判断是否对该插件启用 ARA 绑定。
+/// 输入：`path` 插件路径。
+/// 输出/副作用：读取环境变量与路径；不修改状态。
+/// 复杂度：时间 O(路径长度)，空间 O(1)。
 ///
 /// Module: plugin / ARA2 host
-/// Purpose: Whether ARA binding is enabled (off by default; `SURFING_ARA_HOST=1` enables it).
-/// Inputs: none.
-/// Outputs / side effects: a boolean; reads the process environment.
-/// Complexity: O(1) time and space.
+/// Purpose: Whether ARA binding is enabled for this plug-in.
+/// Inputs: `path` — plug-in path.
+/// Outputs / side effects: reads the environment and the path; no state change.
+/// Complexity: O(path length) time and O(1) space.
 ///
-/// 默认关闭的原因：部分插件（实测 VOCALOID Bridge 6.5）在角色绑定时会在自己的代码里崩溃，
-/// 宿主无法拦截；开启前请确认插件版本。
-/// Off by default because some plug-ins (VOCALOID Bridge 6.5 observed) crash inside their own
-/// role-binding code, which a host cannot intercept.
-pub fn host_enabled() -> bool {
-    match std::env::var("SURFING_ARA_HOST") {
+/// 默认只为已验证过的 VOCALOID Bridge 启用；`SURFING_ARA_HOST=1` 可对全部 ARA 插件启用。
+/// Only the verified VOCALOID Bridge is enabled by default; `SURFING_ARA_HOST=1` enables every
+/// ARA plug-in.
+pub fn host_enabled_for(path: &Path) -> bool {
+    let forced = match std::env::var("SURFING_ARA_HOST") {
         Ok(value) => {
             let value = value.trim();
             value == "1" || value.eq_ignore_ascii_case("true")
         }
         Err(_) => false,
+    };
+    if forced {
+        return true;
     }
+    path.file_stem()
+        .map(|stem| {
+            stem.to_string_lossy()
+                .to_lowercase()
+                .contains("vocaloidbridge")
+        })
+        .unwrap_or(false)
 }
 
 /// 所属模块：plugin / ARA2 宿主
@@ -1803,13 +1832,37 @@ unsafe fn bind_plugin(
     // 优先 ARA 2 的角色绑定：插件需要显式知道宿主支持哪些角色。
     // Prefer ARA 2 role-aware binding: the plug-in needs to know which roles the host supports.
     if let Some(entry) = query_interface(processor, &IID_ARA_PLUGIN_ENTRY_POINT2) {
-        let vtbl = *(entry as *mut *const IPlugInEntryPoint2Vtbl);
-        let extension = ((*vtbl).bind_to_document_controller_with_roles)(
-            entry,
-            controller_ref,
-            ARA_ROLE_ALL,
-            ARA_ROLE_ALL,
-        );
+        let vtbl = *(entry as *mut *const *const c_void);
+        // 两种真实存在的布局：
+        // - 标准头文件：IPlugInEntryPoint2 继承 IPlugInEntryPoint，槽位
+        //   [3] getFactory、[4] bindToDocumentController、[5] bindToDocumentControllerWithRoles。
+        // - 草稿布局：只声明角色绑定，槽位 [3] 就是 bindToDocumentControllerWithRoles。
+        // 用槽 4 是否可执行来区分：标准布局的槽 4 是 bindToDocumentController 代码，
+        // 草稿布局在槽 4 之后已经是相邻的只读数据（调用会触发 DEP）。
+        // Two layouts exist in the wild:
+        // - Standard header: IPlugInEntryPoint2 inherits IPlugInEntryPoint, so
+        //   [3] getFactory, [4] bindToDocumentController, [5] bindToDocumentControllerWithRoles.
+        // - Draft layout: only the role-aware binding exists, so slot [3] is the binding.
+        // Slot 4 decides: standard layout has executable code there, while the draft layout has
+        // adjacent read-only data (calling it would raise a DEP violation).
+        let slot4 = *vtbl.add(4) as usize;
+        let extension = if is_executable(slot4) {
+            let typed = *(entry as *mut *const IPlugInEntryPoint2Vtbl);
+            ((*typed).bind_to_document_controller_with_roles)(
+                entry,
+                controller_ref,
+                ARA_ROLE_ALL,
+                ARA_ROLE_ALL,
+            )
+        } else {
+            let typed = *(entry as *mut *const IPlugInEntryPoint2StandaloneVtbl);
+            ((*typed).bind_to_document_controller_with_roles)(
+                entry,
+                controller_ref,
+                ARA_ROLE_ALL,
+                ARA_ROLE_ALL,
+            )
+        };
         release(entry);
         if !extension.is_null() {
             return Ok((extension, ARA_ROLE_ALL));
@@ -1826,6 +1879,56 @@ unsafe fn bind_plugin(
         }
     }
     Err("插件实例未接受 ARA 绑定".to_string())
+}
+
+/// 所属模块：plugin / ARA2 宿主
+/// 功能：判断地址是否位于可执行内存。
+/// 输入：`address` 目标地址。
+/// 输出/副作用：返回布尔值；只读查询虚拟内存页属性。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: plugin / ARA2 host
+/// Purpose: Whether an address points at executable memory.
+/// Inputs: `address`.
+/// Outputs / side effects: a boolean; read-only virtual-memory query.
+/// Complexity: O(1) time and space.
+#[cfg(target_os = "windows")]
+unsafe fn is_executable(address: usize) -> bool {
+    use winapi::um::winnt::{
+        MEMORY_BASIC_INFORMATION, PAGE_EXECUTE, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE,
+        PAGE_EXECUTE_WRITECOPY,
+    };
+    if address == 0 {
+        return false;
+    }
+    let mut info: MEMORY_BASIC_INFORMATION = std::mem::zeroed();
+    let queried = winapi::um::memoryapi::VirtualQuery(
+        address as *const _,
+        &mut info,
+        std::mem::size_of::<MEMORY_BASIC_INFORMATION>(),
+    );
+    if queried == 0 {
+        return false;
+    }
+    info.Protect
+        & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)
+        != 0
+}
+
+/// 所属模块：plugin / ARA2 宿主
+/// 功能：非 Windows 平台无法查询内存属性，按标准 vtable 布局处理。
+/// 输入：`address` 目标地址。
+/// 输出/副作用：恒为 `true`。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: plugin / ARA2 host
+/// Purpose: Non-Windows platforms cannot query memory protection, so assume the standard layout.
+/// Inputs: `address`.
+/// Outputs / side effects: always `true`.
+/// Complexity: O(1) time and space.
+#[cfg(not(target_os = "windows"))]
+unsafe fn is_executable(_address: usize) -> bool {
+    true
 }
 
 /// 所属模块：plugin / ARA2 宿主
@@ -1922,5 +2025,227 @@ mod tests {
         eprintln!("ARA factory: {info:?}");
         assert_eq!(info.plugin_name, "VOCALOID Bridge");
         assert_eq!(info.factory_id, "com.yamaha.vocaloidbridge.arafactory");
+    }
+
+    /// 诊断用：打印两个 ARA 入口接口的 vtable 槽位（模块内偏移）。
+    /// Diagnostic: print the vtable slots (module-relative) of both ARA entry interfaces.
+    #[test]
+    #[cfg(target_os = "windows")]
+    #[ignore = "diagnostic: prints ARA entry-point vtable layout"]
+    fn debug_ara_entry_vtables() {
+        use winapi::shared::minwindef::HMODULE;
+        use winapi::um::processthreadsapi::GetCurrentProcess;
+        use winapi::um::psapi::{EnumProcessModules, GetModuleInformation, MODULEINFO};
+
+        unsafe fn module_base(pointer: usize) -> usize {
+            let process = GetCurrentProcess();
+            let mut modules: [HMODULE; 512] = [std::ptr::null_mut(); 512];
+            let mut needed = 0u32;
+            let size = (std::mem::size_of::<HMODULE>() * modules.len()) as u32;
+            if EnumProcessModules(process, modules.as_mut_ptr(), size, &mut needed) == 0 {
+                return 0;
+            }
+            let count = (needed as usize / std::mem::size_of::<HMODULE>()).min(modules.len());
+            for module in &modules[..count] {
+                let mut info: MODULEINFO = std::mem::zeroed();
+                if GetModuleInformation(
+                    process,
+                    *module,
+                    &mut info,
+                    std::mem::size_of::<MODULEINFO>() as u32,
+                ) == 0
+                {
+                    continue;
+                }
+                let base = info.lpBaseOfDll as usize;
+                let end = base.saturating_add(info.SizeOfImage as usize);
+                if pointer >= base && pointer < end {
+                    return base;
+                }
+            }
+            0
+        }
+
+        let path = PathBuf::from(r"C:\Program Files\Common Files\VST3\VOCALOIDBridge.vst3");
+        if !path.exists() {
+            eprintln!("VOCALOIDBridge.vst3 未安装，跳过");
+            return;
+        }
+        let mut host = vst3_host::Vst3Host::builder()
+            .sample_rate(48_000.0)
+            .block_size(512)
+            .input_channels(2)
+            .output_channels(2)
+            .build()
+            .expect("build host");
+        let plugin = host.load_plugin(&path).expect("load VOCALOIDBridge");
+        let handles = plugin.raw_handles().expect("raw handles");
+        unsafe {
+            for (label, iid) in [
+                ("entry1", &IID_ARA_PLUGIN_ENTRY_POINT),
+                ("entry2", &IID_ARA_PLUGIN_ENTRY_POINT2),
+            ] {
+                let Some(entry) = query_interface(handles.processor, iid) else {
+                    eprintln!("[ara-vt] {label}: no interface");
+                    continue;
+                };
+                let vtbl = *(entry as *mut *const *const c_void);
+                let base = module_base(vtbl as usize);
+                eprintln!(
+                    "[ara-vt] {label} ptr={entry:p} vtbl={vtbl:p} base={base:x} vtbl_rva={:#x}",
+                    vtbl as usize - base
+                );
+                // MSVC x64: vftable[-1] 指向 RTTICompleteObjectLocator，其中
+                // type_descriptor 是相对映像基址的 RVA，名字在 +16。
+                // MSVC x64: vftable[-1] points at the RTTICompleteObjectLocator whose
+                // type_descriptor is an image-relative RVA; the name starts at +16.
+                let locator = *(vtbl.sub(1)) as usize;
+                if locator != 0 {
+                    let signature = *(locator as *const u32);
+                    let type_descriptor_rva = *((locator + 12) as *const u32) as usize;
+                    let type_descriptor = base + type_descriptor_rva;
+                    let name_ptr = (type_descriptor + 16) as *const c_char;
+                    let name = CStr::from_ptr(name_ptr).to_string_lossy().to_string();
+                    eprintln!("[ara-vt] {label} rtti signature={signature:#x} class={name}");
+                }
+                for slot in 0..10 {
+                    let function = *vtbl.add(slot);
+                    eprintln!(
+                        "[ara-vt] {label} slot{slot} rva={:#x}",
+                        function as usize - base
+                    );
+                }
+            }
+        }
+    }
+
+    /// 诊断用：在真实插件上验证 ARA 绑定与销毁顺序。
+    /// Diagnostic: verify ARA binding and teardown order on a real plug-in.
+    ///
+    /// 保留异常处理器：一旦绑定回归崩溃，会打印插件内偏移与调用栈便于定位。
+    /// The exception handler stays in place: if binding regresses into a crash, it prints the
+    /// plug-in-relative offset and call stack for diagnosis.
+    #[test]
+    #[cfg(target_os = "windows")]
+    #[ignore = "diagnostic: binds the real VOCALOID Bridge ARA document"]
+    fn binds_real_vocaloid_ara_document() {
+        use winapi::shared::minwindef::HMODULE;
+        use winapi::um::errhandlingapi::AddVectoredExceptionHandler;
+        use winapi::um::processthreadsapi::GetCurrentProcess;
+        use winapi::um::psapi::{
+            EnumProcessModules, GetModuleBaseNameW, GetModuleInformation, MODULEINFO,
+        };
+        use winapi::um::winnt::{EXCEPTION_POINTERS, RtlCaptureStackBackTrace};
+
+        /// 把地址换算成「模块名 + 模块内偏移」。
+        /// Convert an address into "module name + offset inside the module".
+        unsafe fn module_of(address: usize) -> String {
+            let process = GetCurrentProcess();
+            let mut modules: [HMODULE; 512] = [std::ptr::null_mut(); 512];
+            let mut needed = 0u32;
+            let size = (std::mem::size_of::<HMODULE>() * modules.len()) as u32;
+            if EnumProcessModules(process, modules.as_mut_ptr(), size, &mut needed) == 0 {
+                return "?".to_string();
+            }
+            let count = (needed as usize / std::mem::size_of::<HMODULE>()).min(modules.len());
+            for module in &modules[..count] {
+                let mut info: MODULEINFO = std::mem::zeroed();
+                if GetModuleInformation(
+                    process,
+                    *module,
+                    &mut info,
+                    std::mem::size_of::<MODULEINFO>() as u32,
+                ) == 0
+                {
+                    continue;
+                }
+                let base = info.lpBaseOfDll as usize;
+                let end = base.saturating_add(info.SizeOfImage as usize);
+                if address >= base && address < end {
+                    let mut name = [0u16; 260];
+                    let len = GetModuleBaseNameW(process, *module, name.as_mut_ptr(), 260);
+                    let name = String::from_utf16_lossy(&name[..len as usize]);
+                    return format!("{} +{:#x}", name, address - base);
+                }
+            }
+            format!("{address:#x} (unknown module)")
+        }
+
+        unsafe extern "system" fn handler(info: *mut EXCEPTION_POINTERS) -> i32 {
+            let record = (*info).ExceptionRecord;
+            let code = (*record).ExceptionCode;
+            let address = (*record).ExceptionAddress as usize;
+            let read_write = (*record).ExceptionInformation[0] as usize;
+            let accessed = (*record).ExceptionInformation[1] as usize;
+            eprintln!(
+                "[ara-debug] exception code={code:#x} address={address:x} rw={read_write:x} accessed={accessed:x}"
+            );
+            eprintln!("[ara-debug] fault location: {}", module_of(address));
+            let mut frames = [std::ptr::null_mut(); 24];
+            let count = RtlCaptureStackBackTrace(
+                0,
+                frames.len() as u32,
+                frames.as_mut_ptr(),
+                std::ptr::null_mut(),
+            );
+            for (index, frame) in frames[..count as usize].iter().enumerate() {
+                eprintln!("[ara-debug] frame[{index}] {}", module_of(*frame as usize));
+            }
+            0 // EXCEPTION_CONTINUE_SEARCH
+        }
+
+        unsafe {
+            AddVectoredExceptionHandler(1, Some(handler));
+        }
+
+        let path = PathBuf::from(r"C:\Program Files\Common Files\VST3\VOCALOIDBridge.vst3");
+        if !path.exists() {
+            eprintln!("VOCALOIDBridge.vst3 未安装，跳过");
+            return;
+        }
+        let holder = std::sync::Arc::new(Mutex::new(None::<AraSession>));
+        let hook_holder = holder.clone();
+        let hook: std::sync::Arc<vst3_host::ComponentReadyHook> = std::sync::Arc::new(
+            move |factory: *mut c_void, component: *mut c_void, processor: *mut c_void| {
+                let handles = RawPluginHandles {
+                    factory,
+                    component,
+                    processor,
+                };
+                match unsafe { AraSession::create(handles, 48_000.0, 120.0, (4, 4), "debug") } {
+                    Ok(session) => {
+                        *hook_holder.lock().unwrap() = Some(session);
+                        Ok(())
+                    }
+                    Err(error) => {
+                        eprintln!("[ara-debug] session creation failed: {error}");
+                        Ok(())
+                    }
+                }
+            },
+        );
+        let mut host = vst3_host::Vst3Host::builder()
+            .sample_rate(48_000.0)
+            .block_size(512)
+            .input_channels(2)
+            .output_channels(2)
+            .component_ready_hook(hook)
+            .build()
+            .expect("build host");
+        let plugin = host.load_plugin(&path).expect("load VOCALOIDBridge");
+        eprintln!("[ara-debug] load returned without crash");
+        let mut session = holder.lock().unwrap().take().expect("session should exist");
+        eprintln!(
+            "[ara-debug] bound roles={} factory={} plugin={}",
+            session.bound_roles(),
+            session.info().factory_id,
+            session.info().plugin_name
+        );
+        session.set_timeline(0.0, 30.0).expect("set timeline");
+        // 先销毁 ARA 文档，再销毁插件实例（与 Vst3Runtime 的字段顺序一致）。
+        // Destroy the ARA document before the plug-in instance (matches Vst3Runtime field order).
+        drop(session);
+        drop(plugin);
+        eprintln!("[ara-debug] teardown completed");
     }
 }

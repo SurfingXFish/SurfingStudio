@@ -141,12 +141,12 @@ pub(super) fn load(
         return Ok(reused);
     }
     // ARA 绑定必须在首次 setActive 之前完成，因此通过“组件就绪”钩子建立文档。
-    // 默认关闭：部分插件在角色绑定时会崩溃（详见 `plugin::ara::host_enabled`）。
+    // 默认只为已验证的 VOCALOID Bridge 启用；其它 ARA 插件可用 SURFING_ARA_HOST=1 打开。
     // ARA binding must precede the first setActive, so the document is created from the
-    // component-ready hook. Off by default: some plug-ins crash during role binding (see
-    // `plugin::ara::host_enabled`).
+    // component-ready hook. It is enabled by default only for the verified VOCALOID Bridge;
+    // other ARA plug-ins can opt in with SURFING_ARA_HOST=1.
     let ara_capable = crate::plugin::ara::declares_ara(path);
-    let ara_enabled = ara_capable && crate::plugin::ara::host_enabled();
+    let ara_enabled = ara_capable && crate::plugin::ara::host_enabled_for(path);
     let ara_slot: Arc<Mutex<Option<crate::plugin::ara::AraSession>>> = Arc::new(Mutex::new(None));
     let mut builder = Vst3Host::builder()
         .sample_rate(sample_rate)
@@ -243,8 +243,9 @@ pub(super) fn load(
             ],
         );
     } else if ara_capable && !ara_enabled {
-        // 默认关闭 ARA 绑定，只记录插件确实提供 ARA 工厂，便于诊断。
-        // ARA binding is off by default; record that the plug-in does offer an ARA factory.
+        // 未启用绑定（非 VOCALOID Bridge 且没有 SURFING_ARA_HOST），只记录插件确实提供 ARA 工厂。
+        // Binding is disabled (not the VOCALOID Bridge and no SURFING_ARA_HOST); just record that
+        // the plug-in does offer an ARA factory.
         if let Some(handles) = plugin.raw_handles() {
             if let Some(info) = unsafe { crate::plugin::ara::probe_factory(handles) } {
                 crate::diag::info(
