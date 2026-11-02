@@ -50,6 +50,9 @@ pub struct Vst3Runtime {
     /// 插件拒绝（`kResultFalse`）恢复的状态；编辑器就绪后重试。
     /// State the plugin declined (`kResultFalse`); retried once its editor is ready.
     pub pending_state: Option<Vec<u8>>,
+    /// 已重试次数；超过上限后放弃，避免每秒把几十 KB 状态塞给插件。
+    /// Retry count; after the cap the retry stops so tens of KB are not pushed every second.
+    pub state_retries: u32,
 }
 
 /// 单实例插件的可复用实例：关闭工程时不终止，下一个工程按路径取回同一实例，
@@ -190,6 +193,7 @@ impl PluginRuntime {
             pending_transport: None,
             latency_samples: 0,
             pending_state: None,
+            state_retries: 0,
         }))
     }
 }
@@ -455,6 +459,7 @@ impl PluginRuntime {
                         Ok(()) => v.pending_state = None,
                         Err(error) => {
                             v.pending_state = Some(state.to_vec());
+                            v.state_retries = 0;
                             let bytes = state.len().to_string();
                             crate::diag::warn(
                                 "app.plugin",
@@ -650,6 +655,19 @@ impl PluginRuntime {
         let Some(state) = v.pending_state.clone() else {
             return;
         };
+        // 状态块可达数十 KB；只在插件编辑器刚起来的窗口期重试有限次，避免每秒都塞给插件。
+        // The blob can be tens of KB; retry a bounded number of times right after the editor comes
+        // up instead of pushing it every second forever.
+        v.state_retries = v.state_retries.saturating_add(1);
+        if v.state_retries > 8 {
+            v.pending_state = None;
+            crate::diag::warn(
+                "app.plugin",
+                "plugin.state",
+                &[("name", &v.name), ("status", "gave_up")],
+            );
+            return;
+        }
         let Some(mut plugin) = lock_plugin(&v.plugin) else {
             return;
         };

@@ -196,5 +196,6 @@ pub(super) fn load(
         pending_transport: None,
         latency_samples: 0,
         pending_state: None,
+        state_retries: 0,
     }))
 }
