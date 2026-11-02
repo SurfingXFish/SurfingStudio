@@ -1383,39 +1383,21 @@ impl Engine {
         // (3840 samples ≈ 20 ms at 192 kHz) or Pro-DS (2880 samples ≈ 15 ms) shifts that track
         // behind the rest. Master-effect latency applies to everything equally and cannot be
         // compensated per track, so it is only reported.
-        let max_latency = self
-            .tracks
-            .iter()
-            .map(|track| track.chain_latency)
-            .max()
-            .unwrap_or(0);
-        for track in &mut self.tracks {
-            let compensation = max_latency.saturating_sub(track.chain_latency);
-            track.comp_delay.set(compensation);
-        }
         let master_latency = self
             .master_effect
             .as_mut()
             .map(EffectRuntime::latency_samples)
             .unwrap_or(0);
-        // 前瞻量 = 最慢轨道链 + 主效果器延迟：实时渲染提前这么多，听感就和播放头对齐。
-        // 主效果器的延迟对所有轨道相同，只能靠整体前瞻抵消。
-        // Look-ahead = slowest track chain + master-effect latency: rendering this far ahead makes
-        // the audible result line up with the playhead. Master latency affects every track the same
-        // way, so only a global look-ahead can cancel it.
-        let ahead = max_latency.saturating_add(master_latency);
-        if ahead != self.render_ahead_samples {
-            self.render_ahead_samples = ahead;
-            // 播放中改变前瞻量（例如打开/关闭效果器）时重新预卷：否则延迟线长度变了，
-            // 新旧内容错位，听感会突然跳一下并留下偏移。
-            // Re-pre-roll when the amount changes during playback (for example toggling an effect):
-            // otherwise the delay lines hold a different length and the audible result jumps once and
-            // keeps an offset.
-            if self.playing {
-                self.begin_preroll();
-            }
-        }
-        self.report_plugin_latency(max_latency, master_latency, project);
+        let max_latency = self.apply_latency_compensation(master_latency);
+        let slowest = self
+            .tracks
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, track)| track.chain_latency)
+            .and_then(|(index, _)| project.tracks.get(index))
+            .map(|track| track.name.clone())
+            .unwrap_or_default();
+        self.report_plugin_latency(max_latency, master_latency, &slowest);
 
         if tempo_changed {
             for track in &mut self.tracks {
@@ -1463,9 +1445,9 @@ impl Engine {
     /// 输入：
     /// - `max_latency`：全工程最慢链的延迟（采样数）。
     /// - `master_latency`：主效果器的延迟（采样数）。
-    /// - `project`：用于取出最慢轨道的名字。
+    /// - `slowest`：最慢轨道的名字。
     /// 输出/副作用：延迟变化时写日志；不修改引擎状态（只更新记录用的缓存）。
-    /// 复杂度：时间 O(轨道数)，空间 O(1)。
+    /// 复杂度：时间 O(1)，空间 O(1)。
     ///
     /// Module: audio::engine / delay compensation
     /// Purpose: Log one `engine.latency` record whenever the reported plugin latency changes, so
@@ -1473,15 +1455,10 @@ impl Engine {
     /// Inputs:
     /// - `max_latency`: latency of the slowest chain in the project, in samples.
     /// - `master_latency`: master-effect latency in samples.
-    /// - `project`: used for the slowest track's name.
+    /// - `slowest`: name of the slowest track.
     /// Outputs / side effects: writes a log record when the values change; no engine state changes.
-    /// Complexity: O(tracks) time and O(1) space.
-    fn report_plugin_latency(
-        &mut self,
-        max_latency: usize,
-        master_latency: usize,
-        project: &Project,
-    ) {
+    /// Complexity: O(1) time and space.
+    fn report_plugin_latency(&mut self, max_latency: usize, master_latency: usize, slowest: &str) {
         if max_latency == self.last_max_latency && master_latency == self.last_master_latency {
             return;
         }
@@ -1494,14 +1471,6 @@ impl Engine {
         let samples_text = max_latency.to_string();
         let ms_text = (max_latency as f64 / rate * 1_000.0).round().to_string();
         let master_ms_text = (master_latency as f64 / rate * 1_000.0).round().to_string();
-        let slowest = self
-            .tracks
-            .iter()
-            .enumerate()
-            .max_by_key(|(_, track)| track.chain_latency)
-            .and_then(|(index, _)| project.tracks.get(index))
-            .map(|track| track.name.clone())
-            .unwrap_or_default();
         crate::diag::info(
             "app.engine",
             "engine.latency",
@@ -1509,9 +1478,121 @@ impl Engine {
                 ("comp_samples", &samples_text),
                 ("comp_ms", &ms_text),
                 ("master_ms", &master_ms_text),
-                ("slowest", &slowest),
+                ("slowest", slowest),
             ],
         );
+    }
+
+    /// 所属模块：audio::engine / 延迟补偿
+    /// 功能：按当前各轨链延迟重新计算补偿量与实时前瞻量。
+    /// 输入：`master_latency`：主效果器延迟（采样数）。
+    /// 输出/副作用：更新每轨 `comp_delay` 与 `render_ahead_samples`；播放中前瞻量变化会重新预卷。
+    /// 返回全工程最慢链的延迟。
+    /// 复杂度：时间 O(轨道数)，空间 O(1)。
+    ///
+    /// Module: audio::engine / delay compensation
+    /// Purpose: Recompute the per-track compensation and the realtime look-ahead from the current
+    /// chain latencies.
+    /// Inputs: `master_latency`: master-effect latency in samples.
+    /// Outputs / side effects: updates each track's `comp_delay` and `render_ahead_samples`;
+    /// a change during playback re-runs the pre-roll. Returns the slowest chain latency.
+    /// Complexity: O(tracks) time and O(1) space.
+    fn apply_latency_compensation(&mut self, master_latency: usize) -> usize {
+        let max_latency = self
+            .tracks
+            .iter()
+            .map(|track| track.chain_latency)
+            .max()
+            .unwrap_or(0);
+        for track in &mut self.tracks {
+            let compensation = max_latency.saturating_sub(track.chain_latency);
+            track.comp_delay.set(compensation);
+        }
+        // 前瞻量 = 最慢轨道链 + 主效果器延迟：实时渲染提前这么多，听感就和播放头对齐。
+        // 主效果器的延迟对所有轨道相同，只能靠整体前瞻抵消。
+        // Look-ahead = slowest track chain + master-effect latency: rendering this far ahead makes
+        // the audible result line up with the playhead. Master latency affects every track the same
+        // way, so only a global look-ahead can cancel it.
+        let ahead = max_latency.saturating_add(master_latency);
+        if ahead != self.render_ahead_samples {
+            self.render_ahead_samples = ahead;
+            // 播放中改变前瞻量（例如打开/关闭效果器）时重新预卷：否则延迟线长度变了，
+            // 新旧内容错位，听感会突然跳一下并留下偏移。
+            // Re-pre-roll when the amount changes during playback (for example toggling an effect):
+            // otherwise the delay lines hold a different length and the audible result jumps once and
+            // keeps an offset.
+            if self.playing {
+                self.begin_preroll();
+            }
+        }
+        max_latency
+    }
+
+    /// 所属模块：audio::engine / 延迟补偿
+    /// 功能：轮询插件提出的宿主请求（`restartComponent`），把延迟变化立刻并入补偿。
+    /// 输入：`self`。
+    /// 输出/副作用：刷新每轨链延迟；有变化时重新分配补偿缓冲并写 `engine.latency`。
+    /// 只在 UI 线程调用（插件锁用 `try_lock`，不会阻塞音频线程）。
+    /// 复杂度：时间 O(轨道数 × 插件数)，空间 O(1)。
+    ///
+    /// Module: audio::engine / delay compensation
+    /// Purpose: Poll the host requests plugins raise through `restartComponent` and fold latency
+    /// changes into the compensation immediately.
+    /// Inputs: `self`.
+    /// Outputs / side effects: refreshes each chain's latency, reallocates the compensation lines
+    /// and logs `engine.latency` when something changed. UI thread only (plugin locks use
+    /// `try_lock`, so the audio thread never blocks).
+    /// Complexity: O(tracks × plugins) time and O(1) space.
+    pub fn refresh_plugin_latency(&mut self) {
+        let mut changed = false;
+        for (index, runtime) in self.tracks.iter_mut().enumerate() {
+            let Some(track) = self.project.tracks.get(index) else {
+                continue;
+            };
+            let mut latency = 0usize;
+            if let InstrumentRuntime::Plugin(plugin) = &mut runtime.instrument {
+                changed |= plugin.refresh_host_requests();
+                latency = latency.saturating_add(plugin.latency_samples());
+            }
+            for (slot, effect) in runtime.effects.iter_mut().enumerate() {
+                if !track
+                    .effects
+                    .get(slot)
+                    .is_some_and(|reference| reference.enabled())
+                {
+                    continue;
+                }
+                if let EffectRuntime::Plugin(plugin) = effect {
+                    changed |= plugin.refresh_host_requests();
+                    latency = latency.saturating_add(plugin.latency_samples());
+                }
+            }
+            if latency != runtime.chain_latency {
+                runtime.chain_latency = latency;
+                changed = true;
+            }
+        }
+        if let Some(EffectRuntime::Plugin(plugin)) = &mut self.master_effect {
+            changed |= plugin.refresh_host_requests();
+        }
+        if !changed {
+            return;
+        }
+        let master_latency = self
+            .master_effect
+            .as_mut()
+            .map(EffectRuntime::latency_samples)
+            .unwrap_or(0);
+        let max_latency = self.apply_latency_compensation(master_latency);
+        let slowest = self
+            .tracks
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, track)| track.chain_latency)
+            .and_then(|(index, _)| self.project.tracks.get(index))
+            .map(|track| track.name.clone())
+            .unwrap_or_default();
+        self.report_plugin_latency(max_latency, master_latency, &slowest);
     }
 
     /// 所属模块：audio::engine / 传输
@@ -2102,6 +2183,34 @@ mod tests {
             "reported position should be {} but was {}",
             expected,
             engine.position_beats()
+        );
+    }
+
+    /// 覆盖：插件延迟变化后重新计算补偿量与前瞻量（Pro-Q 4 切线性相位走这条路径）。
+    /// Covers: a latency change recomputes the compensation and look-ahead (the path Pro-Q 4 takes
+    /// when switching to linear phase).
+    #[test]
+    fn latency_change_recomputes_compensation_and_ahead() {
+        let project = Project::demo();
+        assert!(project.tracks.len() >= 2, "demo project needs two tracks");
+        let mut engine = Engine::new(48_000.0);
+        engine.sync_project(&project);
+        assert_eq!(engine.render_ahead_samples, 0);
+
+        // 人为把第一轨的链条延迟改成 4800 采样（Pro-Q 4 线性相位在 48 kHz 下的量级）。
+        // Pretend the first track's chain reports 4800 samples (Pro-Q 4 linear phase at 48 kHz).
+        engine.tracks[0].chain_latency = 4_800;
+        let slowest = engine.apply_latency_compensation(0);
+
+        assert_eq!(slowest, 4_800, "slowest chain should be the edited track");
+        assert_eq!(engine.render_ahead_samples, 4_800);
+        assert_eq!(
+            engine.tracks[0].comp_delay.delay, 0,
+            "the slowest track needs no extra compensation"
+        );
+        assert_eq!(
+            engine.tracks[1].comp_delay.delay, 4_800,
+            "other tracks must be padded to the slowest chain"
         );
     }
 

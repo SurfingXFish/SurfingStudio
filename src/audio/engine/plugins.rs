@@ -341,6 +341,11 @@ impl Engine {
         // the first scan after a project finishes loading.
         let index = self.parameter_poll_cursor % count;
         self.parameter_poll_cursor = (index + 1) % count;
+        // 顺手处理插件用 restartComponent 提出的延迟/总线变化（Pro-Q 4 切线性相位等）：
+        // 不处理会一直按旧延迟补偿。
+        // Also service latency/bus changes plugins raise through restartComponent (Pro-Q 4 when
+        // switching to linear phase, for example); otherwise the old latency keeps being used.
+        self.refresh_plugin_latency();
         if self.tracks[index].poll_parameters(playing) {
             vec![self.tracks[index].id]
         } else {

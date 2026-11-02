@@ -146,6 +146,9 @@ fn run_sync_service(engine: Weak<Mutex<Engine>>, requests: Receiver<SyncRequest>
             winapi::um::objbase::COINIT_APARTMENTTHREADED,
         );
     }
+    // 上次轮询插件延迟变化的时间；效果器的控制线程就是本线程。
+    // Last time plugin latency changes were polled; effect control threads live on this thread.
+    let mut last_latency_service = Instant::now();
     loop {
         match requests.try_recv() {
             Ok(request) => {
@@ -169,9 +172,23 @@ fn run_sync_service(engine: Weak<Mutex<Engine>>, requests: Receiver<SyncRequest>
                     ("warnings", &outcome.0.len().to_string()),
                 ]);
                 let _ = request.response.send(outcome);
+                last_latency_service = Instant::now();
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {
                 pump_plugin_messages();
+                // 效果器实例由本线程创建，`restartComponent` 只能在控制线程上处理；
+                // 每 200 ms 在这里读一次延迟变化（Pro-Q 4 切线性相位等）。
+                // Effect instances are created on this thread and `restartComponent` may only be
+                // serviced on the plugin's control thread, so poll latency changes here every
+                // 200 ms (Pro-Q 4 switching to linear phase, for example).
+                if last_latency_service.elapsed() >= Duration::from_millis(200) {
+                    last_latency_service = Instant::now();
+                    if let Some(engine) = engine.upgrade() {
+                        if let Ok(mut guard) = engine.try_lock() {
+                            guard.refresh_plugin_latency();
+                        }
+                    }
+                }
                 std::thread::sleep(Duration::from_millis(5));
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => break,

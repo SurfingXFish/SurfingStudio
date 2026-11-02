@@ -633,6 +633,42 @@ impl PluginRuntime {
         v.latency_samples
     }
 
+    /// 所属模块：plugin / 运行时
+    /// 功能：处理插件通过 `restartComponent` 提出的请求（延迟/总线变化），并刷新延迟缓存。
+    /// 输入：`self`。
+    /// 输出/副作用：必要时按 VST3 要求暂停/停用/重启用插件；返回延迟采样数是否变化。
+    /// 插件锁被占用时直接跳过，UI 线程绝不阻塞。
+    /// 复杂度：时间 O(插件请求数)，空间 O(1)。
+    ///
+    /// Module: plugin / runtime
+    /// Purpose: Service requests the plugin raised through `restartComponent` (latency / bus
+    /// changes) and refresh the cached latency.
+    /// Inputs: `self`.
+    /// Outputs / side effects: suspends/deactivates/reactivates the plugin as VST3 requires when
+    /// needed; returns whether the latency in samples changed. Skipped while the plugin lock is
+    /// busy so the UI thread never blocks.
+    /// Complexity: O(plugin requests) time and O(1) space.
+    pub fn refresh_host_requests(&mut self) -> bool {
+        let PluginRuntime::Vst3(v) = self else {
+            return false;
+        };
+        let Some(mut plugin) = lock_plugin(&v.plugin) else {
+            return false;
+        };
+        // Pro-Q 4 这类插件在切换到线性相位或改变过采样时会发 kLatencyChanged；不处理的话宿主
+        // 一直按旧延迟（常见是 0）补偿，该轨就会整体晚一截。
+        // Plugins such as Pro-Q 4 raise kLatencyChanged when switching to linear phase or changing
+        // oversampling. Ignoring it leaves the host compensating with the old latency (usually 0),
+        // so that track stays late.
+        let _ = plugin.service_host_requests();
+        let latency = plugin.latency_samples() as usize;
+        if latency == v.latency_samples {
+            return false;
+        }
+        v.latency_samples = latency;
+        true
+    }
+
     /// 所属模块：plugin / 统一运行时
     /// 功能：重试此前被插件拒绝的状态恢复（编辑器就绪后通常即可成功）。
     /// 输入：`self`。
@@ -971,18 +1007,14 @@ impl PluginRuntime {
                     }
                     return;
                 };
-                // 只有在插件内部位置与宿主位置不一致时才补写：正常连播时插件的走带由
-                // ProcessContext 自行推进，不需要每块重置；一旦有块被跳过（锁被占）或发生定位，
-                // 这里立刻把插件拉回宿主位置，偏移不会被永久累积。
-                // Only rewrite the position when the plugin's internal position disagrees with the
-                // host: during continuous playback the plugin advances itself through the
-                // ProcessContext and needs no reset, but after a skipped block (busy lock) or a seek
-                // this pulls it straight back to the host position, so no offset accumulates.
+                // 每块都把宿主位置写进 ProcessContext（与 Cubase 等宿主一致）：插件据此推进
+                // 编辑器里的播放头与内部时间轴。这里只改结构体字段，不会触发插件的重新定位。
+                // VOCALOID 6 这类“独立编辑器窗口”的插件只有收到每块的宿主位置才会跟着走条。
+                // Write the host position into the ProcessContext on every block, as Cubase and
+                // other DAWs do: editors such as VOCALOID 6 follow the transport from it. This only
+                // updates struct fields and never makes the plugin re-seek.
                 if let Some(position) = transport {
-                    let current = plugin.transport_position().unwrap_or(position);
-                    if (current.samples - position.samples).abs() > 1 {
-                        let _ = plugin.set_transport_position(position);
-                    }
+                    let _ = plugin.set_transport_position(position);
                     v.pending_transport = None;
                 } else if let Some(position) = v.pending_transport.take() {
                     // 没有本块位置时（效果器）才补发旧记录，绝不覆盖新的宿主位置。
