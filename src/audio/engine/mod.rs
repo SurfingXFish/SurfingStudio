@@ -881,12 +881,13 @@ impl TrackEngine {
     ) {
         let desired: Vec<String> = track.effects.iter().map(EffectRef::key).collect();
         if defer_plugin_effects {
-            // 界面线程的加载时间片不要实例化插件效果器：ARA 插件（VOCALOID Bridge）的文档
-            // 初始化会同步等待编辑器应用，实测可让界面停顿十几秒。保留现有链，由后台同步线程
-            // 在下一次同步时加载。
-            // Do not instantiate plug-in effects in the UI-thread load slice: ARA plug-ins
-            // (VOCALOID Bridge) block while initialising their document/editor app (observed as a
-            // multi-second UI freeze). Keep the current chain and let the background sync load it.
+            // 界面加载时间片（`defer_plugin_effects = true`）不要实例化新的插件效果器：ARA 插件
+            // （VOCALOID Bridge）的文档初始化会同步等待编辑器应用，实测可让界面停顿数秒到十几秒。
+            // 保留现有链，由后台同步线程在下一次同步时加载。
+            // The UI load slice (`defer_plugin_effects = true`) must not instantiate new plug-in
+            // effects: ARA plug-ins (VOCALOID Bridge) block while initialising their document/editor
+            // app (observed as multi-second UI freezes). Keep the current chain and let the
+            // background sync load it.
             if desired.iter().any(|key| !self.effect_keys.contains(key)) {
                 return;
             }
@@ -1444,7 +1445,10 @@ impl Engine {
                 force_reload,
                 project.bpm,
                 time_sig,
-                defer_plugin_instruments,
+                // 界面加载时间片（defer=false）不新建插件效果器；后台同步线程（defer=true）负责创建。
+                // The UI load slice (defer=false) must not create plug-in effects; the background
+                // sync thread (defer=true) creates them.
+                !defer_plugin_instruments,
                 &mut warnings,
             );
             runtime.has_audio_clips = track.has_audio_clips();
