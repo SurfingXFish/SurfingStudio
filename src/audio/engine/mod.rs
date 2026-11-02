@@ -97,6 +97,21 @@ pub struct Engine {
     parameter_poll_cursor: usize,
     playing: bool,
     position_beats: f64,
+    /// 插件链总延迟（采样）：实时渲染提前这么多，抵消“开启效果器后声音整体后延”。
+    /// Total plugin-chain latency in samples: the realtime renderer runs this far ahead so enabling
+    /// an effect no longer shifts the whole mix behind the playhead.
+    render_ahead_samples: usize,
+    /// 预卷剩余帧数：先用当前位置的内容填满补偿延迟线并丢弃输出，之后声音与播放头对齐。
+    /// Remaining pre-roll frames: fill the compensation delay lines with the content at the current
+    /// position and drop the output, after which playback lines up with the playhead.
+    preroll_frames: usize,
+    /// 预卷期间对外显示的播放位置。
+    /// Playhead shown while pre-rolling.
+    preroll_position_beats: f64,
+    /// 是否启用前瞻补偿；离线导出关闭，导出文件保持从 0 开始的原始对齐。
+    /// Whether look-ahead compensation is active; offline export turns it off so the file keeps its
+    /// original alignment from frame zero.
+    lookahead_enabled: bool,
     levels: Vec<f32>,
     levels_l: Vec<f32>,
     levels_r: Vec<f32>,
@@ -927,6 +942,10 @@ impl Engine {
             parameter_poll_cursor: 0,
             playing: false,
             position_beats: 0.0,
+            render_ahead_samples: 0,
+            preroll_frames: 0,
+            preroll_position_beats: 0.0,
+            lookahead_enabled: true,
             levels: Vec::new(),
             levels_l: Vec::new(),
             levels_r: Vec::new(),
@@ -1379,6 +1398,23 @@ impl Engine {
             .as_mut()
             .map(EffectRuntime::latency_samples)
             .unwrap_or(0);
+        // 前瞻量 = 最慢轨道链 + 主效果器延迟：实时渲染提前这么多，听感就和播放头对齐。
+        // 主效果器的延迟对所有轨道相同，只能靠整体前瞻抵消。
+        // Look-ahead = slowest track chain + master-effect latency: rendering this far ahead makes
+        // the audible result line up with the playhead. Master latency affects every track the same
+        // way, so only a global look-ahead can cancel it.
+        let ahead = max_latency.saturating_add(master_latency);
+        if ahead != self.render_ahead_samples {
+            self.render_ahead_samples = ahead;
+            // 播放中改变前瞻量（例如打开/关闭效果器）时重新预卷：否则延迟线长度变了，
+            // 新旧内容错位，听感会突然跳一下并留下偏移。
+            // Re-pre-roll when the amount changes during playback (for example toggling an effect):
+            // otherwise the delay lines hold a different length and the audible result jumps once and
+            // keeps an offset.
+            if self.playing {
+                self.begin_preroll();
+            }
+        }
         self.report_plugin_latency(max_latency, master_latency, project);
 
         if tempo_changed {
@@ -1505,7 +1541,57 @@ impl Engine {
     /// Outputs / side effects: playhead in beats; no state change.
     /// Complexity: O(1) time and space.
     pub fn position_beats(&self) -> f64 {
+        if self.playing && self.lookahead_enabled {
+            if self.preroll_frames > 0 {
+                // 预卷期间内部游标已经提前，显示值仍停在起播位置。
+                // While pre-rolling the internal cursor is already ahead; keep showing the start.
+                return self.preroll_position_beats;
+            }
+            // 内部游标（内容位置）比实际听到的声音早一个插件链延迟，显示值取听感位置。
+            // The internal cursor (content position) runs one chain latency ahead of what is heard,
+            // so the playhead reports the audible position.
+            return (self.position_beats - self.render_ahead_beats()).max(0.0);
+        }
         self.position_beats
+    }
+
+    /// 所属模块：audio::engine / 传输
+    /// 功能：把插件链延迟（采样）换算成拍数。
+    /// 输入：`self`。
+    /// 输出/副作用：返回拍数；不修改状态。
+    /// 复杂度：时间 O(1)，空间 O(1)。
+    ///
+    /// Module: audio::engine / transport
+    /// Purpose: Convert the plugin-chain latency in samples to beats.
+    /// Inputs: `self`.
+    /// Outputs / side effects: the beat count; no state change.
+    /// Complexity: O(1) time and space.
+    fn render_ahead_beats(&self) -> f64 {
+        self.render_ahead_samples as f64 * self.project.bpm.max(1.0) / (60.0 * self.sample_rate)
+    }
+
+    /// 所属模块：audio::engine / 传输
+    /// 功能：安排一次预卷：先把补偿延迟线填满，再开始输出。
+    /// 输入：`self`。
+    /// 输出/副作用：设置预卷帧数与显示位置；关闭前瞻时立即结束预卷。
+    /// 复杂度：时间 O(轨道数)，空间 O(1)。
+    ///
+    /// Module: audio::engine / transport
+    /// Purpose: Schedule a pre-roll so the compensation lines are filled before output starts.
+    /// Inputs: `self`.
+    /// Outputs / side effects: sets the pre-roll length and displayed position; a disabled
+    /// look-ahead ends the pre-roll immediately.
+    /// Complexity: O(tracks) time and O(1) space.
+    fn begin_preroll(&mut self) {
+        if !self.lookahead_enabled || self.render_ahead_samples == 0 {
+            self.preroll_frames = 0;
+            return;
+        }
+        self.preroll_frames = self.render_ahead_samples;
+        self.preroll_position_beats = self.position_beats;
+        for track in &mut self.tracks {
+            track.comp_delay.reset();
+        }
     }
 
     /// 所属模块：audio::engine / 传输
@@ -1527,6 +1613,7 @@ impl Engine {
             self.audio_cursors.clear();
             self.plugin_transport_seek = true;
             self.reset_note_state(self.position_beats);
+            self.begin_preroll();
         }
     }
 
@@ -1544,6 +1631,15 @@ impl Engine {
     pub fn pause(&mut self) {
         if self.playing {
             self.playing = false;
+            // 前瞻时内部游标比听感位置早一个链延迟，暂停要把游标退回听感位置，
+            // 否则播放头会突然向前跳一段，再次播放还会从更晚的地方开始。
+            // With look-ahead the internal cursor is one chain latency ahead of what was heard;
+            // pull it back on pause so the playhead does not jump and playback resumes from the
+            // position the user actually heard.
+            if self.lookahead_enabled && self.preroll_frames == 0 {
+                self.position_beats = (self.position_beats - self.render_ahead_beats()).max(0.0);
+            }
+            self.preroll_frames = 0;
             self.reset_note_state(self.position_beats);
         }
     }
@@ -1565,6 +1661,12 @@ impl Engine {
         self.audio_cursors.clear();
         self.auto_stopped = false;
         self.reset_note_state(self.position_beats);
+        if self.playing {
+            // 定位后补偿延迟线里是旧位置的音频，重新预卷一次，避免定位后先冒出旧声音。
+            // After a seek the compensation lines still hold the old position; pre-roll again so
+            // stale audio cannot leak out.
+            self.begin_preroll();
+        }
     }
 
     /// 所属模块：audio::engine / 传输
@@ -1581,6 +1683,10 @@ impl Engine {
     /// Complexity: O(tracks + log events) time and O(1) space.
     pub fn reset_playback_state(&mut self) {
         self.audio_cursors.clear();
+        // 工程被替换时旧的前瞻预卷没有意义，直接取消，避免丢掉新工程的头部声音。
+        // A pre-roll from the previous project is meaningless after a replacement; cancel it so the
+        // new project never loses its first samples.
+        self.preroll_frames = 0;
         self.reset_note_state(self.position_beats);
         // 工程内容可能被替换但 revision 未持久化；强制重建避免签名碰撞。
         // Project content can change while revisions are not persisted; force a rebuild
@@ -1935,6 +2041,68 @@ mod tests {
         }
         assert!(audible, "note starting at beat 0.25 should be audible");
         assert!(engine.position_beats() > 0.0);
+    }
+
+    /// 覆盖：启用前瞻时先做一次预卷（输出静音、播放头停在起点），之后播放头取听感位置。
+    /// Covers: with look-ahead the engine pre-rolls first (silent output, playhead held at the
+    /// start) and then reports the audible position.
+    #[test]
+    fn lookahead_prerolls_then_reports_audible_position() {
+        let mut project = Project::default();
+        let mut track = Track::new(
+            1,
+            "Test",
+            [0, 255, 0],
+            InstrumentRef::Synth(crate::core::model::SynthSettings::default()),
+        );
+        let mut clip = Clip::new(1, "clip", 0.0, 2.0);
+        clip.notes.push(crate::core::model::Note {
+            start: 0.0,
+            length: 1.0,
+            pitch: 60,
+            velocity: 100,
+        });
+        track.clips.push(clip);
+        project.tracks.push(track);
+
+        let mut engine = Engine::new(48_000.0);
+        engine.sync_project(&project);
+        // 人为给 4800 采样（0.1 s）的前瞻量，等价于 192 kHz 下 Pro-MB + Pro-DS 的链延迟。
+        // Pretend the chain latency is 4800 samples (0.1 s), the Pro-MB + Pro-DS total at 192 kHz.
+        engine.render_ahead_samples = 4_800;
+        engine.play();
+
+        let mut left = vec![0.0_f32; 512];
+        let mut right = vec![0.0_f32; 512];
+        // 7 块 = 3584 帧 < 4800：仍在预卷中，输出必须静音，播放头停在 0。
+        // 7 blocks = 3584 frames < 4800: still pre-rolling, so the output is silent and the
+        // playhead stays at 0.
+        for _ in 0..7 {
+            engine.process(&mut left, &mut right);
+            assert!(
+                left.iter().all(|sample| *sample == 0.0),
+                "pre-roll must not emit audio"
+            );
+            assert_eq!(engine.position_beats(), 0.0);
+        }
+
+        // 再推进到 13 块（6656 帧）：预卷已结束，声音开始输出，显示位置 = 内部游标 - 前瞻量。
+        // Advance to 13 blocks (6656 frames): the pre-roll is over, audio starts and the reported
+        // position is the internal cursor minus the look-ahead.
+        let mut audible = false;
+        for _ in 0..6 {
+            engine.process(&mut left, &mut right);
+            audible |= left.iter().any(|sample| sample.abs() > 1e-4);
+        }
+        assert!(audible, "audio must start once the chains are primed");
+        let beats_per_frame = project.bpm.max(1.0) / 60.0 / 48_000.0;
+        let expected = 13.0 * 512.0 * beats_per_frame - 4_800.0 * beats_per_frame;
+        assert!(
+            (engine.position_beats() - expected).abs() < 1e-9,
+            "reported position should be {} but was {}",
+            expected,
+            engine.position_beats()
+        );
     }
 
     /// 覆盖：传输位置格式化为 `bar.beat.tick`。

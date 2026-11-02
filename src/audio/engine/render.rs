@@ -121,6 +121,9 @@ pub struct OfflineRenderSession {
     saved_playing: bool,
     saved_auto_stop_enabled: bool,
     saved_defer_master_clip: bool,
+    /// 导出前的实时前瞻开关；导出期间关闭，导出结束后恢复。
+    /// Realtime look-ahead flag before the export; disabled while exporting and restored afterwards.
+    saved_lookahead: bool,
     saved_sample_rate: f64,
     sample_rate: f64,
     channels: usize,
@@ -567,6 +570,22 @@ impl Engine {
     fn render_block(&mut self, out: &mut [Vec<f32>], frames: usize) {
         let bps = self.project.bpm.max(1.0) / (60.0 * self.sample_rate);
         let mut offset = 0;
+        // 预卷：先把插件链的延迟线用当前位置的内容填满，这一段声音丢弃。之后内部游标比听感
+        // 位置早一个链延迟，补偿延迟 + 插件延迟正好抵消，开效果器不再让整首歌后移。
+        // Pre-roll: fill the plugin chains' delay lines with the content at the current position and
+        // drop that audio. From then on the internal cursor runs one chain latency ahead, so the
+        // compensation plus the plugin latency cancel out and enabling an effect no longer shifts
+        // the whole mix.
+        if self.preroll_frames > 0 {
+            let count = self.preroll_frames.min(frames);
+            self.render_chunk(out, 0, count, true);
+            for channel in out.iter_mut() {
+                let limit = count.min(channel.len());
+                channel[..limit].fill(0.0);
+            }
+            self.preroll_frames -= count;
+            offset = count;
+        }
         while offset < frames {
             let mut chunk = self.block_size.min(frames - offset).max(1);
             let auto_stop_beat = self.auto_stop_beat();
@@ -1128,6 +1147,10 @@ impl Engine {
         let mut engine = Engine::new(sample_rate);
         engine.auto_stop_enabled = false;
         engine.defer_master_clip = options.gpu.is_some();
+        // 离线导出不做实时前瞻：文件必须从第 0 帧开始与工程内容对齐。
+        // Offline export has no realtime look-ahead: the file must align with the project from
+        // frame zero.
+        engine.lookahead_enabled = false;
         engine.sync_project(&render_project);
         // 离线渲染不能等待 UI 的后台解码线程。
         // Offline rendering cannot wait for the UI's background decoder.
@@ -1218,6 +1241,7 @@ impl Engine {
         let saved_playing = self.playing;
         let saved_auto_stop_enabled = self.auto_stop_enabled;
         let saved_defer_master_clip = self.defer_master_clip;
+        let saved_lookahead = self.lookahead_enabled;
         let saved_sample_rate = self.sample_rate;
 
         if (sample_rate - self.sample_rate).abs() > 1.0 {
@@ -1225,6 +1249,11 @@ impl Engine {
         }
         self.auto_stop_enabled = false;
         self.defer_master_clip = options.gpu.is_some();
+        // 导出文件必须从第 0 帧开始对齐：关闭实时前瞻，不丢弃预卷样本。
+        // The exported file must line up from frame zero: turn off realtime look-ahead so no
+        // pre-roll samples are dropped.
+        self.lookahead_enabled = false;
+        self.preroll_frames = 0;
         self.sync_project(&render_project);
         self.load_pending_audio_blocking();
         let channels = options.layout.channels();
@@ -1235,6 +1264,7 @@ impl Engine {
             saved_playing,
             saved_auto_stop_enabled,
             saved_defer_master_clip,
+            saved_lookahead,
             saved_sample_rate,
             sample_rate,
             channels,
@@ -1336,6 +1366,7 @@ impl Engine {
         let saved_playing = session.saved_playing;
         let saved_auto_stop_enabled = session.saved_auto_stop_enabled;
         let saved_defer_master_clip = session.saved_defer_master_clip;
+        let saved_lookahead = session.saved_lookahead;
         let saved_sample_rate = session.saved_sample_rate;
         self.restore_after_offline(
             saved_project,
@@ -1343,6 +1374,7 @@ impl Engine {
             saved_playing,
             saved_auto_stop_enabled,
             saved_defer_master_clip,
+            saved_lookahead,
             saved_sample_rate,
         );
         Ok(OfflineRender {
@@ -1421,19 +1453,21 @@ impl Engine {
             session.saved_playing,
             session.saved_auto_stop_enabled,
             session.saved_defer_master_clip,
+            session.saved_lookahead,
             session.saved_sample_rate,
         );
     }
 
     /// 所属模块：audio::engine / 离线渲染
     /// 功能：恢复导出前的工程、走带与采样率状态。
-    /// 输入：保存的工程、位置、播放标记、自动停止、GPU 延迟限幅与采样率。
+    /// 输入：保存的工程、位置、播放标记、自动停止、GPU 延迟限幅、前瞻开关与采样率。
     /// 输出/副作用：暂停、按需重载插件、重新同步工程并定位。
     /// 复杂度：时间 O(工程同步 + 插件重载)，空间 O(1)。
     ///
     /// Module: audio::engine / offline render
     /// Purpose: Restore the project, transport and sample rate saved before the export.
-    /// Inputs: saved project, position, playing flag, auto-stop, deferred clip and sample rate.
+    /// Inputs: saved project, position, playing flag, auto-stop, deferred clip, look-ahead and
+    /// sample rate.
     /// Outputs / side effects: pauses, reloads plugins when needed, re-syncs the project and seeks.
     /// Complexity: O(project sync + plugin reload) time and O(1) space.
     fn restore_after_offline(
@@ -1443,8 +1477,11 @@ impl Engine {
         saved_playing: bool,
         saved_auto_stop_enabled: bool,
         saved_defer_master_clip: bool,
+        saved_lookahead: bool,
         saved_sample_rate: f64,
     ) {
+        self.lookahead_enabled = saved_lookahead;
+        self.preroll_frames = 0;
         self.pause();
         self.auto_stop_enabled = saved_auto_stop_enabled;
         self.defer_master_clip = saved_defer_master_clip;
@@ -1456,6 +1493,7 @@ impl Engine {
         self.playing = saved_playing;
         if saved_playing {
             self.reset_note_state(saved_position);
+            self.begin_preroll();
         }
     }
 
@@ -2058,6 +2096,7 @@ mod tests {
             saved_playing: false,
             saved_auto_stop_enabled: true,
             saved_defer_master_clip: false,
+            saved_lookahead: true,
             saved_sample_rate: 48_000.0,
             sample_rate: 48_000.0,
             channels: 2,
