@@ -834,7 +834,7 @@ impl Engine {
     /// 功能：按设置启用或关闭实时主总线 GPU 软限幅；配置未变化时不重建设备。
     /// 输入：`config`：GPU 设备/驱动/API 选择；`None` 表示关闭并回到 CPU。
     /// 输出/副作用：可能创建 GPU 设备并把失败原因存入 `gpu_realtime_warning`；
-    /// 成功后实时回调在 `GPU_REALTIME_TIMEOUT_MS` 内等待结果，超时自动回退 CPU。
+    /// 成功后实时回调只在 GPU 已算完时使用其结果，否则本块回退 CPU，绝不等待。
     /// 复杂度：时间 O(GPU 设备创建)（配置变化时），空间 O(1)。
     ///
     /// Module: audio::engine / GPU realtime rendering
@@ -842,8 +842,8 @@ impl Engine {
     /// unchanged config never rebuilds the device.
     /// Inputs: `config`: GPU device/driver/API selection; `None` disables and returns to the CPU.
     /// Outputs / side effects: may create a GPU device and store a failure reason in
-    /// `gpu_realtime_warning`; on success the callback waits at most `GPU_REALTIME_TIMEOUT_MS` and
-    /// falls back to the CPU on timeout.
+    /// `gpu_realtime_warning`; on success the callback uses the GPU result only when it is already
+    /// available and otherwise limits that block on the CPU without waiting.
     /// Complexity: O(GPU device creation) time when the config changes, O(1) space.
     pub fn configure_gpu_realtime(&mut self, config: Option<GpuRenderConfig>) {
         // 配置相同即返回：失败后不会在每次同步时反复创建设备；用户切换设置可触发重试。

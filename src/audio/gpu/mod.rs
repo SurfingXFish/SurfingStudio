@@ -35,12 +35,27 @@ mod backends;
 
 use backends::wgpu_compute::{WgpuComputeBackend, WgpuRealtimeLimiter};
 use backends::wgpu_timbre::{TimbreLayout, WgpuTimbreTrainer};
-use std::time::Duration;
 
-/// 实时 GPU 限幅的等待上限；超过后本块回退 CPU，避免音频回调被显卡拖住。
-/// Upper bound for the realtime GPU limiter; after it the block falls back to the CPU so the audio
-/// callback is never held by the GPU.
-pub const GPU_REALTIME_TIMEOUT: Duration = Duration::from_millis(1);
+/// 实时 GPU 限幅一次提交的结果：成功、尚未就绪或真正失败。
+/// Outcome of one realtime GPU limiter submission: applied, not ready yet, or failed.
+///
+/// 实时路径**不允许任何等待**：显卡没算完就读 CPU 结果，否则每块多等几百微秒到 1 ms，
+/// 叠加效果器后会让回调超出缓冲区预算，听感上就是“整体发声变晚”。
+/// The realtime path **never waits**: when the GPU has not finished, the CPU result is used.
+/// Waiting a fraction of a millisecond per block used to push callbacks past their budget once
+/// effects were enabled, which was heard as the whole output drifting late.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GpuLimitOutcome {
+    /// 本块已由 GPU 处理，样本已原地写回。
+    /// The block was processed on the GPU and written back in place.
+    Applied,
+    /// GPU 尚未返回结果；本块请用 CPU 软限幅，并保留实例。
+    /// The GPU result is not ready; limit this block on the CPU and keep the instance.
+    Busy,
+    /// 真正的失败；调用方应丢弃实例并在状态栏提示一次。
+    /// A real failure; the caller should drop the instance and report it once.
+    Failed(String),
+}
 
 /// 图形 API 标识；与 `wgpu::Backend` 一一对应。
 /// Graphics-API identity; maps one-to-one onto `wgpu::Backend`.
@@ -433,23 +448,20 @@ impl GpuRealtimeLimiter {
     }
 
     /// 所属模块：audio / GPU 渲染
-    /// 功能：在限定时间内对交错样本执行主总线软限幅。
-    /// 输入：
-    /// - `samples`：交错多声道样本。
-    /// - `timeout`：等待上限。
-    /// 输出/副作用：成功时原地改写样本；失败时内容未定义，调用方必须回退 CPU 并丢弃本实例。
-    /// 复杂度：时间 O(样本数)，空间 O(样本数)。
+    /// 功能：非阻塞地对交错样本执行主总线软限幅：GPU 未就绪时立即返回 `Busy`，绝不等待。
+    /// 输入：`samples`：交错多声道样本。
+    /// 输出/副作用：`Applied` 时原地改写样本；`Busy` / `Failed` 时内容未定义，调用方回退 CPU。
+    /// 复杂度：时间 O(样本数)（仅成功路径），空间 O(样本数)（上传字节缓冲）。
     ///
     /// Module: audio / GPU rendering
-    /// Purpose: Apply the master soft limiter to interleaved samples within a deadline.
-    /// Inputs:
-    /// - `samples`: interleaved multichannel samples.
-    /// - `timeout`: wait limit.
-    /// Outputs / side effects: rewrites the samples on success; contents are undefined on failure, so
-    /// the caller must fall back to the CPU and drop this instance.
-    /// Complexity: O(samples) time and O(samples) space.
-    pub fn process(&mut self, samples: &mut [f32], timeout: Duration) -> Result<(), String> {
-        self.inner.process(samples, timeout)
+    /// Purpose: Apply the master soft limiter without blocking: return `Busy` immediately when the
+    /// GPU result is not ready.
+    /// Inputs: `samples`: interleaved multichannel samples.
+    /// Outputs / side effects: rewrites the samples on `Applied`; contents are undefined on
+    /// `Busy` / `Failed`, so the caller falls back to the CPU.
+    /// Complexity: O(samples) time on the success path, O(samples) space (upload byte buffer).
+    pub fn process(&mut self, samples: &mut [f32]) -> GpuLimitOutcome {
+        self.inner.process(samples)
     }
 }
 

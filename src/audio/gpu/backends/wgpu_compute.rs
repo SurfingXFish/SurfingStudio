@@ -26,7 +26,9 @@
 //! - `device_type_label`: Chinese device-type text.
 //! - `select_adapter`: pick an adapter for the config.
 
-use super::super::{GpuApi, GpuBackend, GpuBackendInfo, GpuDeviceInfo, GpuRenderConfig};
+use super::super::{
+    GpuApi, GpuBackend, GpuBackendInfo, GpuDeviceInfo, GpuLimitOutcome, GpuRenderConfig,
+};
 use std::sync::mpsc::channel;
 
 /// 单次向 GPU 提交的样本数上限（约 4 MiB）；长工程分块处理，避免超过存储缓冲上限。
@@ -298,6 +300,10 @@ pub struct WgpuRealtimeLimiter {
     staging: wgpu::Buffer,
     upload: Vec<u8>,
     capacity_samples: usize,
+    /// 上一块的回读尚未完成时的等待通道；存在期间不再提交新块，避免覆盖回读缓冲。
+    /// Pending read-back channel; while present no new block is submitted so the staging buffer is
+    /// never overwritten.
+    pending: Option<std::sync::mpsc::Receiver<Result<(), wgpu::BufferAsyncError>>>,
 }
 
 impl WgpuRealtimeLimiter {
@@ -365,38 +371,58 @@ impl WgpuRealtimeLimiter {
             staging,
             upload: Vec::with_capacity(byte_len as usize),
             capacity_samples: REALTIME_CAPACITY_SAMPLES,
+            pending: None,
         })
     }
 
     /// 所属模块：audio::gpu / wgpu 计算后端
-    /// 功能：在限定时间内对一段交错样本执行主总线软限幅；超时或失败即返回错误。
-    /// 输入：
-    /// - `samples`：交错多声道样本；不超过 `REALTIME_CAPACITY_SAMPLES`。
-    /// - `timeout`：等待 GPU 完成的上限。
-    /// 输出/副作用：成功时原地改写 `samples`；失败时内容未定义，调用方必须回退 CPU 并丢弃本实例。
-    /// 复杂度：时间 O(样本数)，空间 O(样本数)（上传字节缓冲）。
+    /// 功能：非阻塞地执行一次主总线软限幅：提交后只做轮询，显卡没算完就让调用方用 CPU。
+    /// 输入：`samples`：交错多声道样本，不超过 `REALTIME_CAPACITY_SAMPLES`。
+    /// 输出/副作用：`Applied` 时原地改写样本；`Busy` / `Failed` 时样本内容未定义。
+    /// 复杂度：时间 O(样本数)（成功路径），空间 O(样本数)（上传字节缓冲）。
     ///
     /// Module: audio::gpu / wgpu compute backend
-    /// Purpose: Apply the master soft limiter to interleaved samples within a deadline; timeout or
-    /// failure returns an error.
-    /// Inputs:
-    /// - `samples`: interleaved multichannel samples, no more than `REALTIME_CAPACITY_SAMPLES`.
-    /// - `timeout`: upper bound for waiting on the GPU.
-    /// Outputs / side effects: rewrites `samples` in place on success; contents are undefined on
-    /// failure, so the caller must fall back to the CPU and drop this limiter.
-    /// Complexity: O(samples) time and O(samples) space (upload byte buffer).
-    pub fn process(
-        &mut self,
-        samples: &mut [f32],
-        timeout: std::time::Duration,
-    ) -> Result<(), String> {
+    /// Purpose: Run one master-bus soft-limiter pass without blocking: submit and poll only, so the
+    /// caller uses the CPU when the GPU has not finished.
+    /// Inputs: `samples`: interleaved multichannel samples within `REALTIME_CAPACITY_SAMPLES`.
+    /// Outputs / side effects: rewrites the samples on `Applied`; contents are undefined on
+    /// `Busy` / `Failed`.
+    /// Complexity: O(samples) time on the success path, O(samples) space (upload byte buffer).
+    pub fn process(&mut self, samples: &mut [f32]) -> GpuLimitOutcome {
         if samples.is_empty() {
-            return Ok(());
+            return GpuLimitOutcome::Applied;
         }
         if samples.len() > self.capacity_samples {
-            return Err("实时 GPU 缓冲超出上限".to_string());
+            return GpuLimitOutcome::Failed("实时 GPU 缓冲超出上限".to_string());
         }
-        let started = std::time::Instant::now();
+        // 上一块的结果还没回来：只做一次非阻塞轮询；已就绪就丢弃它并允许本块重新提交。
+        // The previous block has not returned yet: poll once without waiting; when it is done,
+        // discard it so this block may submit again.
+        if self.pending.is_some() {
+            let _ = self.device.poll(wgpu::PollType::Poll);
+            let finished = match self.pending.as_ref() {
+                Some(receiver) => receiver.try_recv(),
+                None => Err(std::sync::mpsc::TryRecvError::Empty),
+            };
+            match finished {
+                Ok(Ok(())) => {
+                    self.staging.unmap();
+                    self.pending = None;
+                    return GpuLimitOutcome::Busy;
+                }
+                Ok(Err(error)) => {
+                    self.staging.unmap();
+                    self.pending = None;
+                    return GpuLimitOutcome::Failed(format!("GPU 限幅回读失败: {error:?}"));
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => return GpuLimitOutcome::Busy,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.pending = None;
+                    return GpuLimitOutcome::Failed("GPU 限幅回读回调中断".to_string());
+                }
+            }
+        }
+
         self.upload.clear();
         for sample in samples.iter() {
             self.upload.extend_from_slice(&sample.to_le_bytes());
@@ -419,34 +445,32 @@ impl WgpuRealtimeLimiter {
             pass.dispatch_workgroups(groups.max(1), 1, 1);
         }
         encoder.copy_buffer_to_buffer(&self.storage, 0, &self.staging, 0, byte_len);
-        let submission = self.queue.submit(Some(encoder.finish()));
-        match self.device.poll(wgpu::PollType::Wait {
-            submission_index: Some(submission),
-            timeout: Some(timeout),
-        }) {
-            Ok(_) => {}
-            Err(wgpu::PollError::Timeout) => return Err("等待 GPU 限幅超时".to_string()),
-            Err(error) => return Err(format!("等待 GPU 完成失败: {error:?}")),
-        }
+        let _submission = self.queue.submit(Some(encoder.finish()));
+        let _ = self.device.poll(wgpu::PollType::Poll);
 
         let slice = self.staging.slice(0..byte_len);
-        let (tx, rx) = channel();
+        let (sender, receiver) = channel();
         slice.map_async(wgpu::MapMode::Read, move |result| {
-            let _ = tx.send(result);
+            let _ = sender.send(result);
         });
-        // 映射回调依赖一次 poll；此时计算与拷贝都已完成，正常只需极短时间。
-        // 使用剩余预算保证整块等待不超过 `timeout`。
-        // Mapping callbacks need a poll; compute and copy are already done, so this is normally
-        // extremely short. The remaining budget keeps the total wait inside `timeout`.
-        let remaining = timeout.saturating_sub(started.elapsed());
-        let _ = self.device.poll(wgpu::PollType::Wait {
-            submission_index: None,
-            timeout: Some(remaining),
-        });
-        match rx.try_recv() {
+        let _ = self.device.poll(wgpu::PollType::Poll);
+        match receiver.try_recv() {
             Ok(Ok(())) => {}
-            Ok(Err(error)) => return Err(format!("读取 GPU 结果失败: {error:?}")),
-            Err(_) => return Err("读取 GPU 结果超时".to_string()),
+            Ok(Err(error)) => {
+                self.pending = None;
+                return GpuLimitOutcome::Failed(format!("读取 GPU 结果失败: {error:?}"));
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                // 显卡还没算完：本块回退 CPU，结果晚到后直接丢弃，不等待。
+                // The GPU has not finished: fall back to the CPU for this block and discard the late
+                // result without waiting.
+                self.pending = Some(receiver);
+                return GpuLimitOutcome::Busy;
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.pending = None;
+                return GpuLimitOutcome::Failed("GPU 限幅回读回调中断".to_string());
+            }
         }
         {
             let data = slice.get_mapped_range();
@@ -458,7 +482,7 @@ impl WgpuRealtimeLimiter {
             }
         }
         self.staging.unmap();
-        Ok(())
+        GpuLimitOutcome::Applied
     }
 }
 

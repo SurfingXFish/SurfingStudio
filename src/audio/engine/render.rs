@@ -953,13 +953,11 @@ impl Engine {
                         }
                     }
                     let outcome = match self.gpu_realtime.as_mut() {
-                        Some(limiter) => {
-                            limiter.process(scratch, crate::audio::gpu::GPU_REALTIME_TIMEOUT)
-                        }
-                        None => Err("实时 GPU 限幅未初始化".to_string()),
+                        Some(limiter) => limiter.process(scratch),
+                        None => crate::audio::gpu::GpuLimitOutcome::Busy,
                     };
                     match outcome {
-                        Ok(()) => {
+                        crate::audio::gpu::GpuLimitOutcome::Applied => {
                             for frame in 0..frames {
                                 for channel in 0..master_count {
                                     master[channel][frame] =
@@ -968,7 +966,13 @@ impl Engine {
                             }
                             limited_by_gpu = true;
                         }
-                        Err(error) => gpu_error = Some(error),
+                        // 显卡没算完：本块用 CPU，保留实例；等待会直接变成听感上的延迟。
+                        // The GPU is not ready: use the CPU for this block and keep the instance;
+                        // waiting would turn into audible latency.
+                        crate::audio::gpu::GpuLimitOutcome::Busy => {}
+                        crate::audio::gpu::GpuLimitOutcome::Failed(error) => {
+                            gpu_error = Some(error)
+                        }
                     }
                 }
                 if !limited_by_gpu {
