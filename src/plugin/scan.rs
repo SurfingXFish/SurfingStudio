@@ -692,6 +692,11 @@ fn kind_from_category(category: &str, has_midi: bool) -> PluginKind {
     const EFFECT: &[&str] = &[
         "fx",
         "effect",
+        // ARA 专用的处理器（如 VOCALOID Bridge）在工厂里只标 `OnlyARA`，它是 1 in / 1 out 的
+        // 音频效果，必须归入效果器列表，否则用户在效果器选择窗里找不到它。
+        // ARA-only processors (VOCALOID Bridge) declare `OnlyARA`; they are 1-in/1-out audio
+        // effects, so they must be listed as effects or users cannot insert them.
+        "onlyara",
         "eq",
         "filter",
         "dynamics",

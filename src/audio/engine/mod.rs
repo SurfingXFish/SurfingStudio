@@ -375,10 +375,11 @@ impl EffectRuntime {
         gates: &[SynthEvent],
         out_l: &mut [f32],
         out_r: &mut [f32],
+        transport: Option<vst3_host::TransportPosition>,
     ) {
         match self {
             EffectRuntime::Plugin(plugin) => {
-                plugin.process(sample_rate, frames, input, gates, out_l, out_r, None)
+                plugin.process(sample_rate, frames, input, gates, out_l, out_r, transport)
             }
             EffectRuntime::Native(native) => match input {
                 Some((left, right)) => native.process(frames, left, right, out_l, out_r),
@@ -593,6 +594,38 @@ fn sync_ara_timeline(runtime: &mut PluginRuntime, track: &Track, bpm: f64, time_
     // Export the archive on the controller thread when needed: the plug-in's content-change
     // counter gates the actual call so this is not a large copy every frame.
     let _ = runtime.refresh_ara_archive();
+}
+
+/// 所属模块：audio::engine / ARA
+/// 功能：轨道使用 VOCALOID VSTi 但没有插入 VOCALOID Bridge 时记录一次提示。
+/// 输入：`track` 轨道。
+/// 输出/副作用：首次命中时写一条诊断日志；不影响音频。
+/// 复杂度：时间 O(效果器数)，空间 O(1)。
+///
+/// Module: audio::engine / ARA
+/// Purpose: Log a one-time hint when a track uses the VOCALOID VSTi without the VOCALOID Bridge.
+/// Inputs: `track`.
+/// Outputs / side effects: one diagnostic entry on the first hit; audio is unaffected.
+/// Complexity: O(effects) time and O(1) space.
+fn warn_vocaloid_bridge_missing(track: &Track) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    let instrument = track.instrument.key().to_lowercase();
+    if !instrument.contains("vocaloid") {
+        return;
+    }
+    let has_bridge = track.effects.iter().any(|effect| {
+        let key = effect.key().to_lowercase();
+        key.contains("vocaloidbridge") || key.contains("vocaloid bridge")
+    });
+    if has_bridge || WARNED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    crate::diag::warn(
+        "plugin.ara",
+        "ara.vocaloid_vsti_without_bridge",
+        &[("track", &track.name)],
+    );
 }
 
 impl TrackEngine {
@@ -812,6 +845,7 @@ impl TrackEngine {
                 }
             }
         }
+        warn_vocaloid_bridge_missing(track);
     }
 
     /// 所属模块：audio::engine / 轨道运行时

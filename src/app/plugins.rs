@@ -37,7 +37,7 @@ use std::path::Path;
 
 /// 插件缓存文件版本；结构不兼容时递增并丢弃旧缓存。
 /// Plugin cache file version; bump when the layout changes incompatibly and drop old caches.
-const PLUGIN_CACHE_VERSION: u32 = 1;
+const PLUGIN_CACHE_VERSION: u32 = 2;
 
 /// 内嵌编辑器超出卡片的容差（物理像素）：超过该值即认为插件无法缩进卡片，改用独立窗口。
 /// Tolerance (physical pixels) for an inline editor exceeding its card; beyond it the plugin is

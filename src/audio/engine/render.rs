@@ -828,6 +828,12 @@ impl Engine {
             // 关闭的效果器直接旁路：实例、参数与状态保留，重新启用后立即恢复处理。
             // Disabled effects are bypassed: the instance, parameters and state stay loaded, so
             // re-enabling resumes processing immediately.
+            let transport_samples =
+                (block_start * 60.0 / self.project.bpm.max(1.0) * sample_rate) as i64;
+            let transport = Some(vst3_host::TransportPosition {
+                samples: transport_samples,
+                quarter_notes: block_start,
+            });
             for (effect_index, effect) in runtime.effects.iter_mut().enumerate() {
                 if !track
                     .effects
@@ -847,6 +853,7 @@ impl Engine {
                     &[],
                     &mut wet_l,
                     &mut wet_r,
+                    transport,
                 );
                 std::mem::swap(&mut track_l, &mut wet_l);
                 std::mem::swap(&mut track_r, &mut wet_r);
@@ -937,6 +944,12 @@ impl Engine {
             .as_ref()
             .is_some_and(|effect| effect.enabled());
         if master_enabled {
+            let transport_samples =
+                (block_start * 60.0 / self.project.bpm.max(1.0) * sample_rate) as i64;
+            let transport = Some(vst3_host::TransportPosition {
+                samples: transport_samples,
+                quarter_notes: block_start,
+            });
             if let Some(effect) = &mut self.master_effect {
                 let mut master_wet_l = std::mem::take(&mut self.master_wet_scratch_l);
                 let mut master_wet_r = std::mem::take(&mut self.master_wet_scratch_r);
@@ -951,6 +964,7 @@ impl Engine {
                     &[],
                     &mut master_wet_l,
                     &mut master_wet_r,
+                    transport,
                 );
                 std::mem::swap(&mut master[0], &mut master_wet_l);
                 std::mem::swap(&mut master[1], &mut master_wet_r);
