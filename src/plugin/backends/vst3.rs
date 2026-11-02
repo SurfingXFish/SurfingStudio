@@ -194,5 +194,6 @@ pub(super) fn load(
         audio_buffers: None,
         pending_playing: None,
         pending_transport: None,
+        latency_samples: 0,
     }))
 }

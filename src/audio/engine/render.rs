@@ -691,6 +691,9 @@ impl Engine {
                 if runtime.notes_active || !runtime.live.is_empty() {
                     runtime.panic();
                 }
+                // 静音期间丢弃补偿延迟里的残留，取消静音时不会突然冒出旧音频。
+                // Drop audio left in the compensation line while muted so unmuting cannot replay it.
+                runtime.comp_delay.reset();
                 // 静音期间把事件游标推到块尾，取消静音时不会补发旧音符。
                 // Skip events while muted so unmuting never replays stale notes.
                 if advance {
@@ -823,6 +826,13 @@ impl Engine {
                 std::mem::swap(&mut track_l, &mut wet_l);
                 std::mem::swap(&mut track_r, &mut wet_r);
             }
+
+            // 延迟补偿：把本轨补到全工程最慢的一条链，开启 Pro-MB / Pro-DS 这类带前视的效果器
+            // 后整首歌仍然对齐（否则该轨会整体晚 15–20 ms，听起来就是“效果器带来延迟”）。
+            // Delay compensation: pad this track to the slowest chain so enabling look-ahead effects
+            // such as Pro-MB / Pro-DS keeps the song aligned (otherwise that track is 15–20 ms late,
+            // heard as "the effect added latency").
+            runtime.comp_delay.process(&mut track_l, &mut track_r);
 
             let lane_volume = track
                 .controllers

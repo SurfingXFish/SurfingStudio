@@ -44,6 +44,9 @@ pub struct Vst3Runtime {
     /// 尚未送达插件的走带位置：同上，避免定位被静默丢弃。
     /// Transport position not yet delivered: same as above, so a seek is never silently dropped.
     pub pending_transport: Option<vst3_host::TransportPosition>,
+    /// 插件上报的处理延迟（采样数）缓存；插件忙时沿用上一次的值。
+    /// Cached reported processing latency in samples; the last value is kept while the plugin is busy.
+    pub latency_samples: usize,
 }
 
 /// 单实例插件的可复用实例：关闭工程时不终止，下一个工程按路径取回同一实例，
@@ -182,6 +185,7 @@ impl PluginRuntime {
             audio_buffers: None,
             pending_playing: None,
             pending_transport: None,
+            latency_samples: 0,
         }))
     }
 }
@@ -575,6 +579,28 @@ impl PluginRuntime {
             let _ = plugin.set_transport_position(position);
             v.pending_transport = None;
         }
+    }
+
+    /// 所属模块：plugin / 运行时
+    /// 功能：返回插件上报的处理延迟（采样数），用于轨道延迟补偿。
+    /// 输入：`self`。
+    /// 输出/副作用：插件忙（音频线程正在处理）时返回上一次缓存值；VST2 与失败实例返回 0。
+    /// 复杂度：时间 O(1)，空间 O(1)。
+    ///
+    /// Module: plugin / runtime
+    /// Purpose: Return the reported processing latency in samples for track delay compensation.
+    /// Inputs: `self`.
+    /// Outputs / side effects: the last cached value while the audio thread is inside the plugin;
+    /// VST2 and failed runtimes report 0.
+    /// Complexity: O(1) time and space.
+    pub fn latency_samples(&mut self) -> usize {
+        let PluginRuntime::Vst3(v) = self else {
+            return 0;
+        };
+        if let Some(plugin) = lock_plugin(&v.plugin) {
+            v.latency_samples = plugin.latency_samples() as usize;
+        }
+        v.latency_samples
     }
 
     /// Poll plugin editors for parameter gestures made behind our back.

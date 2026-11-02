@@ -70,6 +70,10 @@ pub struct Engine {
     master_effect_key: Option<String>,
     plugins_sample_rate: f64,
     last_tempo: f64,
+    /// 上一次记录的“最慢链 / 主效果器”延迟（采样数），用于延迟日志去重。
+    /// Last recorded slowest-chain / master-effect latency in samples, used to de-duplicate the log.
+    last_max_latency: usize,
+    last_master_latency: usize,
     last_parameter_poll: Instant,
     /// 参数轮询游标：每次只检查一条轨道，避免一次扫描全部插件阻塞 UI。
     /// Parameter poll cursor: check one track per tick so scanning a project
@@ -196,6 +200,12 @@ struct TrackEngine {
     last_bend: Option<f32>,
     last_param_poll: Instant,
     last_full_param_poll: Instant,
+    /// 本条链（乐器 + 效果器）上报的总延迟，同步时重新计算。
+    /// Total latency reported by this chain (instrument + effects), recomputed on sync.
+    chain_latency: usize,
+    /// 延迟补偿：把本轨补到全工程最慢的一条链。
+    /// Delay compensation: pads this track to the slowest chain in the project.
+    comp_delay: CompDelay,
 }
 
 enum InstrumentRuntime {
@@ -205,6 +215,26 @@ enum InstrumentRuntime {
     Sample(SampledInstrument),
     Plugin(PluginRuntime),
     Failed(String),
+}
+
+impl InstrumentRuntime {
+    /// 所属模块：audio::engine / 乐器运行时
+    /// 功能：返回插件乐器上报的处理延迟（采样数）；内置乐器为 0。
+    /// 输入：`self`。
+    /// 输出/副作用：延迟采样数；插件忙时返回上一次缓存值。
+    /// 复杂度：时间 O(1)，空间 O(1)。
+    ///
+    /// Module: audio::engine / instrument runtime
+    /// Purpose: Reported latency of a plugin instrument in samples; `0` for built-in instruments.
+    /// Inputs: `self`.
+    /// Outputs / side effects: latency in samples; the last cached value while the plugin is busy.
+    /// Complexity: O(1) time and space.
+    fn latency_samples(&mut self) -> usize {
+        match self {
+            InstrumentRuntime::Plugin(plugin) => plugin.latency_samples(),
+            _ => 0,
+        }
+    }
 }
 
 /// 效果链运行时：VST 插件或内置原生效果器。
@@ -269,6 +299,24 @@ impl EffectRuntime {
     }
 
     /// 所属模块：audio::engine / 效果链运行时
+    /// 功能：返回插件上报的处理延迟（采样数）；内置效果为 0。
+    /// 输入：`self`。
+    /// 输出/副作用：延迟采样数；插件忙时返回上一次缓存值。
+    /// 复杂度：时间 O(1)，空间 O(1)。
+    ///
+    /// Module: audio::engine / effect runtime
+    /// Purpose: Reported processing latency in samples; `0` for native effects.
+    /// Inputs: `self`.
+    /// Outputs / side effects: latency in samples; the last cached value while the plugin is busy.
+    /// Complexity: O(1) time and space.
+    fn latency_samples(&mut self) -> usize {
+        match self {
+            EffectRuntime::Plugin(plugin) => plugin.latency_samples(),
+            EffectRuntime::Native(_) => 0,
+        }
+    }
+
+    /// 所属模块：audio::engine / 效果链运行时
     /// 功能：处理一个 block 的效果音频。
     /// 输入：
     /// - `sample_rate` / `frames`：采样率与本块帧数。
@@ -318,6 +366,148 @@ impl EffectRuntime {
     }
 }
 
+/// 轨道延迟补偿：按插件上报的延迟给轨道补一段延迟，使所有轨道对齐到最慢的一条。
+/// 没有补偿时，开启 Pro-MB（192 kHz 下 3840 采样 ≈ 20 ms）或 Pro-DS（2880 采样 ≈ 15 ms）
+/// 会让该轨道整体晚于其他轨道，听感就是“开启效果器后声音延迟”。
+/// Track delay compensation: pads a track by the latency its plugins report so every track aligns
+/// to the slowest chain. Without it, enabling Pro-MB (3840 samples ≈ 20 ms at 192 kHz) or Pro-DS
+/// (2880 samples ≈ 15 ms) shifts that track behind the others, heard as "enabling an effect adds
+/// latency".
+pub(super) struct CompDelay {
+    left: Vec<f32>,
+    right: Vec<f32>,
+    /// 环形缓冲写指针。
+    /// Ring-buffer write cursor.
+    write: usize,
+    /// 需要补偿的采样数；`0` 表示直通。
+    /// Samples to delay; `0` bypasses the line.
+    delay: usize,
+    /// 缓冲内是否还有未播放的旧内容（用于静音时一次性清零）。
+    /// Whether the line still holds unplayed audio (so muting can clear it once).
+    dirty: bool,
+}
+
+impl CompDelay {
+    fn new() -> Self {
+        Self {
+            left: Vec::new(),
+            right: Vec::new(),
+            write: 0,
+            delay: 0,
+            dirty: false,
+        }
+    }
+
+    /// 所属模块：audio::engine / 延迟补偿
+    /// 功能：设置补偿采样数；长度变化时才重新分配（只在同步线程调用）。
+    /// 输入：`samples`：需要补偿的采样数，`0` 表示直通。
+    /// 输出/副作用：可能重新分配缓冲区并清空；不修改其他轨道状态。
+    /// 复杂度：时间 O(采样数)（仅长度变化时），空间 O(采样数)。
+    ///
+    /// Module: audio::engine / delay compensation
+    /// Purpose: Set the compensation in samples; reallocates only when the length changes (sync
+    /// thread only).
+    /// Inputs: `samples`: samples to delay, `0` bypasses.
+    /// Outputs / side effects: may reallocate and clear the buffers; nothing else changes.
+    /// Complexity: O(samples) time only when the length changes, O(samples) space.
+    fn set(&mut self, samples: usize) {
+        if samples == 0 {
+            self.left.clear();
+            self.right.clear();
+            self.write = 0;
+            self.delay = 0;
+            self.dirty = false;
+            return;
+        }
+        let len = samples + 1;
+        if self.left.len() != len {
+            self.left.clear();
+            self.left.resize(len, 0.0);
+            self.right.clear();
+            self.right.resize(len, 0.0);
+            self.write = 0;
+            self.dirty = false;
+        }
+        self.delay = samples;
+    }
+
+    /// 所属模块：audio::engine / 延迟补偿
+    /// 功能：是否启用补偿。
+    /// 输入：`self`。
+    /// 输出/副作用：布尔值；不修改状态。
+    /// 复杂度：O(1)。
+    ///
+    /// Module: audio::engine / delay compensation
+    /// Purpose: Whether compensation is active.
+    /// Inputs: `self`.
+    /// Outputs / side effects: the boolean; no state change.
+    /// Complexity: O(1).
+    fn is_active(&self) -> bool {
+        self.delay > 0 && self.left.len() > self.delay
+    }
+
+    /// 所属模块：audio::engine / 延迟补偿
+    /// 功能：丢弃缓冲内残留的音频（暂停、定位、静音时调用）。
+    /// 输入：`self`。
+    /// 输出/副作用：清零左右缓冲并复位写指针；不改变补偿长度。
+    /// 复杂度：时间 O(采样数)（仅在确实有残留时）。
+    ///
+    /// Module: audio::engine / delay compensation
+    /// Purpose: Drop audio left in the line (called on pause, seek and mute).
+    /// Inputs: `self`.
+    /// Outputs / side effects: clears both buffers and resets the write cursor; the delay length is
+    /// unchanged.
+    /// Complexity: O(samples) time only when something is still buffered.
+    fn reset(&mut self) {
+        if self.dirty {
+            self.left.fill(0.0);
+            self.right.fill(0.0);
+            self.write = 0;
+            self.dirty = false;
+        }
+    }
+
+    /// 所属模块：audio::engine / 延迟补偿
+    /// 功能：把一对声道延迟固定采样数。
+    /// 输入：`left` / `right`：本块音频。
+    /// 输出/副作用：原地改写为延迟后的音频；推进写指针。
+    /// 复杂度：时间 O(帧数)，空间 O(1)。
+    ///
+    /// Module: audio::engine / delay compensation
+    /// Purpose: Delay a stereo pair by a fixed number of samples.
+    /// Inputs: `left` / `right`: this block's audio.
+    /// Outputs / side effects: rewrites the block in place with the delayed audio and advances the
+    /// write cursor.
+    /// Complexity: O(frames) time and O(1) space.
+    fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
+        if !self.is_active() {
+            return;
+        }
+        let len = self.left.len();
+        let delay = self.delay;
+        let mut write = self.write;
+        self.dirty = true;
+        for index in 0..left.len() {
+            let read = if write >= delay {
+                write - delay
+            } else {
+                write + len - delay
+            };
+            let out_l = self.left[read];
+            let out_r = self.right[read];
+            self.left[write] = left[index];
+            self.right[write] = right[index];
+            left[index] = out_l;
+            right[index] = out_r;
+            write += 1;
+            if write == len {
+                write = 0;
+            }
+        }
+        self.write = write;
+    }
+}
+
 impl TrackEngine {
     fn new(id: TrackId) -> Self {
         Self {
@@ -339,6 +529,8 @@ impl TrackEngine {
             last_bend: None,
             last_param_poll: Instant::now(),
             last_full_param_poll: Instant::now(),
+            chain_latency: 0,
+            comp_delay: CompDelay::new(),
         }
     }
 
@@ -625,6 +817,10 @@ impl TrackEngine {
         for effect in &mut self.effects {
             effect.panic();
         }
+        // 暂停/定位时补偿延迟里还留着上一段的音频，必须丢弃，否则恢复播放会先冒出旧声音。
+        // Audio left in the compensation line must be dropped on pause/seek, otherwise resuming
+        // replays the previous position.
+        self.comp_delay.reset();
         self.live.clear();
         self.notes_active = false;
     }
@@ -709,6 +905,8 @@ impl Engine {
             master_effect_key: None,
             plugins_sample_rate: 0.0,
             last_tempo: 0.0,
+            last_max_latency: 0,
+            last_master_latency: 0,
             last_parameter_poll: Instant::now(),
             parameter_poll_cursor: 0,
             playing: false,
@@ -1070,6 +1268,20 @@ impl Engine {
                 &mut warnings,
             );
             runtime.has_audio_clips = track.has_audio_clips();
+            // 插件上报的处理延迟：乐器加全部“启用中”的效果器（停用的效果器被旁路，不产生延迟）。
+            // Reported processing latency: the instrument plus every enabled effect (bypassed
+            // effects add no latency).
+            let mut chain_latency = runtime.instrument.latency_samples();
+            for (index, effect) in runtime.effects.iter_mut().enumerate() {
+                if track
+                    .effects
+                    .get(index)
+                    .is_some_and(|reference| reference.enabled())
+                {
+                    chain_latency = chain_latency.saturating_add(effect.latency_samples());
+                }
+            }
+            runtime.chain_latency = chain_latency;
             // 只有片段内容/时间变化时才重建事件表，控制器或插件编辑不会重复排序。
             // Rebuild the event table only when clip content/timing changes; controller and
             // plugin edits do not re-sort notes.
@@ -1128,6 +1340,30 @@ impl Engine {
             native.set_settings(reference.settings.clone());
         }
 
+        // 延迟补偿：把所有轨道对齐到最慢的一条链。没有这一步时，开启 Pro-MB（192 kHz 下
+        // 3840 采样 ≈ 20 ms）或 Pro-DS（2880 采样 ≈ 15 ms）会让该轨整体晚于其他轨道。
+        // 主效果器的延迟对所有轨道相同，无法靠轨道补偿消除，只记录到日志。
+        // Delay compensation: align every track to the slowest chain. Without it, enabling Pro-MB
+        // (3840 samples ≈ 20 ms at 192 kHz) or Pro-DS (2880 samples ≈ 15 ms) shifts that track
+        // behind the rest. Master-effect latency applies to everything equally and cannot be
+        // compensated per track, so it is only reported.
+        let max_latency = self
+            .tracks
+            .iter()
+            .map(|track| track.chain_latency)
+            .max()
+            .unwrap_or(0);
+        for track in &mut self.tracks {
+            let compensation = max_latency.saturating_sub(track.chain_latency);
+            track.comp_delay.set(compensation);
+        }
+        let master_latency = self
+            .master_effect
+            .as_mut()
+            .map(EffectRuntime::latency_samples)
+            .unwrap_or(0);
+        self.report_plugin_latency(max_latency, master_latency, project);
+
         if tempo_changed {
             for track in &mut self.tracks {
                 if let Some(plugin) = track.plugin_mut() {
@@ -1167,6 +1403,62 @@ impl Engine {
             self.plugin_transport_seek = true;
         }
         (warnings, budget.pending)
+    }
+
+    /// 所属模块：audio::engine / 延迟补偿
+    /// 功能：插件上报的延迟变化时写一条 `engine.latency` 记录，便于定位“开启效果器后变晚”。
+    /// 输入：
+    /// - `max_latency`：全工程最慢链的延迟（采样数）。
+    /// - `master_latency`：主效果器的延迟（采样数）。
+    /// - `project`：用于取出最慢轨道的名字。
+    /// 输出/副作用：延迟变化时写日志；不修改引擎状态（只更新记录用的缓存）。
+    /// 复杂度：时间 O(轨道数)，空间 O(1)。
+    ///
+    /// Module: audio::engine / delay compensation
+    /// Purpose: Log one `engine.latency` record whenever the reported plugin latency changes, so
+    /// "sounds late after enabling an effect" can be traced.
+    /// Inputs:
+    /// - `max_latency`: latency of the slowest chain in the project, in samples.
+    /// - `master_latency`: master-effect latency in samples.
+    /// - `project`: used for the slowest track's name.
+    /// Outputs / side effects: writes a log record when the values change; no engine state changes.
+    /// Complexity: O(tracks) time and O(1) space.
+    fn report_plugin_latency(
+        &mut self,
+        max_latency: usize,
+        master_latency: usize,
+        project: &Project,
+    ) {
+        if max_latency == self.last_max_latency && master_latency == self.last_master_latency {
+            return;
+        }
+        self.last_max_latency = max_latency;
+        self.last_master_latency = master_latency;
+        if max_latency == 0 && master_latency == 0 {
+            return;
+        }
+        let rate = self.sample_rate.max(1.0);
+        let samples_text = max_latency.to_string();
+        let ms_text = (max_latency as f64 / rate * 1_000.0).round().to_string();
+        let master_ms_text = (master_latency as f64 / rate * 1_000.0).round().to_string();
+        let slowest = self
+            .tracks
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, track)| track.chain_latency)
+            .and_then(|(index, _)| project.tracks.get(index))
+            .map(|track| track.name.clone())
+            .unwrap_or_default();
+        crate::diag::info(
+            "app.engine",
+            "engine.latency",
+            &[
+                ("comp_samples", &samples_text),
+                ("comp_ms", &ms_text),
+                ("master_ms", &master_ms_text),
+                ("slowest", &slowest),
+            ],
+        );
     }
 
     /// 所属模块：audio::engine / 传输
@@ -1429,6 +1721,46 @@ pub fn format_position(beats: f64, beats_per_bar: f64) -> String {
 mod tests {
     use super::*;
     use crate::core::model::Clip;
+
+    /// 覆盖：补偿延迟把音频整体后移固定采样数，暂停/静音清空后不再输出旧音频。
+    /// Covers: the compensation line shifts audio by a fixed number of samples and drops leftovers
+    /// once reset.
+    #[test]
+    fn compensation_delay_shifts_audio_and_resets() {
+        let mut delay = CompDelay::new();
+        delay.set(3);
+        let mut left = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let mut right = left.clone();
+        delay.process(&mut left, &mut right);
+        assert_eq!(&left[..3], &[0.0, 0.0, 0.0]);
+        assert_eq!(&left[3..], &[1.0, 2.0, 3.0]);
+        assert_eq!(left, right, "both channels must be delayed identically");
+
+        let mut next = vec![7.0, 8.0, 9.0];
+        let mut next_r = next.clone();
+        delay.process(&mut next, &mut next_r);
+        assert_eq!(next, vec![4.0, 5.0, 6.0]);
+
+        delay.reset();
+        let mut after = vec![1.0, 1.0, 1.0];
+        let mut after_r = after.clone();
+        delay.process(&mut after, &mut after_r);
+        assert_eq!(after, vec![0.0, 0.0, 0.0]);
+    }
+
+    /// 覆盖：补偿为 0 时缓冲直通，不改变音频。
+    /// Covers: zero compensation bypasses the line and leaves the audio untouched.
+    #[test]
+    fn compensation_delay_with_zero_latency_is_transparent() {
+        let mut delay = CompDelay::new();
+        delay.set(0);
+        let mut left = vec![0.25, -0.5, 0.75];
+        let mut right = vec![-0.25, 0.5, -0.75];
+        let expected = left.clone();
+        delay.process(&mut left, &mut right);
+        assert_eq!(left, expected);
+        assert!(!delay.is_active());
+    }
 
     /// 覆盖：Demo 工程可离线渲染出可听音频。
     /// Covers: the demo project renders audible audio offline.
