@@ -3420,6 +3420,7 @@ dependencies = [
  "serde_json",
  "symphonia",
  "vst",
+ "vst3",
  "vst3-host",
  "wgpu",
  "winapi",

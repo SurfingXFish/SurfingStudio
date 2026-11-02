@@ -53,6 +53,9 @@ pub struct Vst3Runtime {
     /// 已重试次数；超过上限后放弃，避免每秒把几十 KB 状态塞给插件。
     /// Retry count; after the cap the retry stops so tens of KB are not pushed every second.
     pub state_retries: u32,
+    /// 已绑定的 ARA 文档会话；插件不支持 ARA 时为 `None`。
+    /// Bound ARA document session; `None` when the plug-in does not support ARA.
+    pub ara: Option<crate::plugin::ara::AraSession>,
 }
 
 /// 单实例插件的可复用实例：关闭工程时不终止，下一个工程按路径取回同一实例，
@@ -112,6 +115,18 @@ pub(crate) fn stash_reusable(runtime: &PluginRuntime) {
         return;
     };
     if !is_single_instance_name(&v.name) {
+        return;
+    }
+    // ARA 文档控制器与插件实例绑定在一起；保留实例却不保留文档会让下次绑定失败，
+    // 因此 ARA 插件不做跨工程复用（按普通插件卸载）。
+    // An ARA document controller is tied to the instance; keeping the instance without its
+    // document would break the next binding, so ARA plug-ins are not reused across projects.
+    if v.ara.is_some() {
+        crate::diag::info(
+            "plugin.runtime",
+            "plugin.reuse",
+            &[("phase", "skip_ara"), ("name", &v.name)],
+        );
         return;
     }
     {
@@ -194,6 +209,7 @@ impl PluginRuntime {
             latency_samples: 0,
             pending_state: None,
             state_retries: 0,
+            ara: None,
         }))
     }
 }
@@ -220,6 +236,50 @@ pub enum PluginRuntime {
 }
 
 impl PluginRuntime {
+    /// 所属模块：plugin / 统一运行时 / ARA
+    /// 功能：把 ARA 播放区域更新到工程时间范围（秒）；非 ARA 插件为空操作。
+    /// 输入：`start` 起始秒、`duration` 时长秒。
+    /// 输出/副作用：更新插件侧 ARA 模型；失败时返回中文错误。
+    /// 复杂度：时间 O(1)（未变化时），空间 O(1)。
+    ///
+    /// Module: plugin / unified runtime / ARA
+    /// Purpose: Move the ARA playback region to a project time range (seconds); a no-op for
+    /// non-ARA plug-ins.
+    /// Inputs: `start`, `duration`.
+    /// Outputs / side effects: updates the plug-in's ARA model; errors carry Chinese context.
+    /// Complexity: O(1) time when unchanged and O(1) space.
+    pub fn set_ara_timeline(&mut self, start: f64, duration: f64) -> Result<(), String> {
+        match self {
+            PluginRuntime::Vst3(v) => match v.ara.as_mut() {
+                Some(session) => session.set_timeline(start, duration),
+                None => Ok(()),
+            },
+            _ => Ok(()),
+        }
+    }
+
+    /// 所属模块：plugin / 统一运行时 / ARA
+    /// 功能：把工程速度与拍号同步给 ARA 音乐上下文；未变化或非 ARA 插件为空操作。
+    /// 输入：`bpm` 速度、`time_sig` 拍号。
+    /// 输出/副作用：更新插件侧音乐上下文内容；失败时返回中文错误。
+    /// 复杂度：时间 O(1)（未变化时），空间 O(1)。
+    ///
+    /// Module: plugin / unified runtime / ARA
+    /// Purpose: Push project tempo and time signature into the ARA musical context; a no-op
+    /// when unchanged or for non-ARA plug-ins.
+    /// Inputs: `bpm`, `time_sig`.
+    /// Outputs / side effects: updates the plug-in's musical context; errors carry Chinese context.
+    /// Complexity: O(1) time when unchanged and O(1) space.
+    pub fn set_ara_tempo(&mut self, bpm: f64, time_sig: (u8, u8)) -> Result<(), String> {
+        match self {
+            PluginRuntime::Vst3(v) => match v.ara.as_mut() {
+                Some(session) => session.set_tempo(bpm, time_sig),
+                None => Ok(()),
+            },
+            _ => Ok(()),
+        }
+    }
+
     pub fn display_name(&self) -> &str {
         match self {
             PluginRuntime::Vst3(v) => &v.name,

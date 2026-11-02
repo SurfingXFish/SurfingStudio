@@ -1248,15 +1248,44 @@ impl PluginImpl {
 
     /// Load a VST3 plugin from the given path
     pub fn load(path: &std::path::Path) -> Result<Self> {
-        Self::load_with_class(path, None)
+        Self::load_with_class(path, None, false, None)
+    }
+
+    /// Load a VST3 plugin without activating it yet (ARA binding needs this).
+    pub fn load_deferred(path: &std::path::Path, defer_activation: bool) -> Result<Self> {
+        Self::load_with_class(path, None, defer_activation, None)
     }
 
     /// Load a specific current or moduleinfo-retired audio class from a VST3 bundle.
     pub fn load_class(path: &std::path::Path, requested_class_id: &str) -> Result<Self> {
-        Self::load_with_class(path, Some(requested_class_id))
+        Self::load_with_class(path, Some(requested_class_id), false, None)
     }
 
-    fn load_with_class(path: &std::path::Path, requested_class_id: Option<&str>) -> Result<Self> {
+    /// Load a specific class without activating it yet (ARA binding needs this).
+    pub fn load_class_deferred(
+        path: &std::path::Path,
+        requested_class_id: &str,
+        defer_activation: bool,
+    ) -> Result<Self> {
+        Self::load_with_class(path, Some(requested_class_id), defer_activation, None)
+    }
+
+    /// Load with a component-ready hook, which runs before any activation/state work.
+    pub fn load_with_hook(
+        path: &std::path::Path,
+        requested_class_id: Option<&str>,
+        defer_activation: bool,
+        hook: Option<std::sync::Arc<crate::plugin::ComponentReadyHook>>,
+    ) -> Result<Self> {
+        Self::load_with_class(path, requested_class_id, defer_activation, hook)
+    }
+
+    fn load_with_class(
+        path: &std::path::Path,
+        requested_class_id: Option<&str>,
+        defer_activation: bool,
+        hook: Option<std::sync::Arc<crate::plugin::ComponentReadyHook>>,
+    ) -> Result<Self> {
         let requested_class_id = requested_class_id
             .map(|requested| -> Result<String> {
                 crate::internal::utils::parse_class_uid(requested).ok_or_else(|| {
@@ -1385,13 +1414,6 @@ impl PluginImpl {
             // module unloads. The guard does that until the finished `PluginImpl` takes over.
             let mut initialized = InitializedComponent::new(component.clone());
 
-            // VST3 3.7 requires hosts to query this after initialize and before activation.
-            // Older processors do not expose it; `None` selects the safe legacy context.
-            let process_context_requirements = component
-                .cast::<IProcessContextRequirements>()
-                .map(|requirements| requirements.getProcessContextRequirements());
-            let prefetchable_support = Self::query_prefetchable_support(&component);
-
             // Establish the component's declared default bus state while it is inactive.
             log::debug!("Step 6: Activating default buses...");
             let bus_activation = Self::activate_default_buses(&component)?;
@@ -1402,8 +1424,28 @@ impl PluginImpl {
             let processor = component.cast::<IAudioProcessor>().ok_or_else(|| {
                 Error::InterfaceError("Component does not implement IAudioProcessor".to_string())
             })?;
-            let sample_size = Self::select_sample_size(&processor)?;
             log::debug!("IAudioProcessor interface obtained");
+
+            // 外围协议（ARA）必须在任何 setState / setActive / getProcessContextRequirements /
+            // 编辑器创建之前完成绑定，因此钩子放在这里。
+            // Companion protocols (ARA) must bind before any setState / setActive /
+            // getProcessContextRequirements / editor creation, so the hook runs here.
+            if let Some(hook) = hook.as_ref() {
+                hook(
+                    factory.as_ptr() as *mut std::ffi::c_void,
+                    component.as_ptr() as *mut std::ffi::c_void,
+                    processor.as_ptr() as *mut std::ffi::c_void,
+                )
+                .map_err(Error::PluginLoadFailed)?;
+            }
+
+            // VST3 3.7 requires hosts to query this after initialize and before activation.
+            // Older processors do not expose it; `None` selects the safe legacy context.
+            let process_context_requirements = component
+                .cast::<IProcessContextRequirements>()
+                .map(|requirements| requirements.getProcessContextRequirements());
+            let prefetchable_support = Self::query_prefetchable_support(&component);
+            let sample_size = Self::select_sample_size(&processor)?;
 
             // Create component handler for parameter change notifications
             log::debug!("Step 8: Creating component handler...");
@@ -1625,6 +1667,11 @@ impl PluginImpl {
             // failure there.
             if let Err(e) = plugin.setup_processing() {
                 log::warn!("setupProcessing failed at load ({e}); deferring to start_processing");
+            } else if defer_activation {
+                // 宿主（例如 ARA）需要在首次 setActive 之前完成绑定；激活留给 start_processing。
+                // The host (ARA, for example) must finish binding before the first setActive, so
+                // activation is left to start_processing.
+                log::info!("Component activation deferred to start_processing");
             } else if let Err(e) = plugin.activate() {
                 log::warn!(
                     "Component activation failed at load ({e}); deferring to start_processing"
@@ -2464,6 +2511,15 @@ impl PluginImpl {
 }
 
 impl PluginInternal for PluginImpl {
+    fn raw_handles(&self) -> Option<crate::plugin::RawPluginHandles> {
+        let factory = self._module.get_factory().ok()?;
+        Some(crate::plugin::RawPluginHandles {
+            factory: factory as *mut std::ffi::c_void,
+            component: self.component.as_ptr() as *mut std::ffi::c_void,
+            processor: self.processor.as_ptr() as *mut std::ffi::c_void,
+        })
+    }
+
     fn shutdown_component(&mut self) -> Result<()> {
         if self.terminated {
             return Ok(());

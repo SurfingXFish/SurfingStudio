@@ -539,6 +539,40 @@ impl CompDelay {
     }
 }
 
+/// 所属模块：audio::engine / ARA
+/// 功能：由轨道片段计算 ARA 播放区域的工程时间范围（秒）。
+/// 输入：`track` 轨道、`bpm` 当前速度。
+/// 输出/副作用：返回（起始秒、时长秒）；没有片段时用 0..4 拍。
+/// 复杂度：时间 O(片段数)，空间 O(1)。
+///
+/// Module: audio::engine / ARA
+/// Purpose: Compute the ARA playback region's project time range (seconds) from a track's clips.
+/// Inputs: `track`, `bpm`.
+/// Outputs / side effects: (start seconds, duration seconds); 0..4 beats when the track is empty.
+/// Complexity: O(clips) time and O(1) space.
+fn ara_span_seconds(track: &Track, bpm: f64) -> (f64, f64) {
+    let mut start = f64::INFINITY;
+    let mut end = f64::NEG_INFINITY;
+    for clip in &track.clips {
+        start = start.min(clip.start);
+        end = end.max(clip.end());
+    }
+    if !start.is_finite() || end <= start {
+        start = 0.0;
+        end = 4.0;
+    }
+    let start = start.max(0.0);
+    let seconds_per_beat = if bpm.is_finite() && bpm > 0.0 {
+        60.0 / bpm
+    } else {
+        0.5
+    };
+    (
+        start * seconds_per_beat,
+        ((end - start) * seconds_per_beat).max(0.5),
+    )
+}
+
 impl TrackEngine {
     fn new(id: TrackId) -> Self {
         Self {
@@ -696,6 +730,13 @@ impl TrackEngine {
                             } else if let Some(program) = pref.program {
                                 runtime.select_program(program);
                             }
+                            // ARA 插件的播放区域与速度跟随工程内容。
+                            // ARA plug-ins follow the project's timeline and tempo.
+                            let (ara_start, ara_length) = ara_span_seconds(track, bpm);
+                            if let Err(error) = runtime.set_ara_timeline(ara_start, ara_length) {
+                                warnings.push(format!("{}: {}", track.name, error));
+                            }
+                            let _ = runtime.set_ara_tempo(bpm, time_sig);
                             span.end(&[("status", "ok")]);
                             InstrumentRuntime::Plugin(runtime)
                         }
@@ -727,6 +768,18 @@ impl TrackEngine {
                     sample.set_settings(reference.settings.clone());
                 }
                 _ => {}
+            }
+            // 已加载的插件乐器：每帧同步 ARA 时间线/速度，内部只在变化时调用插件。
+            // Already-loaded plugin instruments: sync the ARA timeline/tempo each pass; the
+            // runtime only calls the plug-in when something actually changed.
+            if let (InstrumentRuntime::Plugin(runtime), InstrumentRef::Plugin(_)) =
+                (&mut self.instrument, &track.instrument)
+            {
+                let (ara_start, ara_length) = ara_span_seconds(track, bpm);
+                let _ = runtime.set_ara_tempo(bpm, time_sig);
+                if let Err(error) = runtime.set_ara_timeline(ara_start, ara_length) {
+                    warnings.push(format!("{}: {}", track.name, error));
+                }
             }
         }
     }

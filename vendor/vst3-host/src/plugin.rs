@@ -735,6 +735,41 @@ pub struct Plugin {
     pub(crate) internal: Option<Box<dyn PluginInternal>>,
 }
 
+/// 插件内部 VST3 对象的原始指针（宿主扩展用，例如 ARA）。
+/// Raw pointers of the plugin's VST3 objects, for host extensions such as ARA.
+///
+/// 指针只在插件实例存活期间有效；调用方负责 `addRef` / `release` 以及线程约束。
+/// The pointers are valid only while the plugin instance is alive; the caller owns any
+/// `addRef` / `release` and must honour the VST3 threading rules.
+#[derive(Clone, Copy, Debug)]
+pub struct RawPluginHandles {
+    /// `IPluginFactory`（模块级单例，借用）。
+    /// `IPluginFactory` (module-wide singleton, borrowed).
+    pub factory: *mut std::ffi::c_void,
+    /// `IComponent`（插件的组件对象）。
+    /// `IComponent` (the plugin's component object).
+    pub component: *mut std::ffi::c_void,
+    /// `IAudioProcessor`（同一组件的处理器接口）。
+    /// `IAudioProcessor` (processor interface of the same component).
+    pub processor: *mut std::ffi::c_void,
+}
+
+/// 组件就绪钩子：在 `IComponent::initialize` 之后、任何 `setActive` / `setState` /
+/// `getProcessContextRequirements` / 编辑器创建之前调用，供 ARA 之类的外围协议完成绑定。
+/// Component-ready hook: called after `IComponent::initialize` and before any `setActive` /
+/// `setState` / `getProcessContextRequirements` / editor creation, so companion protocols such
+/// as ARA can bind in time.
+///
+/// 参数依次为 `IPluginFactory`、`IComponent`、`IAudioProcessor` 的原始指针。
+/// The parameters are the raw `IPluginFactory`, `IComponent` and `IAudioProcessor` pointers.
+pub type ComponentReadyHook = dyn Fn(
+        *mut std::ffi::c_void,
+        *mut std::ffi::c_void,
+        *mut std::ffi::c_void,
+    ) -> std::result::Result<(), String>
+    + Send
+    + Sync;
+
 /// Project position supplied to a plugin, independent of the current tempo.
 /// Negative positions support preroll. `quarter_notes` must be finite.
 #[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -747,6 +782,11 @@ pub struct TransportPosition {
 
 // Internal trait for hiding implementation details
 pub(crate) trait PluginInternal: Send {
+    /// 原始 VST3 对象指针；进程隔离或非本地实现返回 `None`。
+    /// Raw VST3 object pointers; `None` for process isolation or non-local implementations.
+    fn raw_handles(&self) -> Option<RawPluginHandles> {
+        None
+    }
     fn midi_controller_assignments(
         &self,
         _direction: crate::audio::BusDirection,
@@ -1205,6 +1245,15 @@ impl Plugin {
     /// Get plugin information
     pub fn info(&self) -> &PluginInfo {
         &self.info
+    }
+
+    /// 返回插件的原始 VST3 对象指针（宿主扩展用）。
+    /// Return the plugin's raw VST3 object pointers (for host extensions).
+    ///
+    /// 进程隔离模式下没有本地对象，返回 `None`。
+    /// Returns `None` under process isolation, where no local objects exist.
+    pub fn raw_handles(&self) -> Option<RawPluginHandles> {
+        self.internal.as_ref()?.raw_handles()
     }
 
     /// Current/retired class-id replacement mappings advertised by this plug-in.

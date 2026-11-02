@@ -24,6 +24,7 @@
 //! - `CatalogEntry` / `lookup_catalog` / `list_plugin_files` / `scan_vst3_paths`: catalog and
 //!   incremental-scan helpers.
 
+pub mod ara;
 mod backend;
 mod backends;
 mod catalog;

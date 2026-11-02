@@ -45,6 +45,9 @@ symphonia = { version = "0.6", default-features = false, features = [
     "wav",
 ] }
 vst3-host = { version = "0.10", default-features = false, features = ["egui-widgets"] }
+# ARA2 宿主端需要直接查询 VST3 工厂 / 组件接口（IMainFactory、IPlugInEntryPoint）。
+# ARA2 host support queries VST3 factory/component interfaces directly.
+vst3 = "0.3"
 raw-window-handle = "0.6"
 vst = "0.4"
 rmp-serde = "1.3.1"
