@@ -270,6 +270,13 @@ pub struct AraSession {
     extension: *const AraPlugInExtensionInstance,
     bound_roles: i32,
     controller_thread: ThreadId,
+    /// 最近一次成功导出的 ARA 归档（工程保存时直接取这里，避免在保存线程调用插件）。
+    /// Last successfully exported ARA archive (project save reads this instead of calling the
+    /// plug-in from the saving thread).
+    archive_cache: Mutex<Vec<u8>>,
+    /// 导出归档时对应的「内容变更次数」，相同则跳过重复导出。
+    /// Content-change counter the cached archive corresponds to; equal means no re-export.
+    last_captured_change: AtomicU64,
 }
 
 /// 会话持有的 C 字符串。
@@ -704,28 +711,70 @@ unsafe extern "C" fn cb_destroy_audio_reader(_controller: AraHostRef, reader: Ar
     }
 }
 
-unsafe extern "C" fn cb_get_archive_size(_controller: AraHostRef, _reader: AraHostRef) -> AraSize {
-    0
+/// 宿主侧 ARA 归档写入器：插件通过回调把字节流写入这里。
+/// Host-side ARA archive writer: the plug-in pushes its byte stream through the callbacks.
+struct ArchiveWriter {
+    data: Vec<u8>,
+}
+
+/// 宿主侧 ARA 归档读取器：插件从已保存的字节流读取。
+/// Host-side ARA archive reader: the plug-in reads back a saved byte stream.
+struct ArchiveReader {
+    data: Vec<u8>,
+}
+
+unsafe extern "C" fn cb_get_archive_size(_controller: AraHostRef, reader: AraHostRef) -> AraSize {
+    if reader.is_null() {
+        return 0;
+    }
+    (*(reader as *const ArchiveReader)).data.len()
 }
 
 unsafe extern "C" fn cb_read_bytes_from_archive(
     _controller: AraHostRef,
-    _reader: AraHostRef,
-    _position: AraSize,
-    _length: AraSize,
-    _buffer: *mut u8,
+    reader: AraHostRef,
+    position: AraSize,
+    length: AraSize,
+    buffer: *mut u8,
 ) -> AraBool {
-    ARA_FALSE
+    if reader.is_null() || buffer.is_null() {
+        return ARA_FALSE;
+    }
+    let reader = &*(reader as *const ArchiveReader);
+    let Some(end) = position.checked_add(length) else {
+        return ARA_FALSE;
+    };
+    if end > reader.data.len() {
+        return ARA_FALSE;
+    }
+    std::ptr::copy_nonoverlapping(reader.data.as_ptr().add(position), buffer, length);
+    ARA_TRUE
 }
 
 unsafe extern "C" fn cb_write_bytes_to_archive(
     _controller: AraHostRef,
-    _writer: AraHostRef,
-    _position: AraSize,
-    _length: AraSize,
-    _buffer: *const u8,
+    writer: AraHostRef,
+    position: AraSize,
+    length: AraSize,
+    buffer: *const u8,
 ) -> AraBool {
-    ARA_FALSE
+    if writer.is_null() {
+        return ARA_FALSE;
+    }
+    let writer = &mut *(writer as *mut ArchiveWriter);
+    let Some(end) = position.checked_add(length) else {
+        return ARA_FALSE;
+    };
+    if end > writer.data.len() {
+        writer.data.resize(end, 0);
+    }
+    if length > 0 {
+        if buffer.is_null() {
+            return ARA_FALSE;
+        }
+        std::ptr::copy_nonoverlapping(buffer, writer.data.as_mut_ptr().add(position), length);
+    }
+    ARA_TRUE
 }
 
 unsafe extern "C" fn cb_archiving_progress(_controller: AraHostRef, value: f32) {
@@ -1152,6 +1201,8 @@ impl AraSession {
             extension: std::ptr::null(),
             bound_roles: 0,
             controller_thread: std::thread::current().id(),
+            archive_cache: Mutex::new(Vec::new()),
+            last_captured_change: AtomicU64::new(u64::MAX),
         };
 
         // 所有模型图编辑必须包在 beginEditing()/endEditing() 之间。
@@ -1248,6 +1299,110 @@ impl AraSession {
     /// Complexity: O(1) time and space.
     pub fn content_change_count(&self) -> u64 {
         self.host.content_changes.load(Ordering::Relaxed)
+    }
+
+    /// 所属模块：plugin / ARA2 宿主
+    /// 功能：把插件侧 ARA 文档导出为归档字节，并更新缓存。
+    /// 输入：`self`。
+    /// 输出/副作用：调用 `storeObjectsToArchive` 写入内存缓冲；内容未变化时直接复用缓存。
+    /// 只能在创建文档的线程调用。
+    /// 复杂度：时间 O(归档大小)，空间 O(归档大小)。
+    ///
+    /// Module: plugin / ARA2 host
+    /// Purpose: Export the plug-in-side ARA document into archive bytes and refresh the cache.
+    /// Inputs: `self`.
+    /// Outputs / side effects: calls `storeObjectsToArchive` into memory; reuses the cache when
+    /// content did not change. Must run on the document controller thread.
+    /// Complexity: O(archive size) time and space.
+    pub fn refresh_archive(&self) -> Result<(), String> {
+        self.ensure_controller_thread("refresh_archive")?;
+        let changed = self.host.content_changes.load(Ordering::Relaxed);
+        let already = self.last_captured_change.load(Ordering::Relaxed);
+        let cache_empty = self
+            .archive_cache
+            .lock()
+            .map(|cache| cache.is_empty())
+            .unwrap_or(true);
+        if changed == already && !cache_empty {
+            return Ok(());
+        }
+        let dc = unsafe { &*self.controller };
+        let Some(store) = dc.store_objects_to_archive else {
+            return Err("插件未提供 storeObjectsToArchive".to_string());
+        };
+        let mut writer = Box::new(ArchiveWriter { data: Vec::new() });
+        let writer_ref = (&mut *writer) as *mut ArchiveWriter as AraHostRef;
+        let ok = unsafe { store(self.controller_ref, writer_ref, std::ptr::null()) };
+        if ok == 0 {
+            return Err("插件导出 ARA 归档失败".to_string());
+        }
+        if let Ok(mut cache) = self.archive_cache.lock() {
+            *cache = writer.data;
+        }
+        self.last_captured_change.store(changed, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// 所属模块：plugin / ARA2 宿主
+    /// 功能：返回缓存的 ARA 归档（可为空）。
+    /// 输入：`self`。
+    /// 输出/副作用：返回归档副本；不调用插件。
+    /// 复杂度：时间 O(归档大小)，空间 O(归档大小)。
+    ///
+    /// Module: plugin / ARA2 host
+    /// Purpose: Return the cached ARA archive (may be empty).
+    /// Inputs: `self`.
+    /// Outputs / side effects: a copy of the archive; no plug-in calls.
+    /// Complexity: O(archive size) time and space.
+    pub fn archive_snapshot(&self) -> Vec<u8> {
+        self.archive_cache
+            .lock()
+            .map(|cache| cache.clone())
+            .unwrap_or_default()
+    }
+
+    /// 所属模块：plugin / ARA2 宿主
+    /// 功能：从归档字节恢复插件侧编辑状态。
+    /// 输入：`bytes` 之前保存的 ARA 归档。
+    /// 输出/副作用：`beginEditing` → `restoreObjectsFromArchive` → `endEditing`；空归档为空操作。
+    /// 只能在创建文档的线程、且绑定完成之后调用。
+    /// 复杂度：时间 O(归档大小)，空间 O(归档大小)。
+    ///
+    /// Module: plugin / ARA2 host
+    /// Purpose: Restore the plug-in-side edit state from archived bytes.
+    /// Inputs: `bytes` — a previously saved ARA archive.
+    /// Outputs / side effects: `beginEditing` → `restoreObjectsFromArchive` → `endEditing`; an
+    /// empty archive is a no-op. Must run on the document controller thread after binding.
+    /// Complexity: O(archive size) time and space.
+    pub fn restore_archive(&self, bytes: &[u8]) -> Result<(), String> {
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        self.ensure_controller_thread("restore_archive")?;
+        let dc = unsafe { &*self.controller };
+        let Some(restore) = dc.restore_objects_from_archive else {
+            return Err("插件未提供 restoreObjectsFromArchive".to_string());
+        };
+        let reader = Box::new(ArchiveReader {
+            data: bytes.to_vec(),
+        });
+        let reader_ref = (&*reader) as *const ArchiveReader as AraHostRef;
+        unsafe {
+            if let Some(begin) = dc.begin_editing {
+                begin(self.controller_ref);
+            }
+            let ok = restore(self.controller_ref, reader_ref, std::ptr::null());
+            if let Some(end) = dc.end_editing {
+                end(self.controller_ref);
+            }
+            if let Some(notify) = dc.notify_model_updates {
+                notify(self.controller_ref);
+            }
+            if ok == 0 {
+                return Err("插件恢复 ARA 归档失败".to_string());
+            }
+        }
+        Ok(())
     }
 
     /// 所属模块：plugin / ARA2 宿主
@@ -2242,6 +2397,10 @@ mod tests {
             session.info().plugin_name
         );
         session.set_timeline(0.0, 30.0).expect("set timeline");
+        session.refresh_archive().expect("store archive");
+        let archive = session.archive_snapshot();
+        eprintln!("[ara-debug] archive bytes={}", archive.len());
+        session.restore_archive(&archive).expect("restore archive");
         // 先销毁 ARA 文档，再销毁插件实例（与 Vst3Runtime 的字段顺序一致）。
         // Destroy the ARA document before the plug-in instance (matches Vst3Runtime field order).
         drop(session);

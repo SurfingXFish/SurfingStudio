@@ -361,8 +361,8 @@ impl Engine {
             };
             if let InstrumentRef::Plugin(pref) = &mut track.instrument {
                 if let Some(plugin) = runtime.plugin() {
-                    let (state, params) = plugin.capture_state();
-                    pref.state = state.into();
+                    let (state, params) = capture_plugin_snapshot(plugin);
+                    pref.state = state;
                     pref.params = params;
                 }
             }
@@ -371,8 +371,8 @@ impl Engine {
                     continue;
                 };
                 if let Some(effect) = runtime.effects.get(index).and_then(EffectRuntime::plugin) {
-                    let (state, params) = effect.capture_state();
-                    pref.state = state.into();
+                    let (state, params) = capture_plugin_snapshot(effect);
+                    pref.state = state;
                     pref.params = params;
                 }
             }
@@ -380,8 +380,8 @@ impl Engine {
         if let (Some(effect_ref), Some(runtime)) = (&mut project.master_effect, &self.master_effect)
         {
             if let (Some(pref), Some(effect)) = (effect_ref.plugin_mut(), runtime.plugin()) {
-                let (state, params) = effect.capture_state();
-                pref.state = state.into();
+                let (state, params) = capture_plugin_snapshot(effect);
+                pref.state = state;
                 pref.params = params;
             }
         }
@@ -496,8 +496,8 @@ impl Engine {
         };
         if let InstrumentRef::Plugin(pref) = &mut track.instrument {
             if let Some(plugin) = runtime.plugin() {
-                let (state, params) = plugin.capture_state();
-                pref.state = state.into();
+                let (state, params) = capture_plugin_snapshot(plugin);
+                pref.state = state;
                 pref.params = params;
             }
         }
@@ -506,10 +506,32 @@ impl Engine {
                 continue;
             };
             if let Some(effect) = runtime.effects.get(index).and_then(EffectRuntime::plugin) {
-                let (state, params) = effect.capture_state();
-                pref.state = state.into();
+                let (state, params) = capture_plugin_snapshot(effect);
+                pref.state = state;
                 pref.params = params;
             }
         }
     }
+}
+
+/// 所属模块：audio::engine / 插件状态
+/// 功能：抓取插件状态并打包 ARA 归档，供 `.sfsd` 保存。
+/// 输入：`plugin` 插件运行时。
+/// 输出/副作用：先尝试在控制器线程刷新 ARA 归档（失败时沿用缓存），再返回（状态块、参数）。
+/// 复杂度：时间 O(状态 + 归档大小)，空间 O(状态 + 归档大小)。
+///
+/// Module: audio::engine / plugin state
+/// Purpose: Capture the plug-in state and pack the ARA archive for `.sfsd`.
+/// Inputs: `plugin`.
+/// Outputs / side effects: first tries to refresh the ARA archive on the controller thread (falls
+/// back to the cache on failure), then returns (state blob, parameters).
+/// Complexity: O(state + archive size) time and space.
+fn capture_plugin_snapshot(plugin: &PluginRuntime) -> (std::sync::Arc<[u8]>, Vec<f32>) {
+    let (state, params) = plugin.capture_state();
+    let _ = plugin.refresh_ara_archive();
+    let ara = plugin.ara_archive_snapshot().unwrap_or_default();
+    (
+        crate::plugin::pack_plugin_state(&state, &ara).into(),
+        params,
+    )
 }

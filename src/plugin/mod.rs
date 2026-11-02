@@ -102,6 +102,57 @@ fn default_plugin_kind() -> PluginKind {
     PluginKind::Unknown
 }
 
+/// `.sfsd` 的 `PLUG` 块容器头：后接 u32 小端 VST3 状态长度，再是 VST3 状态与 ARA 归档。
+/// `PLUG` chunk container header for `.sfsd`: a little-endian u32 VST3 state length, then the
+/// VST3 state and the ARA archive.
+const PLUGIN_STATE_CONTAINER_MAGIC: &[u8; 8] = b"SFS3PLUG";
+
+/// 所属模块：plugin / 工程状态
+/// 功能：把 VST3 状态与 ARA 归档打包进 `PluginRef::state`；没有 ARA 归档时保持原始状态块。
+/// 输入：`state` VST3 状态、`ara_archive` ARA 归档（可为空）。
+/// 输出/副作用：返回用于 `.sfsd` 的字节；不修改输入。
+/// 复杂度：时间 O(状态 + 归档大小)，空间 O(状态 + 归档大小)。
+///
+/// Module: plugin / project state
+/// Purpose: Pack the VST3 state and the ARA archive into `PluginRef::state`; without an ARA
+/// archive the raw state blob is kept unchanged.
+/// Inputs: `state`, `ara_archive` (may be empty).
+/// Outputs / side effects: bytes for `.sfsd`; inputs are unchanged.
+/// Complexity: O(state + archive size) time and space.
+pub(crate) fn pack_plugin_state(state: &[u8], ara_archive: &[u8]) -> Vec<u8> {
+    if ara_archive.is_empty() {
+        return state.to_vec();
+    }
+    let mut packed = Vec::with_capacity(12 + state.len() + ara_archive.len());
+    packed.extend_from_slice(PLUGIN_STATE_CONTAINER_MAGIC);
+    packed.extend_from_slice(&(state.len() as u32).to_le_bytes());
+    packed.extend_from_slice(state);
+    packed.extend_from_slice(ara_archive);
+    packed
+}
+
+/// 所属模块：plugin / 工程状态
+/// 功能：从 `PluginRef::state` 拆出 VST3 状态与 ARA 归档。
+/// 输入：`bytes` 保存的插件状态块。
+/// 输出/副作用：返回（VST3 状态、ARA 归档）；没有容器头时整体视为 VST3 状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: plugin / project state
+/// Purpose: Split a saved plug-in state blob into the VST3 state and the ARA archive.
+/// Inputs: `bytes`.
+/// Outputs / side effects: (VST3 state, ARA archive); without the container header the whole blob
+/// is treated as VST3 state.
+/// Complexity: O(1) time and space.
+pub(crate) fn split_plugin_state(bytes: &[u8]) -> (&[u8], &[u8]) {
+    if bytes.len() >= 12 && &bytes[..8] == PLUGIN_STATE_CONTAINER_MAGIC {
+        let length = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize;
+        if 12 + length <= bytes.len() {
+            return (&bytes[12..12 + length], &bytes[12 + length..]);
+        }
+    }
+    (bytes, &[])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,6 +160,25 @@ mod tests {
     fn installed(path: &str) -> Option<PathBuf> {
         let path = PathBuf::from(path);
         path.exists().then_some(path)
+    }
+
+    #[test]
+    fn plugin_state_container_round_trips_and_keeps_legacy_blobs() {
+        // 没有 ARA 归档时保持原始状态块，旧工程与旧插件不受影响。
+        // Without an ARA archive the raw state blob is preserved, so legacy projects/plugins are
+        // unaffected.
+        let legacy = b"VST3HOST_STATE\0\0payload";
+        assert_eq!(pack_plugin_state(legacy, &[]), legacy.to_vec());
+        let (state, ara) = split_plugin_state(legacy);
+        assert_eq!(state, legacy);
+        assert!(ara.is_empty());
+
+        // 有归档时打包/拆分必须还原两部分。
+        // With an archive, packing/splitting restores both halves.
+        let packed = pack_plugin_state(b"vst", b"ara-bytes");
+        let (state, ara) = split_plugin_state(&packed);
+        assert_eq!(state, b"vst");
+        assert_eq!(ara, b"ara-bytes");
     }
 
     #[test]

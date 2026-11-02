@@ -286,6 +286,68 @@ impl PluginRuntime {
         }
     }
 
+    /// 所属模块：plugin / 统一运行时 / ARA
+    /// 功能：在文档控制器线程上把插件侧 ARA 状态导出到缓存。
+    /// 输入：`self`。
+    /// 输出/副作用：内容变化时调用 `storeObjectsToArchive`；线程不符时返回错误。
+    /// 复杂度：时间 O(归档大小)，空间 O(归档大小)。
+    ///
+    /// Module: plugin / unified runtime / ARA
+    /// Purpose: Export the plug-in-side ARA state into the cache on the document controller thread.
+    /// Inputs: `self`.
+    /// Outputs / side effects: calls `storeObjectsToArchive` when content changed; a thread
+    /// mismatch returns an error.
+    /// Complexity: O(archive size) time and space.
+    pub fn refresh_ara_archive(&self) -> Result<(), String> {
+        match self {
+            PluginRuntime::Vst3(v) => match v.ara.as_ref() {
+                Some(session) => session.refresh_archive(),
+                None => Ok(()),
+            },
+            _ => Ok(()),
+        }
+    }
+
+    /// 所属模块：plugin / 统一运行时 / ARA
+    /// 功能：返回缓存的 ARA 归档；没有归档时为 `None`。
+    /// 输入：`self`。
+    /// 输出/副作用：返回归档副本；不调用插件。
+    /// 复杂度：时间 O(归档大小)，空间 O(归档大小)。
+    ///
+    /// Module: plugin / unified runtime / ARA
+    /// Purpose: Return the cached ARA archive, or `None` when empty.
+    /// Inputs: `self`.
+    /// Outputs / side effects: a copy of the archive; no plug-in calls.
+    /// Complexity: O(archive size) time and space.
+    pub fn ara_archive_snapshot(&self) -> Option<Vec<u8>> {
+        match self {
+            PluginRuntime::Vst3(v) => v.ara.as_ref().map(|session| session.archive_snapshot()),
+            _ => None,
+        }
+    }
+
+    /// 所属模块：plugin / 统一运行时 / ARA
+    /// 功能：把保存的 ARA 归档恢复到插件侧文档。
+    /// 输入：`bytes` 归档字节。
+    /// 输出/副作用：调用插件恢复状态；空归档或非 ARA 插件为空操作。
+    /// 复杂度：时间 O(归档大小)，空间 O(归档大小)。
+    ///
+    /// Module: plugin / unified runtime / ARA
+    /// Purpose: Restore a saved ARA archive into the plug-in-side document.
+    /// Inputs: `bytes`.
+    /// Outputs / side effects: restores the plug-in state; empty archives and non-ARA plug-ins are
+    /// no-ops.
+    /// Complexity: O(archive size) time and space.
+    pub fn restore_ara_archive(&self, bytes: &[u8]) -> Result<(), String> {
+        match self {
+            PluginRuntime::Vst3(v) => match v.ara.as_ref() {
+                Some(session) => session.restore_archive(bytes),
+                None => Ok(()),
+            },
+            _ => Ok(()),
+        }
+    }
+
     pub fn display_name(&self) -> &str {
         match self {
             PluginRuntime::Vst3(v) => &v.name,

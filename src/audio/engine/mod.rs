@@ -589,6 +589,10 @@ fn sync_ara_timeline(runtime: &mut PluginRuntime, track: &Track, bpm: f64, time_
     let (start, length) = ara_span_seconds(track, bpm);
     let _ = runtime.set_ara_tempo(bpm, time_sig);
     let _ = runtime.set_ara_timeline(start, length);
+    // 在控制器线程上按需导出归档：插件报告内容变化后才真正调用，避免每帧做一次大拷贝。
+    // Export the archive on the controller thread when needed: the plug-in's content-change
+    // counter gates the actual call so this is not a large copy every frame.
+    let _ = runtime.refresh_ara_archive();
 }
 
 impl TrackEngine {
@@ -743,10 +747,17 @@ impl TrackEngine {
                             // program number is used to restore the preset selection instead. Empty
                             // state also falls back to the program so opening the editor after
                             // choosing a factory preset cannot reset the plug-in to its default.
-                            if pref.restore_state && !pref.state.is_empty() {
-                                runtime.restore_state(&pref.state, &pref.params);
+                            let (state_bytes, ara_archive) =
+                                crate::plugin::split_plugin_state(&pref.state);
+                            if pref.restore_state && !state_bytes.is_empty() {
+                                runtime.restore_state(state_bytes, &pref.params);
                             } else if let Some(program) = pref.program {
                                 runtime.select_program(program);
+                            }
+                            if !ara_archive.is_empty() {
+                                if let Err(error) = runtime.restore_ara_archive(ara_archive) {
+                                    warnings.push(format!("{}: {}", track.name, error));
+                                }
                             }
                             // ARA 插件的播放区域与速度跟随工程内容。
                             // ARA plug-ins follow the project's timeline and tempo.
@@ -755,6 +766,7 @@ impl TrackEngine {
                                 warnings.push(format!("{}: {}", track.name, error));
                             }
                             let _ = runtime.set_ara_tempo(bpm, time_sig);
+                            let _ = runtime.refresh_ara_archive();
                             span.end(&[("status", "ok")]);
                             InstrumentRuntime::Plugin(runtime)
                         }
@@ -887,10 +899,15 @@ impl TrackEngine {
                         time_sig,
                     ) {
                         Ok(mut runtime) => {
-                            if pref.restore_state {
-                                runtime.restore_state(&pref.state, &pref.params);
+                            let (state_bytes, ara_archive) =
+                                crate::plugin::split_plugin_state(&pref.state);
+                            if pref.restore_state && !state_bytes.is_empty() {
+                                runtime.restore_state(state_bytes, &pref.params);
                             } else if let Some(program) = pref.program {
                                 runtime.select_program(program);
+                            }
+                            if !ara_archive.is_empty() {
+                                let _ = runtime.restore_ara_archive(ara_archive);
                             }
                             EffectRuntime::Plugin(runtime)
                         }
@@ -1438,10 +1455,15 @@ impl Engine {
                         time_sig,
                     ) {
                         Ok(mut runtime) => {
-                            if pref.restore_state {
-                                runtime.restore_state(&pref.state, &pref.params);
+                            let (state_bytes, ara_archive) =
+                                crate::plugin::split_plugin_state(&pref.state);
+                            if pref.restore_state && !state_bytes.is_empty() {
+                                runtime.restore_state(state_bytes, &pref.params);
                             } else if let Some(program) = pref.program {
                                 runtime.select_program(program);
+                            }
+                            if !ara_archive.is_empty() {
+                                let _ = runtime.restore_ara_archive(ara_archive);
                             }
                             Some(EffectRuntime::Plugin(runtime))
                         }
