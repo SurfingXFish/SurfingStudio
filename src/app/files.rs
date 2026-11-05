@@ -154,6 +154,9 @@ impl SurfingApp {
     /// Outputs / side effects: sets `dirty` / `needs_sync`; advances the project epoch.
     /// Complexity: O(track count) time and O(1) space (the project is moved).
     fn reset_project_with(&mut self, project: Project, status: String) {
+        // 切换工程会丢弃旧工程的录音预览片段，录音必须整段放弃。
+        // Switching projects discards the old preview clips, so the take is abandoned.
+        self.cancel_recording();
         self.project_epoch = self.project_epoch.wrapping_add(1);
         self.project = project;
         self.project_path = None;
@@ -283,6 +286,9 @@ impl SurfingApp {
         // Stop playback and close standalone editors as soon as a switch begins, so old
         // plug-ins are not processed while the new project loads or outlive their runtimes.
         self.release_held_notes();
+        // 加载会替换工程，录音预览片段随之失效。
+        // Loading replaces the project, so recording preview clips become invalid.
+        self.cancel_recording();
         if let Ok(mut engine) = self.engine.try_lock() {
             engine.pause();
             engine.reset_playback_state();

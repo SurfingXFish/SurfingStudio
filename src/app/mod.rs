@@ -417,7 +417,10 @@ pub struct SurfingApp {
     /// Audition events queued while the audio callback holds the engine lock; replayed in order on
     /// a later frame.
     pending_auditions: Vec<PendingAudition>,
-    keyboard_held: HashMap<egui::Key, u8>,
+    /// 电脑键盘按下的音符：(音高, 收到 Note On 的轨道)；虚拟设备路由可能命中多条轨道。
+    /// Computer-keyboard held notes: (pitch, tracks that received the Note On); the virtual device
+    /// routing may target several tracks.
+    keyboard_held: HashMap<egui::Key, (u8, Vec<TrackId>)>,
     pub virtual_key_note: Option<u8>,
     pub style_ready: bool,
 
@@ -1744,6 +1747,10 @@ impl SurfingApp {
         self.poll_scan();
         self.poll_plugin_probes();
         self.poll_midi();
+        // 录音预览片段随播放头延长，保证编曲区/卷帘在录制过程中持续可见。
+        // Recording preview clips grow with the playhead so the arrangement and rolls stay visible
+        // while recording.
+        self.service_recording_preview();
         self.poll_load_project();
         self.poll_save_project();
         self.poll_public_copy();

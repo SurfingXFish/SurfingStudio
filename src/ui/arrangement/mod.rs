@@ -1839,44 +1839,81 @@ impl SurfingApp {
                                     }
                                 }
                                 MouseMode::Select => {
+                                    // Ctrl / Command 单击切换多选：只改选择，不启动拖动，避免误移动片段。
+                                    // Ctrl/Command-click toggles the multi-selection and does not
+                                    // start a drag, so clips are never moved by accident.
+                                    let toggle =
+                                        ui.input(|i| i.modifiers.ctrl || i.modifiers.command);
                                     if let Some((clip_index, clip)) = hit {
-                                        if !self.selected_clips.contains(&(track_index, clip_index))
-                                        {
-                                            self.selected_clips = vec![(track_index, clip_index)];
-                                        }
-                                        self.selected_clip = Some(clip_index);
-                                        self.selected_track = track_index;
-                                        self.focus_piano_on_selection();
-                                        // Grabbed edge detection: left/right edges
-                                        // resize, body drags.
-                                        let x0 = beat_to_x(clip.start);
-                                        let x1 = beat_to_x(clip.end());
-                                        let left_edge = (pos.x - x0).abs() <= 7.0;
-                                        let right_edge = (pos.x - x1).abs() <= 7.0;
-                                        let group: Vec<(usize, usize, f64, f64)> = self
-                                            .selected_clips
-                                            .iter()
-                                            .filter_map(|(t, c)| {
-                                                let clip =
-                                                    self.project.tracks.get(*t)?.clips.get(*c)?;
-                                                Some((*t, *c, clip.start, clip.length))
-                                            })
-                                            .collect();
-                                        if left_edge || right_edge {
-                                            self.arr_drag = ArrangementDrag::ClipResize {
-                                                left_edge,
-                                                anchor: (track_index, clip_index),
-                                                group,
-                                            };
+                                        if toggle {
+                                            let key = (track_index, clip_index);
+                                            if let Some(at) = self
+                                                .selected_clips
+                                                .iter()
+                                                .position(|pair| *pair == key)
+                                            {
+                                                self.selected_clips.remove(at);
+                                            } else {
+                                                self.selected_clips.push(key);
+                                            }
+                                            match self.selected_clips.last().copied() {
+                                                Some((track, clip)) => {
+                                                    self.selected_track = track;
+                                                    self.selected_clip = Some(clip);
+                                                }
+                                                None => {
+                                                    self.selected_clip = None;
+                                                }
+                                            }
+                                            self.arr_drag = ArrangementDrag::None;
                                         } else {
-                                            self.arr_drag = ArrangementDrag::ClipMove {
-                                                grab_beat: beat,
-                                                group: group
-                                                    .into_iter()
-                                                    .map(|(t, c, start, _)| (t, c, start))
-                                                    .collect(),
-                                            };
+                                            if !self
+                                                .selected_clips
+                                                .contains(&(track_index, clip_index))
+                                            {
+                                                self.selected_clips =
+                                                    vec![(track_index, clip_index)];
+                                            }
+                                            self.selected_clip = Some(clip_index);
+                                            self.selected_track = track_index;
+                                            self.focus_piano_on_selection();
+                                            // Grabbed edge detection: left/right edges
+                                            // resize, body drags.
+                                            let x0 = beat_to_x(clip.start);
+                                            let x1 = beat_to_x(clip.end());
+                                            let left_edge = (pos.x - x0).abs() <= 7.0;
+                                            let right_edge = (pos.x - x1).abs() <= 7.0;
+                                            let group: Vec<(usize, usize, f64, f64)> = self
+                                                .selected_clips
+                                                .iter()
+                                                .filter_map(|(t, c)| {
+                                                    let clip = self
+                                                        .project
+                                                        .tracks
+                                                        .get(*t)?
+                                                        .clips
+                                                        .get(*c)?;
+                                                    Some((*t, *c, clip.start, clip.length))
+                                                })
+                                                .collect();
+                                            if left_edge || right_edge {
+                                                self.arr_drag = ArrangementDrag::ClipResize {
+                                                    left_edge,
+                                                    anchor: (track_index, clip_index),
+                                                    group,
+                                                };
+                                            } else {
+                                                self.arr_drag = ArrangementDrag::ClipMove {
+                                                    grab_beat: beat,
+                                                    group: group
+                                                        .into_iter()
+                                                        .map(|(t, c, start, _)| (t, c, start))
+                                                        .collect(),
+                                                };
+                                            }
                                         }
+                                    } else if toggle {
+                                        self.arr_drag = ArrangementDrag::None;
                                     } else {
                                         self.selected_clip = None;
                                         self.selected_clips.clear();
@@ -2499,13 +2536,38 @@ impl SurfingApp {
                                             beat >= clip.start && beat <= clip.end()
                                         })
                                     });
-                                self.selected_clip = clip_index;
-                                self.selected_clips = clip_index
-                                    .map(|clip| (track_index, clip))
-                                    .into_iter()
-                                    .collect();
-                                if clip_index.is_some() {
-                                    self.focus_piano_on_selection();
+                                let toggle = ui.input(|i| i.modifiers.ctrl || i.modifiers.command);
+                                if toggle {
+                                    // Ctrl / Command 单击：切换该片段是否属于多选。
+                                    // Ctrl/Command-click toggles the clip in the multi-selection.
+                                    if let Some(clip_index) = clip_index {
+                                        let key = (track_index, clip_index);
+                                        if let Some(at) =
+                                            self.selected_clips.iter().position(|pair| *pair == key)
+                                        {
+                                            self.selected_clips.remove(at);
+                                        } else {
+                                            self.selected_clips.push(key);
+                                        }
+                                        match self.selected_clips.last().copied() {
+                                            Some((track, clip)) => {
+                                                self.selected_track = track;
+                                                self.selected_clip = Some(clip);
+                                            }
+                                            None => {
+                                                self.selected_clip = None;
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    self.selected_clip = clip_index;
+                                    self.selected_clips = clip_index
+                                        .map(|clip| (track_index, clip))
+                                        .into_iter()
+                                        .collect();
+                                    if clip_index.is_some() {
+                                        self.focus_piano_on_selection();
+                                    }
                                 }
                             }
                         }
@@ -2700,6 +2762,32 @@ impl SurfingApp {
             if paste.clicked() {
                 self.paste_clipboard();
                 ui.close();
+            }
+            // 同一轨道多选时提供合并；音频片段不参与合并，按钮保持可见但禁用。
+            // Offer merging for same-track multi-selection; audio clips cannot merge, so the entry
+            // stays visible but disabled.
+            if menu == ArrangementMenu::Lane {
+                if let Some((track_index, indices)) = self.selected_same_track_clips() {
+                    ui.separator();
+                    let all_midi = self.project.tracks.get(track_index).is_some_and(|track| {
+                        indices.iter().all(|index| {
+                            track.clips.get(*index).is_some_and(|clip| !clip.is_audio())
+                        })
+                    });
+                    let button = ui.add_enabled(
+                        all_midi,
+                        egui::Button::new(egui::RichText::new("合并片段").size(12.5)),
+                    );
+                    let button = if all_midi {
+                        button.on_hover_text("把选中的 MIDI 片段合并为一个片段")
+                    } else {
+                        button.on_hover_text("音频片段暂不支持合并")
+                    };
+                    if button.clicked() {
+                        self.merge_selected_clips();
+                        ui.close();
+                    }
+                }
             }
         });
 

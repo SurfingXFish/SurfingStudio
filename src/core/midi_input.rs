@@ -3,6 +3,7 @@
 //! - 连接默认 MIDI 输入端口与设置中启用的附加端口，把 MIDI 1.0 字节流与 MIDI 2.0 UMP
 //!   （Universal MIDI Packet）统一转换为事件队列。
 //! - 提供输入端口列表、默认/启用设备选择与事件队列读取。
+//! - 声明内置虚拟键盘设备：电脑键盘通过该设备名参与轨道绑定与录音。
 //!
 //! 函数清单：
 //! - `MidiInputManager::new` / `set_devices` / `connect_with`：选择并连接默认与启用端口。
@@ -16,6 +17,8 @@
 //! - Connect the default MIDI input port plus additional enabled ports, and normalise MIDI 1.0
 //!   byte streams and MIDI 2.0 UMP (Universal MIDI Packet) into one event queue.
 //! - Expose the port list, default/enabled device selection and queue draining.
+//! - Declare the built-in virtual keyboard device used by computer-keyboard input for track
+//!   bindings and recording.
 //!
 //! Functions:
 //! - `MidiInputManager::new` / `set_devices` / `connect_with`: select and connect ports.
@@ -26,6 +29,11 @@
 
 use midir::{MidiInput, MidiInputConnection, MidiOutput};
 use std::sync::mpsc::{Receiver, channel};
+
+/// 内置虚拟 MIDI 设备名：电脑键盘映射为 MIDI 输入，参与设备绑定与录音。
+/// Built-in virtual MIDI device name: the computer keyboard acts as a MIDI input for track bindings
+/// and recording.
+pub const VIRTUAL_MIDI_DEVICE: &str = "SurfingStudio 虚拟键盘";
 
 /// 一条输入事件使用的 MIDI 协议。
 /// MIDI protocol carried by one input event.
@@ -165,25 +173,31 @@ impl MidiInputManager {
     }
 
     /// 所属模块：core / MIDI 输入
-    /// 功能：枚举当前可用的 MIDI 输入端口名称。
+    /// 功能：枚举可用的 MIDI 输入端口名称；内置虚拟键盘固定排在首位。
     /// 输入：无。
-    /// 输出/副作用：端口名列表；失败时返回空列表。
+    /// 输出/副作用：端口名列表；物理端口枚举失败时仍返回虚拟键盘。
     /// 复杂度：时间 O(端口数)，空间 O(端口数)。
     ///
     /// Module: core / MIDI input
-    /// Purpose: Enumerate the available MIDI input port names.
+    /// Purpose: Enumerate the available MIDI input port names; the built-in virtual keyboard is
+    /// always listed first.
     /// Inputs: none.
-    /// Outputs / side effects: the port names; an empty list when enumeration fails.
+    /// Outputs / side effects: the port names; the virtual keyboard is returned even when physical
+    /// enumeration fails.
     /// Complexity: O(ports) time and space.
     pub fn port_names() -> Vec<String> {
-        let Ok(input) = MidiInput::new("SurfingStudio MIDI 输入") else {
-            return Vec::new();
-        };
-        input
-            .ports()
-            .iter()
-            .filter_map(|port| input.port_name(port).ok())
-            .collect()
+        let mut names = Vec::new();
+        if let Ok(input) = MidiInput::new("SurfingStudio MIDI 输入") {
+            names.extend(
+                input
+                    .ports()
+                    .iter()
+                    .filter_map(|port| input.port_name(port).ok()),
+            );
+        }
+        names.retain(|name| !name.eq_ignore_ascii_case(VIRTUAL_MIDI_DEVICE));
+        names.insert(0, VIRTUAL_MIDI_DEVICE.to_string());
+        names
     }
 
     /// 所属模块：core / MIDI 输入
@@ -274,31 +288,40 @@ impl MidiInputManager {
         default: Option<&str>,
         enabled: &[String],
     ) -> Result<Option<String>, String> {
-        let input = MidiInput::new("SurfingStudio MIDI 输入").map_err(|e| e.to_string())?;
-        let ports = input.ports();
-        if ports.is_empty() {
-            return Err("未发现 MIDI 输入设备".into());
-        }
-        let names: Vec<String> = ports
-            .iter()
-            .filter_map(|port| input.port_name(port).ok())
-            .collect();
+        let names: Vec<String> = MidiInput::new("SurfingStudio MIDI 输入")
+            .map(|input| {
+                input
+                    .ports()
+                    .iter()
+                    .filter_map(|port| input.port_name(port).ok())
+                    .collect()
+            })
+            .unwrap_or_default();
         let default_key = default.unwrap_or("").trim().to_lowercase();
+        let virtual_default = default_key == VIRTUAL_MIDI_DEVICE.to_lowercase();
         let mut targets: Vec<String> = Vec::new();
         let mut resolved_default: Option<String> = None;
 
-        // 默认端口优先按名称匹配；未配置或找不到时退回第一个可用端口。
-        // Match the default by name first; fall back to the first port when unset or missing.
-        if !default_key.is_empty() {
+        // 默认端口优先按名称匹配；内置虚拟键盘不需要物理连接，直接作为默认设备。
+        // Match the default by name first; the built-in virtual keyboard needs no physical
+        // connection and becomes the default directly.
+        if virtual_default {
+            resolved_default = Some(VIRTUAL_MIDI_DEVICE.to_string());
+        } else if !default_key.is_empty() {
             if let Some(name) = names.iter().find(|name| name.to_lowercase() == default_key) {
                 resolved_default = Some(name.clone());
                 targets.push(name.clone());
             }
         }
         if resolved_default.is_none() {
-            if let Some(name) = names.first() {
-                resolved_default = Some(name.clone());
-                targets.push(name.clone());
+            match names.first() {
+                Some(name) => {
+                    resolved_default = Some(name.clone());
+                    targets.push(name.clone());
+                }
+                // 没有物理端口时，虚拟键盘仍可作为选中轨道的默认输入。
+                // Without physical ports the virtual keyboard still drives the selected track.
+                None => resolved_default = Some(VIRTUAL_MIDI_DEVICE.to_string()),
             }
         }
 
@@ -321,7 +344,10 @@ impl MidiInputManager {
         for name in targets {
             // midir 的 `connect` 会消耗 `MidiInput`，因此每个端口单独创建一次实例。
             // midir's `connect` consumes `MidiInput`, so each port gets its own instance.
-            let input = MidiInput::new("SurfingStudio MIDI 输入").map_err(|e| e.to_string())?;
+            let Ok(input) = MidiInput::new("SurfingStudio MIDI 输入") else {
+                failures.push(format!("MIDI 输入不可用，跳过「{name}」"));
+                continue;
+            };
             let port = input.ports().into_iter().find(|port| {
                 input
                     .port_name(port)
@@ -359,24 +385,30 @@ impl MidiInputManager {
                 Err(error) => failures.push(format!("连接 MIDI 设备「{name}」失败: {error}")),
             }
         }
-        if connections.is_empty() {
-            return Err(if failures.is_empty() {
-                "未找到可用的 MIDI 输入端口".into()
-            } else {
-                failures.join("；")
-            });
-        }
         self._connections = connections;
-        self.status = format!("MIDI: {}", connected_names.join(" · "));
+        let mut labels = connected_names.clone();
+        if virtual_default
+            || resolved_default
+                .as_deref()
+                .is_some_and(|name| name.eq_ignore_ascii_case(VIRTUAL_MIDI_DEVICE))
+        {
+            labels.insert(0, format!("{VIRTUAL_MIDI_DEVICE}（内置）"));
+        }
+        if labels.is_empty() {
+            labels.push(format!("{VIRTUAL_MIDI_DEVICE}（内置）"));
+        }
+        self.status = format!("MIDI: {}", labels.join(" · "));
         if !failures.is_empty() {
             self.status = format!("{}；{}", self.status, failures.join("；"));
         }
-        if default.is_some_and(|requested| {
-            !requested.trim().is_empty()
-                && !connected_names
-                    .iter()
-                    .any(|name| name.eq_ignore_ascii_case(requested.trim()))
-        }) {
+        if !virtual_default
+            && default.is_some_and(|requested| {
+                !requested.trim().is_empty()
+                    && !connected_names
+                        .iter()
+                        .any(|name| name.eq_ignore_ascii_case(requested.trim()))
+            })
+        {
             self.status = format!(
                 "未找到默认 MIDI「{}」；{}",
                 default.unwrap_or(""),
