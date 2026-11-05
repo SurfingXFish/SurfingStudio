@@ -1,6 +1,7 @@
 //! 所属模块：app / 输入
 //! 文件用途：
 //! - 处理主窗口与独立窗口的键盘快捷键、虚拟键盘试听与 MIDI 输入事件。
+//! - 把电脑键盘映射为内置虚拟 MIDI 设备，参与设备绑定、试听与录音。
 //! - 主页视图下屏蔽编辑/播放快捷键，避免误改后台工程。
 //!
 //! 函数清单：
@@ -8,12 +9,15 @@
 //! - `handle_controller_tool_shortcuts`：控制器画笔的循环/直选快捷键。
 //! - `cancel_or_close`：取消/关闭当前弹窗或卷帘。
 //! - `poll_midi`：按设备绑定把 MIDI 输入路由到轨道，并处理试听与录音。
+//! - `virtual_keyboard_note_on` / `virtual_keyboard_note_off`：把电脑键盘音符作为虚拟 MIDI 设备事件路由。
 //! - `keyboard_map`：电脑键盘到 MIDI 音高映射。
 //!
 //! Module: app / input
 //! Purpose:
 //! - Handle keyboard shortcuts, virtual-keyboard audition and MIDI input events for the main and
 //!   standalone windows.
+//! - Map the computer keyboard to the built-in virtual MIDI device, so it participates in track
+//!   bindings, audition and recording.
 //! - Block editing/transport shortcuts on the home page so the background project is not changed
 //!   by accident.
 //!
@@ -23,6 +27,8 @@
 //! - `handle_controller_tool_shortcuts`: cycle/select controller brush shortcuts.
 //! - `cancel_or_close`: close the current popup or roll.
 //! - `poll_midi`: route MIDI input to tracks by device binding and handle audition/recording.
+//! - `virtual_keyboard_note_on` / `virtual_keyboard_note_off`: route computer-keyboard notes as
+//!   built-in virtual MIDI device events.
 //! - `keyboard_map`: map computer keys to MIDI pitches.
 
 use super::*;
@@ -294,23 +300,77 @@ impl SurfingApp {
         if !typing {
             let command_held = ctx.input(|i| i.modifiers.command);
             if command_held {
-                let held: Vec<u8> = self.keyboard_held.drain().map(|(_, pitch)| pitch).collect();
-                for pitch in held {
-                    self.audition_off(pitch);
+                let held: Vec<(u8, Vec<TrackId>)> = self
+                    .keyboard_held
+                    .drain()
+                    .map(|(_, pitch_targets)| pitch_targets)
+                    .collect();
+                for (pitch, targets) in held {
+                    self.virtual_keyboard_note_off(targets, pitch);
                 }
             } else {
                 for (key, pitch) in keyboard_map() {
                     let down = ctx.input(|i| i.key_down(key));
                     if down {
                         if !self.keyboard_held.contains_key(&key) {
-                            self.keyboard_held.insert(key, pitch);
-                            self.audition_on(pitch, 100);
+                            let targets = self.virtual_keyboard_note_on(pitch, 100);
+                            self.keyboard_held.insert(key, (pitch, targets));
                         }
-                    } else if let Some(pitch) = self.keyboard_held.remove(&key) {
-                        self.audition_off(pitch);
+                    } else if let Some((pitch, targets)) = self.keyboard_held.remove(&key) {
+                        self.virtual_keyboard_note_off(targets, pitch);
                     }
                 }
             }
+        }
+    }
+
+    /// 所属模块：app / 输入 / 虚拟 MIDI 设备
+    /// 功能：把电脑键盘音符当作内置虚拟 MIDI 设备的 Note On：按设备绑定路由，触发试听并写入录音缓冲。
+    /// 输入：
+    /// - `pitch`：音高（0~127）。
+    /// - `velocity`：力度（1~127）。
+    /// 输出/副作用：返回收到 Note On 的轨道 id；可能激活音频输出与录音缓冲。
+    /// 复杂度：时间 O(轨道数)，空间 O(目标轨道数)。
+    ///
+    /// Module: app / input / virtual MIDI device
+    /// Purpose: Treat a computer-keyboard note as a Note On from the built-in virtual MIDI device:
+    /// route it by device binding, trigger audition and write the recording buffer.
+    /// Inputs:
+    /// - `pitch`: MIDI pitch (0~127).
+    /// - `velocity`: velocity (1~127).
+    /// Outputs / side effects: returns the track ids that received the Note On; may activate audio
+    /// output and the recording buffer.
+    /// Complexity: O(tracks) time and O(targets) space.
+    fn virtual_keyboard_note_on(&mut self, pitch: u8, velocity: u8) -> Vec<TrackId> {
+        let targets = self.midi_target_tracks(crate::core::midi_input::VIRTUAL_MIDI_DEVICE);
+        for track_id in &targets {
+            self.audition_on_for(*track_id, pitch, velocity);
+            self.record_note_on(*track_id, pitch, velocity);
+        }
+        targets
+    }
+
+    /// 所属模块：app / 输入 / 虚拟 MIDI 设备
+    /// 功能：释放虚拟键盘 Note On 时的目标轨道：停止试听并结束录音音符。
+    /// 输入：
+    /// - `targets`：Note On 时命中的轨道 id。
+    /// - `pitch`：音高（0~127）。
+    /// 输出/副作用：更新试听与录音缓冲；不修改工程内容。
+    /// 复杂度：时间 O(目标轨道数)，空间 O(1)。
+    ///
+    /// Module: app / input / virtual MIDI device
+    /// Purpose: Release the targets of a virtual-keyboard Note On: stop audition and close the
+    /// recorded note.
+    /// Inputs:
+    /// - `targets`: track ids that received the Note On.
+    /// - `pitch`: MIDI pitch (0~127).
+    /// Outputs / side effects: updates audition and the recording buffer; project content is
+    /// untouched.
+    /// Complexity: O(targets) time and O(1) space.
+    fn virtual_keyboard_note_off(&mut self, targets: Vec<TrackId>, pitch: u8) {
+        for track_id in targets {
+            self.audition_off_for(track_id, pitch);
+            self.record_note_off(track_id, pitch);
         }
     }
 
@@ -413,7 +473,7 @@ impl SurfingApp {
     /// 功能：消费 MIDI 输入队列：按设备绑定确定目标轨道，已绑定的轨道优先，默认设备控制
     /// 当前选中轨道（该轨道未绑定其他设备时）；同时触发试听并写入录音缓冲。
     /// 输入：`self`。
-    /// 输出/副作用：可能更新试听状态、录音缓冲与状态栏；不直接修改工程（录音在停止时建片段）。
+    /// 输出/副作用：可能更新试听状态、录音缓冲与状态栏；录音中会更新预览片段，但收尾前不标记脏。
     /// 复杂度：时间 O(事件数 × 轨道数)，空间 O(事件数)。
     ///
     /// Module: app / input / MIDI
@@ -421,8 +481,8 @@ impl SurfingApp {
     /// the default device drives the selected track when it has no other binding), then trigger
     /// audition and write into the recording buffers.
     /// Inputs: `self`.
-    /// Outputs / side effects: may update audition state, recording buffers and the status bar; the
-    /// project itself is not modified (clips are created when recording stops).
+    /// Outputs / side effects: may update audition state, recording buffers and the status bar;
+    /// recording updates live preview clips but does not mark the project dirty until it stops.
     /// Complexity: O(events × tracks) time and O(events) space.
     pub(super) fn poll_midi(&mut self) {
         // 主页不发声；多个工程窗口只让最近获得焦点的窗口消费 MIDI，避免重复触发音符。
