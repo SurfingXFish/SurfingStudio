@@ -6,6 +6,7 @@
 //! 函数清单：
 //! - `select_all`：按当前编辑上下文全选控制器点位、音符、效果器链或片段。
 //! - `delete_selection`：按优先级删除控制器点、音符、效果器、子轨或片段。
+//! - `selected_same_track_clips` / `merge_selected_clips`：同一轨道多选片段的合并判断与执行。
 //! - `insert_track_below`：在指定轨道下方插入一条同类型新轨道。
 //! - `remove_effect_at` / `add_native_effect` / `remove_controller`：效果器与控制器子轨增删。
 //! - `copy_child_lane_selection` / `lane_points` / `apply_lane_paste`：子轨复制与覆盖粘贴。
@@ -309,6 +310,141 @@ impl SurfingApp {
                 self.status = "已删除片段".into();
             }
         }
+    }
+
+    /// 所属模块：app / 编辑命令
+    /// 功能：返回同一轨道上的多选片段索引；跨轨道或不足两个片段时返回 `None`。
+    /// 输入：`self`。
+    /// 输出/副作用：`(轨道索引, 片段索引列表)`；不修改状态。
+    /// 复杂度：时间 O(选中片段数)，空间 O(选中片段数)。
+    ///
+    /// Module: app / editing commands
+    /// Purpose: Return the selected clip indices when every selected clip is on the same track;
+    /// `None` for a cross-track selection or fewer than two clips.
+    /// Inputs: `self`.
+    /// Outputs / side effects: `(track index, clip indices)`; no state change.
+    /// Complexity: O(selected clips) time and space.
+    pub fn selected_same_track_clips(&self) -> Option<(usize, Vec<usize>)> {
+        let (track_index, _) = *self.selected_clips.first()?;
+        if self.selected_clips.len() < 2 {
+            return None;
+        }
+        if self
+            .selected_clips
+            .iter()
+            .any(|(track, _)| *track != track_index)
+        {
+            return None;
+        }
+        Some((
+            track_index,
+            self.selected_clips.iter().map(|(_, clip)| *clip).collect(),
+        ))
+    }
+
+    /// 所属模块：app / 编辑命令
+    /// 功能：把同一轨道上选中的多个 MIDI 片段合并为一个片段：范围取并集，音符换算到新起点。
+    /// 输入：`self`。
+    /// 输出/副作用：记录撤销、删除被合并片段、写入合并片段并更新选择；音频片段拒绝合并。
+    /// 复杂度：时间 O(n log n)，空间 O(n)，`n` = 被合并片段的音符总数。
+    ///
+    /// Module: app / editing commands
+    /// Purpose: Merge the selected MIDI clips of one track into a single clip: the range is the
+    /// union and notes are rebased to the new start.
+    /// Inputs: `self`.
+    /// Outputs / side effects: records undo, removes the merged clips, writes the merged clip and
+    /// updates the selection; audio clips are rejected.
+    /// Complexity: O(n log n) time and O(n) space, `n` = notes in the merged clips.
+    pub fn merge_selected_clips(&mut self) {
+        let Some((track_index, mut indices)) = self.selected_same_track_clips() else {
+            self.status = "请在同一轨道上选中至少两个片段".into();
+            return;
+        };
+        indices.sort_unstable();
+        indices.dedup();
+        let Some(track) = self.project.tracks.get(track_index) else {
+            return;
+        };
+        let mut clips: Vec<(usize, Clip)> = indices
+            .iter()
+            .filter_map(|index| track.clips.get(*index).cloned().map(|clip| (*index, clip)))
+            .collect();
+        if clips.len() < 2 {
+            self.status = "请在同一轨道上选中至少两个片段".into();
+            return;
+        }
+        if clips.iter().any(|(_, clip)| clip.is_audio()) {
+            self.status = "音频片段暂不支持合并".into();
+            return;
+        }
+        // 以起点最早的片段作为合并基准，保留其 id、名称与颜色。
+        // Use the earliest clip as the merge base and keep its id, name and colour.
+        clips.sort_by(|left, right| {
+            left.1
+                .start
+                .partial_cmp(&right.1.start)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(left.0.cmp(&right.0))
+        });
+        let base_start = clips[0].1.start;
+        let base_end = clips
+            .iter()
+            .map(|(_, clip)| clip.end())
+            .fold(base_start, f64::max);
+        let mut notes: Vec<Note> = Vec::new();
+        for (_, clip) in &clips {
+            let offset = clip.start - base_start;
+            for note in &clip.notes {
+                notes.push(Note {
+                    start: (note.start + offset).max(0.0),
+                    length: note.length,
+                    pitch: note.pitch,
+                    velocity: note.velocity,
+                });
+            }
+        }
+        notes.sort_by(|left, right| {
+            left.start
+                .partial_cmp(&right.start)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(left.pitch.cmp(&right.pitch))
+        });
+        let base = &clips[0].1;
+        let mut merged = Clip::new(
+            base.id,
+            base.name.clone(),
+            base_start,
+            (base_end - base_start).max(1e-6),
+        );
+        merged.notes = notes;
+        merged.color = base.color;
+        let merged_len = merged.length;
+        let note_count = merged.notes.len();
+        self.push_undo_now();
+        let Some(track) = self.project.tracks.get_mut(track_index) else {
+            return;
+        };
+        let mut remove: Vec<usize> = clips.iter().map(|(index, _)| *index).collect();
+        remove.sort_unstable();
+        remove.dedup();
+        for index in remove.into_iter().rev() {
+            if index < track.clips.len() {
+                track.clips.remove(index);
+            }
+        }
+        track.clips.push(merged);
+        track.bump_revision();
+        let clip_index = track.clips.len() - 1;
+        self.selected_track = track_index;
+        self.selected_clip = Some(clip_index);
+        self.selected_clips = vec![(track_index, clip_index)];
+        self.selected_note = None;
+        self.selected_notes.clear();
+        self.mark_dirty();
+        self.status = format!(
+            "已合并 {} 个 MIDI 片段（{note_count} 个音符，{merged_len:.2} 拍）",
+            clips.len()
+        );
     }
 
     /// 所属模块：app / 编辑命令
