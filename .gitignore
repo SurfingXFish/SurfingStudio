@@ -20,6 +20,8 @@ err_dbg.txt
 # ── 自动保存、历史版本与本机设置 ─────────────────────────────────────
 *.autosave.sfsd
 Backups/
+# 轨道「渲染为音频」生成的 WAV 属于运行期产物，不随仓库分发。
+Renders/
 /settings.json
 /plugin-cache.json
 

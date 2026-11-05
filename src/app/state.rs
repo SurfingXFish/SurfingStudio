@@ -6,6 +6,7 @@
 //! - `ScanMode` / `Clipboard` / `RollKind` / `RollWindow` / `RollDragState`：编辑与扫描状态。
 //! - `PianoViewState` / `LanePastePrompt`：卷帘视图与子轨覆盖确认。
 //! - `ArrangementMenu`：编曲区右键菜单的目标（画布或某条轨道）。
+//! - `GroupDeleteMode`：删除组合轨道时“整棵删除”或“释放成员”的选择。
 //! - `HomeProjectDelete`：主页项目删除确认的待删除路径与本地文件选项。
 //! - `WorkspaceView` / `HomePage`：主页与工作室视图、主页左侧菜单页面（项目 / 模板 / 插件 / 提示）。
 //! - `WindowAction`：窗口级动作（显示主页 / 打开工程窗口 / 新建工程窗口 / 回到工程窗口）。
@@ -254,6 +255,15 @@ pub struct LanePastePrompt {
 pub enum ArrangementMenu {
     Lane,
     Track(usize),
+}
+
+/// 删除组合轨道的方式：连同成员整棵删除，或只删组合并把成员释放到上级。
+/// How to delete a group: remove the whole subtree, or drop only the group and release its members
+/// to the parent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GroupDeleteMode {
+    Whole,
+    Release,
 }
 
 /// 主页项目删除确认：待删除路径与是否同时删除本地工程文件。

@@ -4,7 +4,7 @@
 //!
 //! 函数清单：
 //! - `current_track_id` / `current_track` / `current_track_mut` / `selected_clip` / `selected_clip_mut`：当前选择访问。
-//! - `mark_dirty` / `bump_track_revision` / `bump_clip_revision` / `bump_selected_clip_revision`：脏标记与听感版本。
+//! - `mark_dirty` / `mark_view_dirty` / `bump_track_revision` / `bump_clip_revision` / `bump_selected_clip_revision`：脏标记与听感版本。
 //! - `controller_lane_mut`：访问轨道/主输出自动化轨。
 //! - `begin_edit_gesture` / `commit_edit_gesture` / `end_edit_gesture`：指针手势撤销。
 //! - `push_undo_snapshot` / `push_undo_now` / `undo` / `redo` / `clear_history`：历史栈。
@@ -55,6 +55,23 @@ impl SurfingApp {
         self.edit_seq = self.edit_seq.wrapping_add(1);
         self.dirty = true;
         self.needs_sync = true;
+    }
+
+    /// 所属模块：app / 编辑历史
+    /// 功能：标记工程需要保存，但不产生撤销步骤：用于展开/折叠等只影响界面显示的状态。
+    /// 输入：`self`。
+    /// 输出/副作用：置位 `dirty`；不改变 `edit_seq` 与 `needs_sync`，因此 Ctrl+Z 不会回退这些状态。
+    /// 复杂度：时间 O(1)，空间 O(1)。
+    ///
+    /// Module: app / edit history
+    /// Purpose: Mark the project for saving without creating an undo step, for UI-only state such as
+    /// expanded/collapsed rows.
+    /// Inputs: `self`.
+    /// Outputs / side effects: sets `dirty`; `edit_seq` and `needs_sync` stay unchanged, so Ctrl+Z
+    /// never reverts these states.
+    /// Complexity: O(1) time and space.
+    pub fn mark_view_dirty(&mut self) {
+        self.dirty = true;
     }
 
     /// Mutable automation lane for a track, or the pinned master volume lane

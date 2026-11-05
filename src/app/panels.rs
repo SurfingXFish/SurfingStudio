@@ -111,6 +111,72 @@ impl SurfingApp {
         }
     }
 
+    /// 所属模块：app / 面板 / 删除确认
+    /// 功能：删除组合轨道时询问“整棵删除”还是“只删组合并把成员释放到上级”。
+    /// 输入：`ctx`：egui 上下文。
+    /// 输出/副作用：按选择删除组合并清理界面；取消时只关闭弹窗。
+    /// 复杂度：时间 O(轨道数)，空间 O(1)。
+    ///
+    /// Module: app / panels / delete confirmation
+    /// Purpose: Ask whether to delete a whole group subtree or keep its members by releasing them to
+    /// the parent level.
+    /// Inputs: `ctx`: egui context.
+    /// Outputs / side effects: deletes the group per choice; cancelling only closes the modal.
+    /// Complexity: O(tracks) time and O(1) space.
+    pub(super) fn ui_group_delete_prompt(&mut self, ctx: &egui::Context) {
+        let Some(group_id) = self.group_delete_prompt else {
+            return;
+        };
+        let Some(index) = self.project.track_index_of(group_id) else {
+            self.group_delete_prompt = None;
+            return;
+        };
+        let name = self.project.tracks[index].name.clone();
+        let members = self.project.subtree_track_count(index);
+        let mut decision: Option<Option<GroupDeleteMode>> = None;
+        egui::Modal::new(egui::Id::new("group_delete_prompt")).show(ctx, |ui| {
+            ui.set_min_width(400.0);
+            ui.label(
+                egui::RichText::new(format!("删除组合轨道「{name}」"))
+                    .size(15.0)
+                    .strong(),
+            );
+            ui.add_space(6.0);
+            ui.label(format!(
+                "该组合当前包含 {members} 条成员轨道。请选择删除方式："
+            ));
+            ui.add_space(8.0);
+            if ui
+                .button(
+                    egui::RichText::new(format!("删除整个组合（含 {members} 条成员）"))
+                        .color(theme::RED),
+                )
+                .clicked()
+            {
+                decision = Some(Some(GroupDeleteMode::Whole));
+            }
+            if ui
+                .button("仅删除组合，成员释放到上级")
+                .on_hover_text("保留成员轨道，只移除组合轨道本身")
+                .clicked()
+            {
+                decision = Some(Some(GroupDeleteMode::Release));
+            }
+            ui.add_space(4.0);
+            if ui.button("取消").clicked() {
+                decision = Some(None);
+            }
+        });
+        match decision {
+            Some(Some(mode)) => self.confirm_group_delete(group_id, mode),
+            Some(None) => {
+                self.group_delete_prompt = None;
+                self.status = "已取消删除组合轨道".into();
+            }
+            None => {}
+        }
+    }
+
     // ----- panels ---------------------------------------------------------
 
     /// 所属模块：app / 面板

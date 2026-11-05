@@ -218,9 +218,10 @@ impl SurfingApp {
     /// plugin instances are created on the UI thread.
     /// Complexity: O(tracks + clips + plugin load) time and O(project) space.
     pub fn sync_engine(&mut self) {
-        // 导出会话独占引擎的工程/走带状态；期间禁止任何同步覆盖它。
-        // The export session owns the engine's project/transport; no sync may overwrite it meanwhile.
-        if self.export.is_rendering() {
+        // 导出/轨道渲染会话独占引擎的工程/走带状态；期间禁止任何同步覆盖它。
+        // The export/track-render session owns the engine's project/transport; no sync may overwrite
+        // it meanwhile.
+        if self.export.is_rendering() || self.track_render.is_rendering() {
             self.needs_sync = true;
             return;
         }
@@ -451,7 +452,10 @@ impl SurfingApp {
             return Vec::new();
         };
         let changed = engine.poll_parameter_changes();
-        self.ui_playing = engine.is_playing();
+        // 离线轨道渲染期间引擎内部在推进，但用户视角是“播放已禁用”，不要把播放态显示出来。
+        // Track rendering advances the engine internally, but playback is disabled from the user's
+        // point of view, so the transport must not look like it is playing.
+        self.ui_playing = engine.is_playing() && !self.track_render.is_rendering();
         self.ui_playhead = engine.position_beats();
         self.ui_cpu_load = engine.cpu_load();
         self.ui_auto_stopped = engine.auto_stopped();
@@ -503,6 +507,10 @@ impl SurfingApp {
     }
 
     pub fn toggle_play(&mut self) {
+        if self.track_render.is_rendering() {
+            self.status = "正在渲染轨道音频，播放已禁用".into();
+            return;
+        }
         if self.export.is_rendering() {
             self.status = "正在导出音频，传输已锁定".into();
             return;
@@ -542,7 +550,7 @@ impl SurfingApp {
     }
 
     pub fn seek(&mut self, beat: f64) {
-        if self.instrument_load_pending {
+        if self.instrument_load_pending || self.track_render.is_rendering() {
             return;
         }
         if let Ok(mut engine) = self.engine.try_lock() {

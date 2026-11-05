@@ -214,7 +214,7 @@ impl ShortcutAction {
             ShortcutAction::Copy => "复制",
             ShortcutAction::Paste => "粘贴",
             ShortcutAction::SelectAll => "全选",
-            ShortcutAction::Delete => "删除选中",
+            ShortcutAction::Delete => "删除选中 / 轨道",
             ShortcutAction::Cancel => "取消 / 关闭",
             ShortcutAction::Help => "帮助窗口",
             ShortcutAction::PluginBrowser => "插件浏览器",

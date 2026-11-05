@@ -7,6 +7,7 @@
 //! - `main_row_h` / `sub_row_h` / `add_row_h`：行高计算。
 //! - `sub_rows` / `block_height` / `total_height`：轨道块高度。
 //! - `row_at` / `row_rect_at` / `track_header_width`：命中测试与头部宽度。
+//! - `nested_inset` / `header_content_left`：组合层级按等差数列内缩。
 //! - `snap`：网格吸附。
 //! - `draw_audio_waveform` / `draw_volume_bars`：波形与音量绘制。
 //! - `split_clip`：在指定 beat 切分片段。
@@ -33,6 +34,15 @@ pub(super) const RULER_H: f32 = 30.0;
 pub(super) const MAIN_ROW_H: f32 = 72.0;
 pub(super) const SUB_ROW_H: f32 = 33.0;
 pub(super) const ADD_ROW_H: f32 = 30.0;
+/// 组合轨道与子轨卡片的基础内缩（逻辑点）。
+/// Base inset of group/member cards and child lanes from the header's left edge (logical points).
+pub(super) const NESTED_CARD_INSET: f32 = 4.0;
+/// 每深一层额外内缩的等差步长（逻辑点）。
+/// Arithmetic step added per nesting level (logical points).
+pub(super) const NESTED_INDENT_STEP: f32 = 6.0;
+/// 缩进累计的最大层数，避免深层嵌套挤压音量条。
+/// Maximum accumulated nesting levels for indentation, so deep groups never squeeze the volume bars.
+pub(super) const NESTED_INDENT_MAX_LEVELS: usize = 4;
 /// 轨道列表末尾「+ 添加轨道」行的高度（逻辑点）。
 /// Height of the trailing "+ add track" row in the track list (logical points).
 pub(super) const ADD_TRACK_ROW_H: f32 = 34.0;
@@ -87,7 +97,7 @@ pub(super) fn sub_rows(track: &crate::core::model::Track) -> usize {
 }
 
 pub(super) fn block_height(track: &crate::core::model::Track, scale: f32) -> f32 {
-    if track.expanded {
+    if track.child_lanes_visible() {
         main_row_h(scale) + add_row_h(scale) + sub_row_h(scale) * (sub_rows(track) - 1) as f32
     } else {
         main_row_h(scale)
@@ -98,7 +108,9 @@ pub(super) fn total_height(project: &Project, scale: f32) -> f32 {
     project
         .tracks
         .iter()
-        .map(|track| block_height(track, scale))
+        .enumerate()
+        .filter(|(index, _)| !project.track_is_hidden(*index))
+        .map(|(_, track)| block_height(track, scale))
         .sum::<f32>()
         + add_track_row_h(scale)
 }
@@ -112,11 +124,16 @@ pub(super) fn row_at(project: &Project, y: f32, scale: f32) -> Option<(usize, Ro
     let add_h = add_row_h(scale);
     let mut offset = 0.0_f32;
     for (index, track) in project.tracks.iter().enumerate() {
+        // 折叠组合的成员不占行高，命中测试与绘制都必须跳过。
+        // Folded group members occupy no height, so hit testing and painting skip them.
+        if project.track_is_hidden(index) {
+            continue;
+        }
         if y < offset + main_h {
             return Some((index, RowKind::Main, offset, main_h));
         }
         offset += main_h;
-        if track.expanded {
+        if track.child_lanes_visible() {
             if y < offset + add_h {
                 return Some((index, RowKind::AddController, offset, add_h));
             }
@@ -138,6 +155,57 @@ pub(super) fn row_at(project: &Project, y: f32, scale: f32) -> Option<(usize, Ro
 
 pub(super) fn track_header_width(rect: Rect) -> f32 {
     HEADER_W.min(rect.width() * 0.4)
+}
+
+/// 所属模块：ui::arrangement / 布局
+/// 功能：按轨道层级返回卡片/子轨的内缩量，按等差数列逐级增加并限制最大层数。
+/// 输入：
+/// - `project`：工程。
+/// - `index`：轨道下标。
+/// 输出/副作用：内缩（逻辑点）；不修改状态。
+/// 复杂度：时间 O(层级 × 轨道数)，空间 O(1)。
+///
+/// Module: ui::arrangement / layout
+/// Purpose: Return the card/child-lane inset for a track, growing in an arithmetic progression per
+/// nesting level and capped at `NESTED_INDENT_MAX_LEVELS`.
+/// Inputs:
+/// - `project`: the project.
+/// - `index`: track index.
+/// Outputs / side effects: inset in logical points; no state change.
+/// Complexity: O(depth × tracks) time and O(1) space.
+pub(super) fn nested_inset(project: &Project, index: usize) -> f32 {
+    let depth = project.track_depth(index).min(NESTED_INDENT_MAX_LEVELS);
+    NESTED_CARD_INSET + depth as f32 * NESTED_INDENT_STEP
+}
+
+/// 所属模块：ui::arrangement / 布局
+/// 功能：返回轨道头部的绘制起点：组合轨道与其成员按层级内缩，普通主轨保持原位置。
+/// 输入：
+/// - `project`：工程。
+/// - `index`：轨道下标。
+/// - `left`：轨道头部左边界（逻辑点）。
+/// 输出/副作用：内容左边界；不修改状态。
+/// 复杂度：时间 O(层级 × 轨道数)，空间 O(1)。
+///
+/// Module: ui::arrangement / layout
+/// Purpose: Return the header drawing origin: group tracks and their members inset by depth while
+/// ordinary main rows keep their original position.
+/// Inputs:
+/// - `project`: the project.
+/// - `index`: track index.
+/// - `left`: header left edge in logical points.
+/// Outputs / side effects: the content left edge; no state change.
+/// Complexity: O(depth × tracks) time and O(1) space.
+pub(super) fn header_content_left(project: &Project, index: usize, left: f32) -> f32 {
+    let nested = project
+        .tracks
+        .get(index)
+        .is_some_and(|track| track.is_group() || project.track_depth(index) > 0);
+    if nested {
+        left + nested_inset(project, index)
+    } else {
+        left
+    }
 }
 
 pub(super) fn row_rect_at(

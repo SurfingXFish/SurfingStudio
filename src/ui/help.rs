@@ -70,8 +70,11 @@ impl SurfingApp {
                     self.settings.shortcut_label(ShortcutAction::ScrollUp),
                     self.settings.shortcut_label(ShortcutAction::ScrollDown)
                 ));
+                ui.label(
+                    "• 轨道列表：Ctrl / Command 单击轨道头部多选；右键可创建组合轨道、渲染为音频、重新渲染、在下方插入轨道、修改乐器或删除轨道",
+                );
                 ui.label(format!(
-                    "• 右键菜单：编曲区 / 钢琴卷帘可剪切、复制、粘贴；轨道列表右键可插入轨道或修改乐器；{} = 删除选中项（片段/音符/效果器/控制器/节点）；顶部「量化」按网格对齐",
+                    "• 右键菜单：编曲区 / 钢琴卷帘可剪切、复制、粘贴；{} = 删除选中项（片段/音符/效果器/控制器/节点），没有选中项时删除当前轨道；顶部「量化」按网格对齐",
                     self.settings.shortcut_label(ShortcutAction::Delete)
                 ));
                 ui.add_space(6.0);

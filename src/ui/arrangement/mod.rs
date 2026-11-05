@@ -234,6 +234,11 @@ impl SurfingApp {
         // Track row backgrounds.
         let mut offset = 0.0_f32;
         for (index, track) in self.project.tracks.iter().enumerate() {
+            // 折叠组合的成员不占行高，也不绘制背景。
+            // Folded group members occupy no height and paint no background.
+            if self.project.track_is_hidden(index) {
+                continue;
+            }
             let block = block_height(track, row_scale);
             let y = lane_top + offset - scroll;
             offset += block;
@@ -251,6 +256,10 @@ impl SurfingApp {
             if main_rect.bottom() >= lane_top {
                 let fill = if index == self.selected_track {
                     theme::with_alpha(theme::ACCENT, 10)
+                } else if track.is_group() {
+                    // 组合轨道在编辑区用低饱和的轨道色提示“这一行是组合”。
+                    // Group rows tint the lane with their own colour so the row reads as a group.
+                    theme::with_alpha(theme::track_color(track.color), 16)
                 } else if index % 2 == 0 {
                     theme::BG
                 } else {
@@ -266,7 +275,7 @@ impl SurfingApp {
                     );
                 }
             }
-            if track.expanded {
+            if track.child_lanes_visible() {
                 let open_controller = if self.bottom_open {
                     match self.bottom_view {
                         BottomView::Controller { track_id, kind } if track_id == track.id => {
@@ -759,6 +768,9 @@ impl SurfingApp {
         ));
         let mut row_offset = 0.0_f32;
         for (index, track) in self.project.tracks.iter().enumerate() {
+            if self.project.track_is_hidden(index) {
+                continue;
+            }
             let y = lane_top + row_offset - scroll;
             row_offset += block_height(track, row_scale);
             if y + main_h < lane_top || y > rect.bottom() {
@@ -917,9 +929,12 @@ impl SurfingApp {
         row_offset = 0.0;
         let mut add_effect_rects: Vec<(usize, Rect)> = Vec::new();
         for (index, track) in self.project.tracks.iter().enumerate() {
+            if self.project.track_is_hidden(index) {
+                continue;
+            }
             let block_y = lane_top + row_offset - scroll;
             row_offset += block_height(track, row_scale);
-            if !track.expanded {
+            if !track.child_lanes_visible() {
                 continue;
             }
             // Keep automation lines inside the lane area so scrolled-up child
@@ -1049,11 +1064,31 @@ impl SurfingApp {
         let mut add_controller_rects: Vec<(usize, Rect)> = Vec::new();
         let mut remove_controller_rects: Vec<(usize, ControllerKind, Rect)> = Vec::new();
         let mut volume_bar_rects: Vec<(usize, [Rect; 2])> = Vec::new();
+        // 组合子树的左侧色带：从组合主轨一直延伸到最后一个可见成员。
+        // Left colour spine of each group subtree, from the group row to its last visible member.
+        let mut group_spines: Vec<(f32, f32, f32, egui::Color32)> = Vec::new();
         row_offset = 0.0;
         for (index, track) in self.project.tracks.iter().enumerate() {
+            if self.project.track_is_hidden(index) {
+                continue;
+            }
             let block_y = lane_top + row_offset - scroll;
             let block = block_height(track, row_scale);
             row_offset += block;
+            if track.is_group() && !track.collapsed {
+                let mut end_offset = row_offset;
+                for member_index in (index + 1)..self.project.subtree_end(index) {
+                    if !self.project.track_is_hidden(member_index) {
+                        end_offset += block_height(&self.project.tracks[member_index], row_scale);
+                    }
+                }
+                group_spines.push((
+                    rect.left() + nested_inset(&self.project, index) - 3.0,
+                    block_y,
+                    lane_top + end_offset - scroll,
+                    theme::track_color(track.color),
+                ));
+            }
             if block_y + block < lane_top || block_y > rect.bottom() {
                 continue;
             }
@@ -1069,34 +1104,81 @@ impl SurfingApp {
                 egui::pos2(rect.left(), block_y),
                 egui::pos2(lane_left, block_y + main_h),
             );
-            let header_fill = if index == self.selected_track {
+            let header_fill = if self.is_track_selected(index) {
                 theme::PANEL_3
             } else {
                 theme::PANEL_2
             };
-            painter.rect_filled(main_rect, CornerRadius::from(0), header_fill);
-            painter.rect_filled(
-                Rect::from_min_max(
-                    egui::pos2(rect.left(), block_y),
-                    egui::pos2(rect.left() + 4.0, block_y + main_h),
-                ),
-                CornerRadius::from(0),
-                color,
-            );
-            if index == self.selected_track {
+            // 组合轨道与其全部成员都使用子轨卡片样式，并按层级内缩；普通主轨保持原样。
+            // Groups and every member use the child-lane card style, inset by depth; ordinary main
+            // rows keep the original look.
+            let content_left = header_content_left(&self.project, index, rect.left());
+            let card_style = track.is_group() || self.project.track_depth(index) > 0;
+            if card_style {
+                let cell = Rect::from_min_max(
+                    egui::pos2(content_left, block_y + 2.0),
+                    egui::pos2(lane_left - 1.0, block_y + main_h - 2.0),
+                );
+                let fill = if self.is_track_selected(index) {
+                    theme::PANEL_3
+                } else if track.is_group() {
+                    theme::PANEL_2
+                } else {
+                    theme::PANEL
+                };
+                painter.rect_filled(cell, CornerRadius::from(4), fill);
                 painter.rect_stroke(
-                    main_rect,
-                    CornerRadius::from(0),
-                    Stroke::new(1.0_f32, theme::with_alpha(color, 180)),
+                    cell,
+                    CornerRadius::from(4),
+                    Stroke::new(
+                        1.0_f32,
+                        if self.is_track_selected(index) {
+                            color
+                        } else if track.is_group() {
+                            theme::with_alpha(color, 150)
+                        } else {
+                            theme::with_alpha(theme::LINE, 200)
+                        },
+                    ),
                     StrokeKind::Inside,
                 );
+                painter.rect_filled(
+                    Rect::from_min_max(
+                        egui::pos2(content_left + 3.0, block_y + 7.0),
+                        egui::pos2(content_left + 6.0, block_y + main_h - 7.0),
+                    ),
+                    CornerRadius::from(2),
+                    theme::with_alpha(color, 220),
+                );
+            } else {
+                painter.rect_filled(main_rect, CornerRadius::from(0), header_fill);
+                painter.rect_filled(
+                    Rect::from_min_max(
+                        egui::pos2(rect.left(), block_y),
+                        egui::pos2(rect.left() + 4.0, block_y + main_h),
+                    ),
+                    CornerRadius::from(0),
+                    color,
+                );
+                if self.is_track_selected(index) {
+                    painter.rect_stroke(
+                        main_rect,
+                        CornerRadius::from(0),
+                        Stroke::new(1.0_f32, theme::with_alpha(color, 180)),
+                        StrokeKind::Inside,
+                    );
+                }
             }
             // Expand chevron.
             let chevron = Rect::from_min_size(
-                egui::pos2(rect.left() + 8.0, block_y + (main_h - 16.0) * 0.5),
+                egui::pos2(content_left + 8.0, block_y + (main_h - 16.0) * 0.5),
                 Vec2::new(16.0, 16.0),
             );
-            let triangle = if track.expanded {
+            // 组合轨道用折叠状态控制成员行与自身子轨；普通轨道仍用 expanded 控制子轨。
+            // A group's chevron folds its member rows and own lanes; ordinary tracks keep toggling
+            // lanes.
+            let rows_open = track.child_lanes_visible();
+            let triangle = if rows_open {
                 vec![
                     egui::pos2(chevron.left() + 3.0, chevron.top() + 5.0),
                     egui::pos2(chevron.right() - 3.0, chevron.top() + 5.0),
@@ -1111,7 +1193,7 @@ impl SurfingApp {
             };
             painter.add(egui::Shape::convex_polygon(
                 triangle,
-                if index == self.selected_track {
+                if self.is_track_selected(index) {
                     color
                 } else {
                     theme::TEXT_DIM
@@ -1119,21 +1201,30 @@ impl SurfingApp {
                 Stroke::NONE,
             ));
 
+            // 组合成员通过选项卡片的层级内缩表达嵌套，不再额外绘制引导线。
+            // Group members convey nesting through the inset card itself, without extra guides.
             painter.text(
-                egui::pos2(rect.left() + 28.0, block_y + 9.0),
+                egui::pos2(content_left + 28.0, block_y + 9.0),
                 Align2::LEFT_TOP,
                 &track.name,
                 FontId::proportional(13.0),
                 theme::TEXT,
             );
             if main_h >= 64.0 {
-                let subtitle = if track.is_audio_lane() {
+                let subtitle = if track.is_group() {
+                    let members = self.project.subtree_track_count(index);
+                    if members > 0 {
+                        format!("组合轨道 · {members} 轨")
+                    } else {
+                        "组合轨道".to_string()
+                    }
+                } else if track.is_audio_lane() {
                     "音频轨道".to_string()
                 } else {
                     track.instrument_name()
                 };
                 painter.text(
-                    egui::pos2(rect.left() + 28.0, block_y + 27.0),
+                    egui::pos2(content_left + 28.0, block_y + 27.0),
                     Align2::LEFT_TOP,
                     subtitle,
                     FontId::proportional(10.0),
@@ -1143,11 +1234,11 @@ impl SurfingApp {
 
             let controls_y = block_y + main_h - 25.0 * row_scale.clamp(0.55, 2.4);
             let mute_rect = Rect::from_min_size(
-                egui::pos2(rect.left() + 28.0, controls_y),
+                egui::pos2(content_left + 28.0, controls_y),
                 Vec2::new(26.0, 18.0),
             );
             let solo_rect = Rect::from_min_size(
-                egui::pos2(rect.left() + 60.0, controls_y),
+                egui::pos2(content_left + 60.0, controls_y),
                 Vec2::new(26.0, 18.0),
             );
             painter.rect_filled(
@@ -1193,7 +1284,7 @@ impl SurfingApp {
             // Two horizontal L/R bars double as volume sliders.
             let bar_bottom = block_y + main_h - 4.0 * row_scale.clamp(0.55, 1.6);
             let bar_area = Rect::from_min_max(
-                egui::pos2(rect.left() + 94.0, bar_bottom - 14.0),
+                egui::pos2(content_left + 94.0, bar_bottom - 14.0),
                 egui::pos2(lane_left - 6.0, bar_bottom),
             );
             if bar_area.width() > 16.0 {
@@ -1209,7 +1300,7 @@ impl SurfingApp {
             }
 
             // Sub-lane headers.
-            if track.expanded {
+            if track.child_lanes_visible() {
                 let open_controller = if self.bottom_open {
                     match self.bottom_view {
                         BottomView::Controller { track_id, kind } if track_id == track.id => {
@@ -1223,7 +1314,7 @@ impl SurfingApp {
                 // Child lanes live in an indented list of independent cells.
                 // Keep the indentation small so the child list takes a little
                 // more of the header width.
-                let sub_left = rect.left() + 4.0;
+                let sub_left = rect.left() + nested_inset(&self.project, index);
                 let sub_right = lane_left - 1.0;
                 let sub_top = (block_y + main_h).max(lane_top);
                 let sub_bottom = (block_y + block).min(rect.bottom() - 1.0);
@@ -1379,6 +1470,29 @@ impl SurfingApp {
                         format!("效果器链 · {}", track.effects.len()),
                         FontId::proportional(10.0),
                         if selected { theme::ACCENT } else { color },
+                    );
+                }
+            }
+        }
+
+        // 画出组合子树的左侧色带：即使成员卡片内缩，整段组合仍有统一的颜色脊线。
+        // Paint the group spine: even with inset member cards, the whole subtree shares one colour.
+        if !group_spines.is_empty() {
+            let spine_painter = painter.with_clip_rect(Rect::from_min_max(
+                egui::pos2(rect.left(), lane_top),
+                egui::pos2(lane_left, rect.bottom()),
+            ));
+            for (spine_x, top, bottom, color) in group_spines {
+                let top = top.max(lane_top);
+                let bottom = bottom.min(rect.bottom());
+                if bottom - top > 4.0 {
+                    spine_painter.rect_filled(
+                        Rect::from_min_max(
+                            egui::pos2(spine_x, top + 2.0),
+                            egui::pos2(spine_x + 2.0, bottom - 2.0),
+                        ),
+                        CornerRadius::from(1),
+                        theme::with_alpha(color, 150),
                     );
                 }
             }
@@ -1801,6 +1915,14 @@ impl SurfingApp {
                                         .project
                                         .tracks
                                         .get(track_index)
+                                        .is_some_and(|track| track.is_group())
+                                    {
+                                        self.status = "组合轨道不能创建片段".into();
+                                        self.arr_drag = ArrangementDrag::None;
+                                    } else if self
+                                        .project
+                                        .tracks
+                                        .get(track_index)
                                         .map(|track| track.has_audio_clips())
                                         .unwrap_or(false)
                                     {
@@ -2149,6 +2271,9 @@ impl SurfingApp {
                         let mut selected: Vec<(usize, usize)> = Vec::new();
                         let mut offset = 0.0_f32;
                         for (track_index, track) in self.project.tracks.iter().enumerate() {
+                            if self.project.track_is_hidden(track_index) {
+                                continue;
+                            }
                             let block = block_height(track, row_scale);
                             let row_top = lane_top + offset - scroll;
                             offset += block;
@@ -2239,8 +2364,20 @@ impl SurfingApp {
                         lane_width,
                         row_scale,
                     ) {
+                        let ctrl = ui.input(|i| i.modifiers.ctrl || i.modifiers.command);
+                        // Ctrl/Command main-row click toggles the track multi-selection.
+                        // Ctrl/Command 单击主轨切换轨道多选。
+                        let multi_select =
+                            single_clicked && !double_clicked && kind == RowKind::Main && ctrl;
                         let previous_track = self.selected_track;
-                        self.selected_track = track_index;
+                        if multi_select {
+                            self.toggle_track_selection(track_index);
+                        } else {
+                            if single_clicked || double_clicked {
+                                self.selected_tracks = vec![track_index];
+                            }
+                            self.selected_track = track_index;
+                        }
                         if previous_track != track_index && kind != RowKind::Main {
                             // Selecting a child lane of another track makes the
                             // old clip/note selection invalid. The piano roll
@@ -2254,44 +2391,83 @@ impl SurfingApp {
                         let track_id = self.project.tracks[track_index].id;
                         let row_y = row_rect.top();
                         let row_main_h = main_row_h(row_scale);
+                        let content_left =
+                            header_content_left(&self.project, track_index, rect.left());
                         let chevron = Rect::from_min_size(
-                            egui::pos2(rect.left() + 8.0, row_y + (row_main_h - 16.0) * 0.5),
+                            egui::pos2(content_left + 8.0, row_y + (row_main_h - 16.0) * 0.5),
                             Vec2::new(16.0, 16.0),
                         );
                         let controls_y = row_y + row_main_h - 25.0 * row_scale.clamp(0.55, 2.4);
                         let mute_rect = Rect::from_min_size(
-                            egui::pos2(rect.left() + 28.0, controls_y),
+                            egui::pos2(content_left + 28.0, controls_y),
                             Vec2::new(26.0, 18.0),
                         );
                         let solo_rect = Rect::from_min_size(
-                            egui::pos2(rect.left() + 60.0, controls_y),
+                            egui::pos2(content_left + 60.0, controls_y),
                             Vec2::new(26.0, 18.0),
                         );
                         // 乐器名称（副标题）区域：单击打开乐器窗口。
                         // Instrument name (subtitle) area: a single click opens the instrument window.
                         let subtitle_rect = Rect::from_min_size(
-                            egui::pos2(rect.left() + 24.0, row_y + 23.0),
-                            Vec2::new((lane_left - rect.left() - 28.0).max(40.0), 18.0),
+                            egui::pos2(content_left + 24.0, row_y + 23.0),
+                            Vec2::new((lane_left - content_left - 28.0).max(40.0), 18.0),
                         );
                         if single_clicked
+                            && !multi_select
                             && kind == RowKind::Main
                             && row_main_h >= 64.0
                             && subtitle_rect.contains(pos)
+                            && !self.project.tracks[track_index].is_group()
                         {
                             self.open_instrument_picker(track_index);
-                        } else if single_clicked && kind == RowKind::Main && chevron.contains(pos) {
+                        } else if single_clicked
+                            && !multi_select
+                            && kind == RowKind::Main
+                            && chevron.contains(pos)
+                        {
+                            let mut folded = false;
                             if let Some(track) = self.project.tracks.get_mut(track_index) {
-                                track.expanded = !track.expanded;
+                                if track.is_group() {
+                                    // 组合轨道的箭头折叠/展开成员行与自身子轨。
+                                    // A group's chevron folds or unfolds its members and own lanes.
+                                    if track.collapsed || !track.expanded {
+                                        track.collapsed = false;
+                                        track.expanded = true;
+                                    } else {
+                                        track.collapsed = true;
+                                    }
+                                    folded = track.collapsed;
+                                } else {
+                                    track.expanded = !track.expanded;
+                                }
                             }
-                            self.mark_dirty();
-                        } else if single_clicked && kind == RowKind::Main && mute_rect.contains(pos)
+                            if folded {
+                                // 折叠后成员不可见，选择回到组合轨道本身。
+                                // Folded members are hidden, so the selection returns to the group.
+                                self.selected_track = track_index;
+                                self.selected_tracks = vec![track_index];
+                                self.selected_clip = None;
+                                self.selected_clips.clear();
+                                self.selected_note = None;
+                                self.selected_notes.clear();
+                            }
+                            // 展开/折叠只影响显示，不进入撤销栈。
+                            // Expanding/folding only affects the view and must not create an undo step.
+                            self.mark_view_dirty();
+                        } else if single_clicked
+                            && !multi_select
+                            && kind == RowKind::Main
+                            && mute_rect.contains(pos)
                         {
                             self.push_undo_now();
                             if let Some(track) = self.project.tracks.get_mut(track_index) {
                                 track.muted = !track.muted;
                             }
                             self.mark_dirty();
-                        } else if single_clicked && kind == RowKind::Main && solo_rect.contains(pos)
+                        } else if single_clicked
+                            && !multi_select
+                            && kind == RowKind::Main
+                            && solo_rect.contains(pos)
                         {
                             self.push_undo_now();
                             if let Some(track) = self.project.tracks.get_mut(track_index) {
@@ -2304,7 +2480,20 @@ impl SurfingApp {
                             && !mute_rect.contains(pos)
                             && !solo_rect.contains(pos)
                         {
-                            self.open_track_editor(track_index, None);
+                            if self.project.tracks[track_index].is_group() {
+                                // 组合轨道主轨即音量控制器：双击打开它的音量自动化卷帘。
+                                // A group's main lane is its volume controller: double click opens the
+                                // volume automation roll.
+                                self.bottom_view = BottomView::Controller {
+                                    track_id: self.project.tracks[track_index].id,
+                                    kind: ControllerKind::Volume,
+                                };
+                                self.bottom_open = true;
+                                self.controller_selection.clear();
+                                self.controller_marquee_start = None;
+                            } else {
+                                self.open_track_editor(track_index, None);
+                            }
                         } else if double_clicked
                             && !matches!(kind, RowKind::Main | RowKind::AddController)
                         {
@@ -2354,8 +2543,18 @@ impl SurfingApp {
                     lane_width,
                     row_scale,
                 ) {
+                    let ctrl = ui.input(|i| i.modifiers.ctrl || i.modifiers.command);
+                    let multi_select =
+                        single_clicked && !double_clicked && kind == RowKind::Main && ctrl;
                     let previous_track = self.selected_track;
-                    self.selected_track = track_index;
+                    if multi_select {
+                        self.toggle_track_selection(track_index);
+                    } else {
+                        if single_clicked || double_clicked {
+                            self.selected_tracks = vec![track_index];
+                        }
+                        self.selected_track = track_index;
+                    }
                     if previous_track != track_index && kind != RowKind::Main {
                         // Keep the selection consistent when another track's
                         // child lane is selected.
@@ -2364,7 +2563,11 @@ impl SurfingApp {
                         self.selected_note = None;
                         self.selected_notes.clear();
                     }
-                    if single_clicked && !double_clicked && mode == MouseMode::Select {
+                    if single_clicked
+                        && !double_clicked
+                        && mode == MouseMode::Select
+                        && !multi_select
+                    {
                         // Select mode: clicking the lane moves the playhead.
                         self.seek(snap(x_to_beat(pos.x), self.snap_beats).max(0.0));
                     }
@@ -2372,6 +2575,18 @@ impl SurfingApp {
                     if double_clicked {
                         self.selected_note = None;
                         match kind {
+                            RowKind::Main if self.project.tracks[track_index].is_group() => {
+                                // 组合轨道主轨即音量控制器：双击打开它的音量自动化卷帘。
+                                // A group's main lane is its volume controller: double click opens the
+                                // volume automation roll.
+                                self.bottom_view = BottomView::Controller {
+                                    track_id: track_id,
+                                    kind: ControllerKind::Volume,
+                                };
+                                self.bottom_open = true;
+                                self.controller_selection.clear();
+                                self.controller_marquee_start = None;
+                            }
                             RowKind::Main => {
                                 let beat = snap(x_to_beat(pos.x), self.snap_beats).max(0.0);
                                 let existing =
@@ -2407,6 +2622,14 @@ impl SurfingApp {
                                         // Re-focus the detached roll instead of
                                         // creating a clip underneath it.
                                         self.open_track_editor(track_index, None);
+                                    } else if self
+                                        .project
+                                        .tracks
+                                        .get(track_index)
+                                        .is_some_and(|track| track.is_group())
+                                    {
+                                        self.status = "组合轨道不能创建片段".into();
+                                        self.arr_drag = ArrangementDrag::None;
                                     } else if self
                                         .project
                                         .tracks
@@ -2463,7 +2686,7 @@ impl SurfingApp {
                         }
                         self.controller_selection.clear();
                         self.controller_marquee_start = None;
-                    } else if kind == RowKind::Main {
+                    } else if kind == RowKind::Main && !multi_select {
                         self.selected_note = None;
                         self.selected_notes.clear();
                         self.selected_controller = None;
@@ -2633,6 +2856,17 @@ impl SurfingApp {
                     .max(0.0);
                 let track_index = match target {
                     Some(index) => {
+                        // 组合轨道只汇总成员，不能直接接收片段。
+                        // A group only sums its members and accepts no clips.
+                        if self
+                            .project
+                            .tracks
+                            .get(index)
+                            .is_some_and(|track| track.is_group())
+                        {
+                            self.status = "组合轨道不能放置音频片段".into();
+                            continue;
+                        }
                         // A lane that already holds MIDI clips cannot also hold
                         // audio clips, otherwise child-lane effectiveness is
                         // ambiguous.
@@ -2695,6 +2929,12 @@ impl SurfingApp {
                         lane_width,
                         row_scale,
                     ) {
+                        // 右键不在多选中的轨道时改为单选；右键已选中的轨道保留多选用于批量操作。
+                        // Right-clicking outside the multi-selection falls back to a single track;
+                        // right-clicking inside it keeps the selection for batch actions.
+                        if !self.selected_tracks.contains(&track_index) {
+                            self.selected_tracks = vec![track_index];
+                        }
                         self.selected_track = track_index;
                         if kind == RowKind::Main {
                             if pos.x < lane_left {
@@ -2733,12 +2973,61 @@ impl SurfingApp {
         egui::Popup::context_menu(&response).show(|ui| {
             ui.set_min_width(176.0);
             if let ArrangementMenu::Track(track_index) = menu {
+                let can_group = self.selected_tracks.len() >= 2;
+                if ui
+                    .add_enabled(
+                        can_group,
+                        egui::Button::new(egui::RichText::new("创建组合轨道").size(12.5)),
+                    )
+                    .on_hover_text(if can_group {
+                        "把选中的轨道移入新的组合轨道"
+                    } else {
+                        "先用 Ctrl 单击选择两条及以上轨道"
+                    })
+                    .clicked()
+                {
+                    self.create_group_from_selection();
+                    ui.close();
+                }
+                if theme::menu_button(ui, "渲染为音频", "").clicked() {
+                    self.request_track_render();
+                    ui.close();
+                }
+                let rendered = self
+                    .project
+                    .tracks
+                    .get(track_index)
+                    .and_then(|track| track.rendered_from.map(|_| track.id));
+                if let Some(audio_track) = rendered {
+                    if theme::menu_button(ui, "重新渲染", "").clicked() {
+                        self.request_track_rerender(audio_track);
+                        ui.close();
+                    }
+                }
                 if theme::menu_button(ui, "在下方插入轨道", "").clicked() {
                     self.insert_track_below(track_index);
                     ui.close();
                 }
-                if theme::menu_button(ui, "修改乐器…", "").clicked() {
+                let is_group = self
+                    .project
+                    .tracks
+                    .get(track_index)
+                    .is_some_and(|track| track.is_group());
+                if ui
+                    .add_enabled(
+                        !is_group,
+                        egui::Button::new(egui::RichText::new("修改乐器…").size(12.5)),
+                    )
+                    .clicked()
+                {
                     self.open_instrument_picker(track_index);
+                    ui.close();
+                }
+                if ui
+                    .button(egui::RichText::new("删除轨道").size(12.5).color(theme::RED))
+                    .clicked()
+                {
+                    self.request_delete_track(track_index);
                     ui.close();
                 }
                 ui.separator();
@@ -2762,6 +3051,22 @@ impl SurfingApp {
             if paste.clicked() {
                 self.paste_clipboard();
                 ui.close();
+            }
+            // 渲染生成的音频片段也提供重新渲染入口。
+            // Rendered audio clips also offer the re-render entry.
+            if menu == ArrangementMenu::Lane {
+                let rendered_track = self
+                    .project
+                    .tracks
+                    .get(self.selected_track)
+                    .and_then(|track| track.rendered_from.map(|_| track.id));
+                if let Some(audio_track) = rendered_track {
+                    ui.separator();
+                    if theme::menu_button(ui, "重新渲染", "").clicked() {
+                        self.request_track_rerender(audio_track);
+                        ui.close();
+                    }
+                }
             }
             // 同一轨道多选时提供合并；音频片段不参与合并，按钮保持可见但禁用。
             // Offer merging for same-track multi-selection; audio clips cannot merge, so the entry

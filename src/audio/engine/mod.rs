@@ -8,6 +8,7 @@
 //! - `Engine::new` / `build` / `set_sample_rate`：引擎构造与采样率。
 //! - `Engine::sync_project` / `sync_project_slice`：同步工程、重建轨道运行时与音符事件；
 //!   后者按时间片补载乐器插件。
+//! - `Engine::rebuild_group_routing` / `refresh_latency_totals`：组合轨道路由、静音/独奏继承与延迟总量。
 //! - `Engine::play` / `pause` / `seek` / `reset_playback_state` / `reset_note_state`：传输与挂音清理。
 //! - `Engine::audition` / `is_auditioning`：试听。
 //! - `Engine::stereo_levels` / `cpu_load` / `auto_stopped`：UI 遥测。
@@ -116,6 +117,25 @@ pub struct Engine {
     levels: Vec<f32>,
     levels_l: Vec<f32>,
     levels_r: Vec<f32>,
+    /// 每轨的上级组合轨道下标（与 `project.tracks` 对齐）；`None` 表示直接进入主输出。
+    /// Parent group index per track, aligned with `project.tracks`; `None` routes to the master bus.
+    group_parent: Vec<Option<usize>>,
+    /// 组合轨道处理顺序：子组合排在父组合之前，保证总线自内向外汇总。
+    /// Group processing order: child groups before their parents so buses sum inside out.
+    group_order: Vec<usize>,
+    /// 每轨是否处于静音的组合轨道之下（与 `project.tracks` 对齐）。
+    /// Whether each track sits under a muted group, aligned with `project.tracks`.
+    group_muted: Vec<bool>,
+    /// 每轨所属组合链中是否有独奏的组合轨道（与 `project.tracks` 对齐）。
+    /// Whether a group ancestor is soloed, aligned with `project.tracks`.
+    group_solo: Vec<bool>,
+    /// 每轨的延迟总量：自身链 + 全部上级组合链；组合轨道自身的补偿由成员承担。
+    /// Total latency per track (own chain plus every ancestor group chain); members carry it.
+    latency_total: Vec<usize>,
+    /// 组合总线 scratch：按轨道下标保存成员混音，仅在同步阶段调整容量。
+    /// Group-bus scratch indexed by track index; capacity is only adjusted during sync.
+    group_bus_l: Vec<Vec<f32>>,
+    group_bus_r: Vec<Vec<f32>>,
     master_peak: f32,
     master_peak_l: f32,
     master_peak_r: f32,
@@ -1185,6 +1205,13 @@ impl Engine {
             levels: Vec::new(),
             levels_l: Vec::new(),
             levels_r: Vec::new(),
+            group_parent: Vec::new(),
+            group_order: Vec::new(),
+            group_muted: Vec::new(),
+            group_solo: Vec::new(),
+            latency_total: Vec::new(),
+            group_bus_l: Vec::new(),
+            group_bus_r: Vec::new(),
             master_peak: 0.0,
             master_peak_l: 0.0,
             master_peak_r: 0.0,
@@ -1547,6 +1574,10 @@ impl Engine {
         // Playback relies on `self.tracks[i]` matching `project.tracks[i]`.
         debug_assert_eq!(self.tracks.len(), project.tracks.len());
 
+        // 组合轨道路由与延迟总量必须在延迟补偿之前重建。
+        // Group routing and total latencies must be rebuilt before applying compensation.
+        self.rebuild_group_routing(project);
+
         let desired_master = project.master_effect.as_ref().map(EffectRef::key);
         let master_needs_plugin = desired_master != self.master_effect_key
             && matches!(project.master_effect.as_ref(), Some(EffectRef::Plugin(_)));
@@ -1624,7 +1655,12 @@ impl Engine {
             .tracks
             .iter()
             .enumerate()
-            .max_by_key(|(_, track)| track.chain_latency)
+            .max_by_key(|(index, track)| {
+                self.latency_total
+                    .get(*index)
+                    .copied()
+                    .unwrap_or(track.chain_latency)
+            })
             .and_then(|(index, _)| project.tracks.get(index))
             .map(|track| track.name.clone())
             .unwrap_or_default();
@@ -1714,6 +1750,115 @@ impl Engine {
         );
     }
 
+    /// 所属模块：audio::engine / 组合轨道路由
+    /// 功能：按工程重建组合轨道路由：父级、静音/独奏继承、处理顺序、总线 scratch 与延迟总量。
+    /// 输入：`project`：即将生效的工程。
+    /// 输出/副作用：覆盖 `group_parent` / `group_order` / `group_muted` / `group_solo` /
+    /// `latency_total` 与组合总线缓冲；不创建插件。
+    /// 复杂度：时间 O(轨道数² + 组合数 log 组合数)，空间 O(轨道数)。
+    ///
+    /// Module: audio::engine / group routing
+    /// Purpose: Rebuild group routing from the project: parents, mute/solo inheritance, processing
+    /// order, bus scratch and total latency.
+    /// Inputs: `project`: the project about to take effect.
+    /// Outputs / side effects: overwrites `group_parent` / `group_order` / `group_muted` /
+    /// `group_solo` / `latency_total` and the group-bus buffers; creates no plugins.
+    /// Complexity: O(tracks² + groups log groups) time and O(tracks) space.
+    fn rebuild_group_routing(&mut self, project: &Project) {
+        let count = project.tracks.len();
+        let mut parent: Vec<Option<usize>> = vec![None; count];
+        for (index, track) in project.tracks.iter().enumerate() {
+            let Some(group_id) = track.group else {
+                continue;
+            };
+            let Some(group_index) = project.track_index_of(group_id) else {
+                continue;
+            };
+            // 只有排在成员之前的组合轨道才能作为父级，避免环与倒序引用。
+            // Only a group listed before its member can be a parent, which rules out cycles.
+            if project.tracks[group_index].is_group() && group_index < index {
+                parent[index] = Some(group_index);
+            }
+        }
+        let mut muted = vec![false; count];
+        let mut solo = vec![false; count];
+        for index in 0..count {
+            let mut current = parent[index];
+            let mut guard = 0usize;
+            while let Some(group_index) = current {
+                muted[index] |= project.tracks[group_index].muted;
+                solo[index] |= project.tracks[group_index].solo;
+                current = parent[group_index];
+                guard += 1;
+                if guard > count {
+                    break;
+                }
+            }
+        }
+        let depth_of = |index: usize| -> usize {
+            let mut depth = 0usize;
+            let mut current = parent[index];
+            while let Some(group_index) = current {
+                depth += 1;
+                current = parent[group_index];
+                if depth > count {
+                    break;
+                }
+            }
+            depth
+        };
+        let mut order: Vec<usize> = (0..count)
+            .filter(|index| project.tracks[*index].is_group())
+            .collect();
+        // 深层的组合先处理，父组合才能收到已经汇总好的子总线。
+        // Deeper groups run first so parent buses receive their children's summed output.
+        order.sort_by_key(|index| std::cmp::Reverse(depth_of(*index)));
+
+        self.group_parent = parent;
+        self.group_order = order;
+        self.group_muted = muted;
+        self.group_solo = solo;
+        self.group_bus_l.resize_with(count, Vec::new);
+        self.group_bus_l.truncate(count);
+        self.group_bus_r.resize_with(count, Vec::new);
+        self.group_bus_r.truncate(count);
+        self.refresh_latency_totals();
+    }
+
+    /// 所属模块：audio::engine / 组合轨道路由
+    /// 功能：按当前各轨链延迟重建 `latency_total`，把上级组合链的延迟计入成员轨道。
+    /// 输入：`self`。
+    /// 输出/副作用：覆盖 `latency_total`；不修改插件。
+    /// 复杂度：时间 O(轨道数 × 层级)，空间 O(轨道数)。
+    ///
+    /// Module: audio::engine / group routing
+    /// Purpose: Rebuild `latency_total` from the current chain latencies, adding every ancestor
+    /// group chain to its members.
+    /// Inputs: `self`.
+    /// Outputs / side effects: overwrites `latency_total`; plugins are untouched.
+    /// Complexity: O(tracks × depth) time and O(tracks) space.
+    fn refresh_latency_totals(&mut self) {
+        let count = self.tracks.len();
+        let mut totals = vec![0usize; count];
+        for index in 0..count {
+            let mut total = self.tracks[index].chain_latency;
+            let mut current = self.group_parent.get(index).copied().flatten();
+            let mut guard = 0usize;
+            while let Some(group_index) = current {
+                if let Some(runtime) = self.tracks.get(group_index) {
+                    total = total.saturating_add(runtime.chain_latency);
+                }
+                current = self.group_parent.get(group_index).copied().flatten();
+                guard += 1;
+                if guard > count {
+                    break;
+                }
+            }
+            totals[index] = total;
+        }
+        self.latency_total = totals;
+    }
+
     /// 所属模块：audio::engine / 延迟补偿
     /// 功能：按当前各轨链延迟重新计算补偿量与实时前瞻量。
     /// 输入：`master_latency`：主效果器延迟（采样数）。
@@ -1729,14 +1874,30 @@ impl Engine {
     /// a change during playback re-runs the pre-roll. Returns the slowest chain latency.
     /// Complexity: O(tracks) time and O(1) space.
     fn apply_latency_compensation(&mut self, master_latency: usize) -> usize {
+        // 每次补偿前重算总量：插件延迟可能在两次同步之间被直接更新。
+        // Recompute totals before compensating: plugin latency may change between two syncs.
+        self.refresh_latency_totals();
         let max_latency = self
-            .tracks
+            .latency_total
             .iter()
-            .map(|track| track.chain_latency)
+            .copied()
             .max()
+            .or_else(|| self.tracks.iter().map(|track| track.chain_latency).max())
             .unwrap_or(0);
-        for track in &mut self.tracks {
-            let compensation = max_latency.saturating_sub(track.chain_latency);
+        for (index, track) in self.tracks.iter_mut().enumerate() {
+            let is_group = self.project.tracks.get(index).is_some_and(Track::is_group);
+            // 组合轨道的延迟由成员补齐，组合自身不再补，否则会重复累加。
+            // Members already compensate a group's latency, so the group itself must not pad again.
+            let total = self
+                .latency_total
+                .get(index)
+                .copied()
+                .unwrap_or(track.chain_latency);
+            let compensation = if is_group {
+                0
+            } else {
+                max_latency.saturating_sub(total)
+            };
             track.comp_delay.set(compensation);
         }
         // 前瞻量 = 最慢轨道链 + 主效果器延迟：实时渲染提前这么多，听感就和播放头对齐。
@@ -1820,7 +1981,12 @@ impl Engine {
             .tracks
             .iter()
             .enumerate()
-            .max_by_key(|(_, track)| track.chain_latency)
+            .max_by_key(|(index, track)| {
+                self.latency_total
+                    .get(*index)
+                    .copied()
+                    .unwrap_or(track.chain_latency)
+            })
             .and_then(|(index, _)| self.project.tracks.get(index))
             .map(|track| track.name.clone())
             .unwrap_or_default();
@@ -2303,6 +2469,53 @@ mod tests {
         assert!(
             peak > 0.01,
             "native chain should produce audio, peak={peak}"
+        );
+    }
+
+    /// 覆盖：组合轨道汇总成员音频，静音组合后成员不再出声。
+    /// Covers: a group sums its members and muting the group silences them.
+    #[test]
+    fn group_bus_sums_members_and_mute_silences_the_bus() {
+        let mut project = Project::default();
+        project.bpm = 120.0;
+        for id in 1..=2 {
+            let mut track = Track::new(
+                id,
+                "Member",
+                [0, 0, 0],
+                InstrumentRef::Synth(crate::core::model::SynthSettings::default()),
+            );
+            let mut clip = Clip::new(id, "clip", 0.0, 2.0);
+            clip.notes.push(crate::core::model::Note {
+                start: 0.0,
+                length: 1.0,
+                pitch: 60 + id as u8,
+                velocity: 100,
+            });
+            track.clips.push(clip);
+            project.tracks.push(track);
+        }
+        let group_index = project.create_group(&[0, 1], None).expect("group");
+        assert_eq!(group_index, 0);
+
+        let samples = Engine::render_offline(&project, 48_000.0).expect("offline render");
+        let peak = samples
+            .iter()
+            .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
+        assert!(
+            peak > 0.01,
+            "group bus should output its members, peak={peak}"
+        );
+
+        let mut muted = project.clone();
+        muted.tracks[0].muted = true;
+        let samples = Engine::render_offline(&muted, 48_000.0).expect("offline render");
+        let peak = samples
+            .iter()
+            .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
+        assert!(
+            peak < 1e-4,
+            "muting the group must silence members, peak={peak}"
         );
     }
 
