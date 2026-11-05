@@ -78,7 +78,7 @@ static RESULT_READY: Condvar = Condvar::new();
 /// Complexity: O(text length) time and O(1) space.
 fn trace(text: &str) {
     use std::ffi::CString;
-    extern "C" {
+    unsafe extern "C" {
         fn __android_log_write(prio: i32, tag: *const u8, text: *const u8) -> i32;
     }
     let Ok(text) = CString::new(text) else {
