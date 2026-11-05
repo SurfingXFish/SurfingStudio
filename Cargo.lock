@@ -3403,7 +3403,7 @@ dependencies = [
 
 [[package]]
 name = "surfing-studio"
-version = "1.2.4-a"
+version = "1.2.4-t"
 dependencies = [
  "cpal",
  "crc32fast",
@@ -3429,7 +3429,7 @@ dependencies = [
 
 [[package]]
 name = "surfing-studio-android"
-version = "1.2.1-a"
+version = "1.2.4-t"
 dependencies = [
  "android-activity",
  "eframe",
