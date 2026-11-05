@@ -1,4 +1,28 @@
-//! Project container, defaults and the built-in demo arrangement.
+//! 所属模块：core::model / 工程容器
+//! 文件用途：
+//! - 定义 `Project` 容器、默认值与内置 Demo 编曲。
+//! - 提供轨道/片段的增删、组合轨道重排与子树查询等纯规则。
+//!
+//! 函数清单：
+//! - `Project::beats_per_bar` / `end_beat` / `content_end_beat` / `auto_stop_beat` / `any_solo`：工程级派生规则。
+//! - `Project::next_track_id` / `next_clip_id` / `insert_track` / `add_track` / `add_audio_track`：轨道与片段 id/插入。
+//! - `Project::track_index_of` / `track_depth` / `subtree_end` / `subtree_content_end`：组合层级与子树查询。
+//! - `Project::collapsed_ancestor` / `track_is_hidden` / `subtree_track_count`：折叠组合的可见性与成员数量。
+//! - `Project::create_group` / `remove_track_at` / `remove_subtree`：创建/删除组合轨道并维护成员连续与父级。
+//! - `Project::master_volume_at`：主音量自动化。
+//! - `Project::demo` / `empty`：Demo 与空工程构造。
+//!
+//! Module: core::model / project container
+//! Purpose:
+//! - Define the `Project` container, defaults and the built-in demo arrangement.
+//! - Provide pure rules for track/clip insertion, group reordering and subtree queries.
+//!
+//! Functions:
+//! - `Project::beats_per_bar` / `end_beat` / `content_end_beat` / `auto_stop_beat` / `any_solo`.
+//! - `Project::next_track_id` / `next_clip_id` / `insert_track` / `add_track` / `add_audio_track`.
+//! - `Project::track_index_of` / `track_depth` / `subtree_end` / `subtree_content_end`.
+//! - `Project::create_group` / `remove_track_at`: create/remove groups and keep members contiguous.
+//! - `Project::master_volume_at`, `Project::demo`, `Project::empty`.
 
 use super::channel::{ChannelLayout, default_layout};
 use super::clip::{Clip, Note};
@@ -101,6 +125,311 @@ impl Project {
             .max()
             .unwrap_or(0)
             + 1
+    }
+
+    /// 所属模块：core / 工程模型
+    /// 功能：按 id 查找轨道下标。
+    /// 输入：`id` 轨道 id。
+    /// 输出/副作用：下标；找不到返回 `None`，不修改工程。
+    /// 复杂度：时间 O(轨道数)，空间 O(1)。
+    ///
+    /// Module: core / project model
+    /// Purpose: Find a track index by id.
+    /// Inputs: `id` — track id.
+    /// Outputs / side effects: the index, or `None`; no project change.
+    /// Complexity: O(tracks) time and O(1) space.
+    pub fn track_index_of(&self, id: TrackId) -> Option<usize> {
+        self.tracks.iter().position(|track| track.id == id)
+    }
+
+    /// 所属模块：core / 工程模型
+    /// 功能：返回轨道所在的组合层级（0 表示直接挂在主输出下）。
+    /// 输入：`index` 轨道下标。
+    /// 输出/副作用：层级深度；越界或父级缺失时停止向上，不修改工程。
+    /// 复杂度：时间 O(层级 × 轨道数)，空间 O(1)。
+    ///
+    /// Module: core / project model
+    /// Purpose: Return the group nesting depth of a track (0 = directly on the master bus).
+    /// Inputs: `index` — track index.
+    /// Outputs / side effects: the depth; out-of-range or missing parents stop the walk.
+    /// Complexity: O(depth × tracks) time and O(1) space.
+    pub fn track_depth(&self, index: usize) -> usize {
+        let mut depth = 0usize;
+        let mut current = index;
+        while depth < self.tracks.len() {
+            let Some(parent_id) = self.tracks.get(current).and_then(|track| track.group) else {
+                break;
+            };
+            let Some(parent_index) = self.track_index_of(parent_id) else {
+                break;
+            };
+            // 成员必须排在组合轨道之后；父级下标不小于当前下标说明数据异常，避免死循环。
+            // Members must follow their group; a parent at or after the child is invalid data.
+            if parent_index >= current {
+                break;
+            }
+            depth += 1;
+            current = parent_index;
+        }
+        depth
+    }
+
+    /// 所属模块：core / 工程模型
+    /// 功能：返回轨道子树的结束下标（不含），子树包含其下所有组合成员。
+    /// 输入：`index` 轨道下标。
+    /// 输出/副作用：结束下标；越界时返回轨道总数，不修改工程。
+    /// 复杂度：时间 O(轨道数²)（最坏嵌套），空间 O(1)。
+    ///
+    /// Module: core / project model
+    /// Purpose: Return the exclusive end index of a track subtree, including nested group members.
+    /// Inputs: `index` — track index.
+    /// Outputs / side effects: the end index, or the track count when out of range.
+    /// Complexity: O(tracks²) worst case with deep nesting and O(1) space.
+    pub fn subtree_end(&self, index: usize) -> usize {
+        if index >= self.tracks.len() {
+            return self.tracks.len();
+        }
+        let mut end = index + 1;
+        while end < self.tracks.len() {
+            let Some(parent_id) = self.tracks[end].group else {
+                break;
+            };
+            // 子树在向量中连续排列，父级一定已包含在当前区间内。
+            // Subtrees are contiguous, so the parent is always inside the current range.
+            if self.tracks[index..end]
+                .iter()
+                .any(|track| track.id == parent_id)
+            {
+                end += 1;
+            } else {
+                break;
+            }
+        }
+        end
+    }
+
+    /// 所属模块：core / 工程模型
+    /// 功能：返回最近一个折叠了成员的上层组合轨道下标。
+    /// 输入：`index` 轨道下标。
+    /// 输出/副作用：折叠的祖先组合下标；没有则返回 `None`，不修改工程。
+    /// 复杂度：时间 O(层级 × 轨道数)，空间 O(1)。
+    ///
+    /// Module: core / project model
+    /// Purpose: Return the nearest ancestor group that folded its members.
+    /// Inputs: `index` — track index.
+    /// Outputs / side effects: the folded ancestor index, or `None`; no project change.
+    /// Complexity: O(depth × tracks) time and O(1) space.
+    pub fn collapsed_ancestor(&self, index: usize) -> Option<usize> {
+        let mut current = self.tracks.get(index).and_then(|track| track.group);
+        let mut guard = 0usize;
+        while let Some(group_id) = current {
+            let group_index = self.track_index_of(group_id)?;
+            if self.tracks[group_index].collapsed {
+                return Some(group_index);
+            }
+            current = self.tracks[group_index].group;
+            guard += 1;
+            if guard > self.tracks.len() {
+                break;
+            }
+        }
+        None
+    }
+
+    /// 所属模块：core / 工程模型
+    /// 功能：判断轨道是否因为某个上层组合折叠而在编曲区隐藏。
+    /// 输入：`index` 轨道下标。
+    /// 输出/副作用：布尔值；不修改工程。
+    /// 复杂度：时间 O(层级 × 轨道数)，空间 O(1)。
+    ///
+    /// Module: core / project model
+    /// Purpose: Whether a track is hidden in the arrangement because an ancestor group is folded.
+    /// Inputs: `index` — track index.
+    /// Outputs / side effects: the boolean; no project change.
+    /// Complexity: O(depth × tracks) time and O(1) space.
+    pub fn track_is_hidden(&self, index: usize) -> bool {
+        self.collapsed_ancestor(index).is_some()
+    }
+
+    /// 所属模块：core / 工程模型
+    /// 功能：返回组合轨道下的成员轨道数量（含嵌套成员，不含自身）。
+    /// 输入：`index` 轨道下标。
+    /// 输出/副作用：成员数量；越界返回 0，不修改工程。
+    /// 复杂度：时间 O(轨道数²)，空间 O(1)。
+    ///
+    /// Module: core / project model
+    /// Purpose: Count member tracks under a group (including nested members, excluding itself).
+    /// Inputs: `index` — track index.
+    /// Outputs / side effects: the member count; 0 when out of range.
+    /// Complexity: O(tracks²) time and O(1) space.
+    pub fn subtree_track_count(&self, index: usize) -> usize {
+        self.subtree_end(index).saturating_sub(index + 1)
+    }
+
+    /// 所属模块：core / 工程模型
+    /// 功能：返回轨道子树内最后一个片段的结束 beat。
+    /// 输入：`index` 轨道下标。
+    /// 输出/副作用：结束 beat（无内容为 0）；不修改工程。
+    /// 复杂度：时间 O(子树轨道数 × 片段数)，空间 O(1)。
+    ///
+    /// Module: core / project model
+    /// Purpose: Return the end beat of the last clip inside a track subtree.
+    /// Inputs: `index` — track index.
+    /// Outputs / side effects: the end beat (0 when empty); no project change.
+    /// Complexity: O(subtree tracks × clips) time and O(1) space.
+    pub fn subtree_content_end(&self, index: usize) -> f64 {
+        let end = self.subtree_end(index);
+        self.tracks[index.min(self.tracks.len())..end]
+            .iter()
+            .flat_map(|track| track.clips.iter())
+            .map(|clip| clip.end())
+            .fold(0.0_f64, f64::max)
+    }
+
+    /// 所属模块：core / 工程模型
+    /// 功能：把选中的轨道移动到新建的组合轨道下，形成（可嵌套的）组合轨道。
+    /// 输入：
+    /// - `members`：选中的轨道下标；包含彼此祖先关系时只保留上层轨道。
+    /// - `name`：组合轨道名称；`None` 时按 id 自动命名。
+    /// 输出/副作用：重排 `tracks` 并在第一个成员的位置插入组合轨道；成员按原顺序紧跟其后；
+    /// 返回组合轨道下标。成员不足两个、层级不同或下标无效时返回中文错误且不修改工程。
+    /// 复杂度：时间 O(轨道数 + 选中数 × 轨道数)，空间 O(轨道数)。
+    ///
+    /// Module: core / project model
+    /// Purpose: Move the selected tracks under a new group track, allowing nested groups.
+    /// Inputs:
+    /// - `members`: selected track indices; descendants of another selected track are dropped.
+    /// - `name`: group name; `None` derives one from the id.
+    /// Outputs / side effects: reorders `tracks`, inserts the group at the first member position and
+    /// keeps members in their original order right after it; returns the group index. Returns a
+    /// Chinese error without touching the project when fewer than two members remain, the parents
+    /// differ or an index is invalid.
+    /// Complexity: O(tracks + members × tracks) time and O(tracks) space.
+    pub fn create_group(&mut self, members: &[usize], name: Option<&str>) -> Result<usize, String> {
+        let mut roots: Vec<usize> = members
+            .iter()
+            .copied()
+            .filter(|index| *index < self.tracks.len())
+            .collect();
+        roots.sort_unstable();
+        roots.dedup();
+        // 去掉已被另一个选中轨道包含的后代，避免把同一条轨道重复移入。
+        // Drop descendants of another selected track so no track is moved twice.
+        let selected = roots.clone();
+        roots.retain(|index| {
+            !selected
+                .iter()
+                .any(|other| other != index && *other < *index && *index < self.subtree_end(*other))
+        });
+        if roots.len() < 2 {
+            return Err("请选择两条及以上轨道再创建组合轨道".into());
+        }
+        let parent = self.tracks[roots[0]].group;
+        if roots
+            .iter()
+            .any(|index| self.tracks[*index].group != parent)
+        {
+            return Err("请选择同一层级的轨道再创建组合轨道".into());
+        }
+        let ranges: Vec<(usize, usize)> = roots
+            .iter()
+            .map(|index| (*index, self.subtree_end(*index)))
+            .collect();
+        let group_id = self.next_track_id();
+        let palette: [[u8; 3]; 6] = [
+            [45, 212, 191],
+            [251, 191, 36],
+            [129, 140, 248],
+            [244, 114, 182],
+            [52, 211, 153],
+            [251, 146, 60],
+        ];
+        let color = palette[self.tracks.len() % palette.len()];
+        let group_name = name
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| format!("组合轨道 {group_id}"));
+        let group_track = Track::new_group(group_id, &group_name, color, parent);
+
+        let mut slots: Vec<Option<Track>> = self.tracks.drain(..).map(Some).collect();
+        let mut reordered: Vec<Track> = Vec::with_capacity(slots.len() + 1);
+        let first_start = ranges[0].0;
+        // 组合轨道占用第一个成员的位置，其余成员块紧随其后；原本夹在成员之间的轨道后移，
+        // 保证成员子树在向量中连续（引擎与子树命中都依赖这一不变量）。
+        // The group takes the first member's slot and every member block follows it; tracks that sat
+        // between members move after the block so member subtrees stay contiguous (the engine and
+        // subtree hit testing rely on that invariant).
+        for slot in slots.iter_mut().take(first_start) {
+            if let Some(track) = slot.take() {
+                reordered.push(track);
+            }
+        }
+        reordered.push(group_track.clone());
+        for (start, end) in &ranges {
+            for slot in slots.iter_mut().take(*end).skip(*start) {
+                if let Some(mut track) = slot.take() {
+                    // 只有块的根轨道挂到新组合下，块内后代保留原有父级。
+                    // Only the block root joins the new group; descendants keep their parents.
+                    if track.group == parent {
+                        track.group = Some(group_id);
+                    }
+                    reordered.push(track);
+                }
+            }
+        }
+        for slot in slots.iter_mut().skip(first_start) {
+            if let Some(track) = slot.take() {
+                reordered.push(track);
+            }
+        }
+        self.tracks = reordered;
+        Ok(self.track_index_of(group_id).unwrap_or(first_start))
+    }
+
+    /// 所属模块：core / 工程模型
+    /// 功能：删除指定轨道；被删除的组合轨道会把直接成员提升到它的父级。
+    /// 输入：`index` 轨道下标。
+    /// 输出/副作用：移除轨道并修正成员父级；返回被删除的轨道，越界返回 `None`。
+    /// 复杂度：时间 O(轨道数)，空间 O(1)。
+    ///
+    /// Module: core / project model
+    /// Purpose: Remove a track; when it is a group its direct members move up to its parent.
+    /// Inputs: `index` — track index.
+    /// Outputs / side effects: removes the track, fixes member parents and returns the removed track;
+    /// `None` when out of range.
+    /// Complexity: O(tracks) time and O(1) space.
+    pub fn remove_track_at(&mut self, index: usize) -> Option<Track> {
+        if index >= self.tracks.len() {
+            return None;
+        }
+        let removed = self.tracks.remove(index);
+        if removed.is_group() {
+            for track in &mut self.tracks {
+                if track.group == Some(removed.id) {
+                    track.group = removed.group;
+                }
+            }
+        }
+        Some(removed)
+    }
+
+    /// 所属模块：core / 工程模型
+    /// 功能：删除轨道及其整棵子树（组合轨道会连同全部成员一起删除）。
+    /// 输入：`index` 轨道下标。
+    /// 输出/副作用：从 `tracks` 移除子树并返回被删除的轨道；越界返回空列表，不修改工程。
+    /// 复杂度：时间 O(轨道数)，空间 O(被删除轨道数)。
+    ///
+    /// Module: core / project model
+    /// Purpose: Remove a track and its whole subtree (a group takes every member with it).
+    /// Inputs: `index` — track index.
+    /// Outputs / side effects: removes the subtree and returns the removed tracks; an out-of-range
+    /// index returns an empty list.
+    /// Complexity: O(tracks) time and O(removed tracks) space.
+    pub fn remove_subtree(&mut self, index: usize) -> Vec<Track> {
+        if index >= self.tracks.len() {
+            return Vec::new();
+        }
+        let end = self.subtree_end(index);
+        self.tracks.drain(index..end).collect()
     }
 
     /// 所属模块：core / 工程模型
@@ -427,5 +756,107 @@ mod tests {
             3
         );
         assert_eq!(project.tracks.len(), 4);
+    }
+
+    /// 覆盖：选中的两条轨道被移入新组合轨道，成员紧随组合轨道且父级正确。
+    /// Covers: two selected tracks move under a new group which is placed before them.
+    #[test]
+    fn create_group_nests_members_after_the_group() {
+        let mut project = Project::empty();
+        project.add_track(InstrumentRef::Synth(SynthSettings::default()));
+        project.add_track(InstrumentRef::Synth(SynthSettings::default()));
+        let group_index = project.create_group(&[0, 2], None).expect("group");
+        assert_eq!(group_index, 0);
+        assert!(project.tracks[0].is_group());
+        assert_eq!(project.tracks.len(), 4);
+        let group_id = project.tracks[0].id;
+        assert_eq!(project.tracks[1].group, Some(group_id));
+        assert_eq!(project.tracks[2].group, Some(group_id));
+        assert_eq!(project.track_depth(1), 1);
+        assert_eq!(project.subtree_end(0), 3);
+    }
+
+    /// 覆盖：组合轨道可以再次与另一条轨道组成外层组合，层级与子树范围正确。
+    /// Covers: a group can be nested into an outer group with the expected depth and subtree range.
+    #[test]
+    fn groups_can_be_nested() {
+        let mut project = Project::empty();
+        project.add_track(InstrumentRef::Synth(SynthSettings::default()));
+        project.add_track(InstrumentRef::Synth(SynthSettings::default()));
+        project.create_group(&[0, 1], None).expect("inner");
+        project.add_track(InstrumentRef::Synth(SynthSettings::default()));
+        let outer = project.create_group(&[0, 3], None).expect("outer");
+        assert_eq!(outer, 0);
+        assert_eq!(project.tracks.len(), 6);
+        assert_eq!(project.track_depth(1), 1);
+        assert_eq!(project.track_depth(2), 2);
+        assert_eq!(project.track_depth(3), 2);
+        assert_eq!(project.track_depth(4), 1);
+        assert_eq!(project.track_depth(5), 0);
+        assert_eq!(project.subtree_end(0), 5);
+    }
+
+    /// 覆盖：组合关系与渲染来源字段可往返序列化。
+    /// Covers: group parents and render-source links survive a serialization round trip.
+    #[test]
+    fn group_links_round_trip_through_json() {
+        let mut project = Project::empty();
+        project.add_track(InstrumentRef::Synth(SynthSettings::default()));
+        project.create_group(&[0, 1], None).expect("group");
+        let group_id = project.tracks[0].id;
+        project.tracks[1].rendered_from = Some(project.tracks[1].id);
+        project.tracks[0].collapsed = true;
+        let json = serde_json::to_string(&project).expect("serialize");
+        let loaded: Project = serde_json::from_str(&json).expect("deserialize");
+        assert!(loaded.tracks[0].is_group());
+        assert!(loaded.tracks[0].collapsed);
+        assert_eq!(loaded.tracks[1].group, Some(group_id));
+        assert_eq!(loaded.tracks[1].rendered_from, Some(loaded.tracks[1].id));
+    }
+
+    /// 覆盖：折叠的组合隐藏成员、成员计数正确，展开后恢复可见。
+    /// Covers: a folded group hides its members, reports the member count and shows them again when
+    /// unfolded.
+    #[test]
+    fn collapsing_a_group_hides_members() {
+        let mut project = Project::empty();
+        project.add_track(InstrumentRef::Synth(SynthSettings::default()));
+        project.create_group(&[0, 1], None).expect("group");
+        assert_eq!(project.subtree_track_count(0), 2);
+        assert!(!project.track_is_hidden(1));
+        project.tracks[0].collapsed = true;
+        assert_eq!(project.collapsed_ancestor(1), Some(0));
+        assert!(project.track_is_hidden(1));
+        assert!(project.track_is_hidden(2));
+        project.tracks[0].collapsed = false;
+        assert!(!project.track_is_hidden(1));
+    }
+
+    /// 覆盖：整棵删除组合子树会连同全部成员一起移除。
+    /// Covers: removing a group subtree takes every member with it.
+    #[test]
+    fn removing_a_group_subtree_removes_members() {
+        let mut project = Project::empty();
+        project.add_track(InstrumentRef::Synth(SynthSettings::default()));
+        project.add_track(InstrumentRef::Synth(SynthSettings::default()));
+        let group_index = project.create_group(&[0, 1, 2], None).expect("group");
+        let removed = project.remove_subtree(group_index);
+        assert_eq!(removed.len(), 4);
+        assert!(removed[0].is_group());
+        assert!(project.tracks.is_empty());
+    }
+
+    /// 覆盖：删除组合轨道时直接成员回到它的父级，不会留下失效父级。
+    /// Covers: removing a group reparents its direct members to the removed group's parent.
+    #[test]
+    fn removing_a_group_reparents_members() {
+        let mut project = Project::empty();
+        project.add_track(InstrumentRef::Synth(SynthSettings::default()));
+        project.add_track(InstrumentRef::Synth(SynthSettings::default()));
+        let group_index = project.create_group(&[0, 1], None).expect("group");
+        let removed = project.remove_track_at(group_index).expect("removed");
+        assert!(removed.is_group());
+        assert!(project.tracks.iter().all(|track| track.group.is_none()));
+        assert_eq!(project.tracks.len(), 3);
     }
 }

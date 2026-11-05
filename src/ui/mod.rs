@@ -19,6 +19,7 @@ pub mod inspector;
 pub mod instrument_picker;
 pub mod piano_roll;
 pub mod theme;
+pub mod track_render;
 
 use crate::core::model::{ControllerKind, TrackId};
 

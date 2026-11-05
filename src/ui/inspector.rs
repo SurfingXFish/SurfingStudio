@@ -185,6 +185,31 @@ impl SurfingApp {
                     });
                 ui.add_space(4.0);
 
+                // 组合轨道没有乐器：主轨作为音量控制器，效果器链处理成员混音。
+                // A group has no instrument: its main lane is the volume controller and its effect
+                // chain processes the summed member mix.
+                if track.is_group() {
+                    egui::Frame::NONE
+                        .fill(theme::PANEL_2)
+                        .corner_radius(8)
+                        .inner_margin(egui::Margin::same(9))
+                        .show(ui, |ui| {
+                            ui.label(
+                                RichText::new("组合轨道")
+                                    .color(theme::TEXT)
+                                    .size(12.5)
+                                    .strong(),
+                            );
+                            ui.add_space(2.0);
+                            ui.label(
+                                RichText::new(
+                                    "主轨为音量控制器；下方效果器子轨修饰成员混合后的声音，可继续与其它轨道组成外层组合。",
+                                )
+                                .size(10.5)
+                                .color(theme::TEXT_DIM),
+                            );
+                        });
+                } else {
                 // Instrument.
                 egui::Frame::NONE
                     .fill(theme::PANEL_2)
@@ -371,6 +396,7 @@ impl SurfingApp {
                             remove_instrument = true;
                         }
                     });
+                }
 
                 ui.add_space(4.0);
                 // Effect chain.
@@ -784,26 +810,9 @@ impl SurfingApp {
 
         // ---- apply edits ------------------------------------------------------
         if remove_track {
-            let removed = self.project.tracks.remove(track_index);
-            self.editors.retain(|((id, _), _)| *id != removed.id);
-            self.roll_windows
-                .retain(|window| window.track_id != removed.id);
-            self.piano_views.remove(&removed.id);
-            self.invalidate_plugin_params(removed.id);
-            if let BottomView::Controller { track_id, .. } | BottomView::Effects { track_id } =
-                self.bottom_view
-            {
-                if track_id == removed.id {
-                    self.bottom_view = BottomView::PianoRoll;
-                }
-            }
-            self.selected_track = self
-                .selected_track
-                .min(self.project.tracks.len().saturating_sub(1));
-            self.selected_clip = None;
-            self.selected_note = None;
-            self.mark_dirty();
-            self.status = format!("已删除轨道 {}", removed.name);
+            // 组合轨道会弹出“整棵删除 / 释放成员”确认，普通轨道立即删除。
+            // A group opens the subtree/release confirmation; ordinary tracks are deleted at once.
+            self.request_delete_track(track_index);
             return;
         }
 

@@ -460,6 +460,10 @@ impl SurfingApp {
         if self.export.busy {
             return;
         }
+        if self.track_render.is_rendering() {
+            self.export.status = "正在渲染轨道音频，请稍候…".into();
+            return;
+        }
         if self.instrument_load_pending {
             self.export.status = "正在加载插件，请稍候…".into();
             return;

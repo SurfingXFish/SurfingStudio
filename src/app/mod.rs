@@ -61,6 +61,7 @@ mod panels;
 mod plugins;
 use plugins::PendingPluginApply;
 mod record;
+mod render;
 mod rolls;
 mod settings;
 mod shared;
@@ -74,6 +75,7 @@ mod window_chrome;
 
 pub use export::{ExportChannels, ExportFormat, ExportState};
 pub use plugins::EditorWindow;
+pub use render::{TrackRenderPhase, TrackRenderState};
 pub use settings::{GpuRenderApi, GpuRenderStartup, gpu_render_startup};
 pub use shared::SharedServices;
 pub use shell::WindowHost;
@@ -177,6 +179,9 @@ pub struct SurfingApp {
     recovery_notice_shown: bool,
 
     pub selected_track: usize,
+    /// 多选轨道（含主选）；用于创建组合轨道与批量渲染。
+    /// Multi-selected tracks (including the primary one) for grouping and batch rendering.
+    pub selected_tracks: Vec<usize>,
     pub selected_clip: Option<usize>,
     /// (clip, note) index of the primary selected note.
     pub selected_note: Option<(usize, usize)>,
@@ -268,6 +273,10 @@ pub struct SurfingApp {
     /// 编曲区右键菜单目标；在右键按下的那一帧写入，仅 UI 状态。
     /// Arrangement context-menu target, written on the secondary-click frame; UI-only.
     pub arrangement_menu: Option<ArrangementMenu>,
+    /// 待确认删除的组合轨道 id：弹窗选择“整个删除”或“释放到上级”。
+    /// Group awaiting a delete confirmation: the modal chooses between deleting the whole subtree or
+    /// releasing its members to the parent.
+    pub group_delete_prompt: Option<TrackId>,
     /// 项目信息缓存：路径 → 解析结果；展开时后台加载一次。
     /// Project-info cache: path → parse result; loaded once in the background when expanded.
     home_project_info: HashMap<PathBuf, Result<home::HomeProjectSummary, String>>,
@@ -354,6 +363,9 @@ pub struct SurfingApp {
     /// 独立导出窗口的状态（格式、参数、路径与后台任务）。
     /// Standalone export-window state (format, options, path and background job).
     pub export: ExportState,
+    /// 轨道渲染为音频的状态（确认弹窗、任务队列与进度）。
+    /// Track-to-audio render state (confirmation modal, task queue and progress).
+    pub track_render: TrackRenderState,
     /// 后台选择导出路径的对话框结果。
     /// Background destination picker for the export window.
     export_dialog_rx: Option<Receiver<Option<PathBuf>>>,
@@ -1223,6 +1235,7 @@ impl SurfingApp {
             last_recovery_push: Instant::now(),
             recovery_notice_shown: false,
             selected_track: 0,
+            selected_tracks: vec![0],
             selected_clip: None,
             selected_note: None,
             selected_clips: Vec::new(),
@@ -1264,6 +1277,7 @@ impl SurfingApp {
             home_project_expanded: HashSet::new(),
             home_project_delete: None,
             arrangement_menu: None,
+            group_delete_prompt: None,
             home_project_info: HashMap::new(),
             home_project_info_rx: None,
             home_project_sweep_at: Instant::now(),
@@ -1296,6 +1310,7 @@ impl SurfingApp {
             save_rx: None,
             public_copy_rx: None,
             export: ExportState::default(),
+            track_render: TrackRenderState::default(),
             export_dialog_rx: None,
             instrument_load_pending: false,
             instrument_load_warnings: Vec::new(),
@@ -1712,6 +1727,12 @@ impl SurfingApp {
         // On a close request: cancel it and ask for confirmation when there are unsaved changes;
         // otherwise destroy plugin GUIs immediately so they do not linger through eframe's shutdown.
         if ctx.input(|i| i.viewport().close_requested()) {
+            // 渲染期间关闭窗口：先结束离线会话并恢复实时引擎，避免保存/析构时插件仍被导出占用。
+            // Closing while rendering: end the offline session first so saving and teardown never see
+            // plugins owned by the export.
+            if self.track_render.is_rendering() {
+                self.cancel_track_render();
+            }
             if self.abandon_engine {
                 // 超时强制关闭：不再取消关闭，直接隐藏插件窗口。
                 // Forced close after a load timeout: keep the close and hide plugin windows.
@@ -1756,6 +1777,7 @@ impl SurfingApp {
         self.poll_public_copy();
         self.poll_export_dialog();
         self.poll_export();
+        self.poll_track_render();
         self.poll_autosave();
         // 加载/插件补载结束、关闭请求得以继续时，本帧发送关闭。
         // Once loading and plugin loading have finished, continue a close requested earlier.
@@ -1911,6 +1933,7 @@ impl SurfingApp {
             self.update_roll_drag(ctx);
             self.ui_roll_windows(ctx);
             self.ui_lane_paste_prompt(ctx);
+            self.ui_group_delete_prompt(ctx);
         }
         // 无系统边框后，窗口缩放改由应用栏同层的边缘热区接管。
         // Without OS decorations, window resizing is handled by edge hit areas.
@@ -1922,6 +1945,7 @@ impl SurfingApp {
         self.ui_help(ctx);
         self.ui_settings_window(ctx);
         self.ui_export_window(ctx);
+        self.ui_track_render_modal(ctx);
         diag::set_activity("ui.paint.dialogs");
         // 未保存关闭确认绘制在所有面板之上；确认期间窗口保持打开。
         // The unsaved-changes confirmation is painted above every panel; the window stays open

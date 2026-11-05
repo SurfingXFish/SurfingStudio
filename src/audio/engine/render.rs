@@ -7,7 +7,7 @@
 //! 函数清单：
 //! - `NoteEvent`：预计算的音符开/关事件。
 //! - `TrackEngine::refresh_events` / `seek_events` / `collect_events`：音符事件维护与收集。
-//! - `Engine::process` / `render_block` / `render_chunk`：实时渲染路径。
+//! - `Engine::process` / `render_block` / `render_chunk`：实时渲染路径（含组合总线汇总）。
 //! - `Engine::render_offline` / `render_offline_with` / `OfflineRender`：整工程离线渲染（可交给 GPU）。
 //! - `OfflineRenderSession` / `Engine::begin_offline_render` / `render_offline_step` /
 //!   `finish_offline_render` / `cancel_offline_render`：复用实时引擎的逐帧导出会话。
@@ -22,7 +22,8 @@
 //! Functions:
 //! - `NoteEvent`: precomputed note on/off event.
 //! - `TrackEngine::refresh_events` / `seek_events` / `collect_events`: maintain and collect note events.
-//! - `Engine::process` / `render_block` / `render_chunk`: realtime render path.
+//! - `Engine::process` / `render_block` / `render_chunk`: realtime render path (including group-bus
+//!   summing).
 //! - `Engine::render_offline` / `render_offline_with` / `OfflineRender`: offline project render
 //!   (optionally GPU-limited).
 //! - `OfflineRenderSession` / `Engine::begin_offline_render` / `render_offline_step` /
@@ -726,15 +727,40 @@ impl Engine {
         let mut wet_l = std::mem::take(&mut self.wet_scratch_l);
         let mut wet_r = std::mem::take(&mut self.wet_scratch_r);
         let mut gates = std::mem::take(&mut self.gates_scratch);
+        let mut group_l = std::mem::take(&mut self.group_bus_l);
+        let mut group_r = std::mem::take(&mut self.group_bus_r);
+
+        // 组合总线在每块开始时清空；成员轨道随后把各自的混音累加进来。
+        // Group buses are cleared at the start of every block; members add their mix afterwards.
+        for group_index in &self.group_order {
+            if let Some(buffer) = group_l.get_mut(*group_index) {
+                buffer.clear();
+                buffer.resize(frames, 0.0);
+            }
+            if let Some(buffer) = group_r.get_mut(*group_index) {
+                buffer.clear();
+                buffer.resize(frames, 0.0);
+            }
+        }
 
         // `sync_project` 按工程顺序重建轨道运行时，因此这里可以按索引直接访问。
         // `sync_project` rebuilds track runtimes in project order, so index access is safe.
         for track_index in 0..self.project.tracks.len() {
             let track = &self.project.tracks[track_index];
+            // 组合轨道不产生声音，只在成员处理完后汇总自己的总线。
+            // Group tracks produce no sound; they sum their bus after the members are processed.
+            if track.is_group() {
+                continue;
+            }
             let Some(runtime) = self.tracks.get_mut(track_index) else {
                 continue;
             };
-            let audible = !track.muted && (!solo_active || track.solo);
+            // 静音的组合会同时静音其成员；独奏的组合让其成员保持可听。
+            // A muted group silences its members; a soloed group keeps its members audible.
+            let group_muted = self.group_muted.get(track_index).copied().unwrap_or(false);
+            let group_solo = self.group_solo.get(track_index).copied().unwrap_or(false);
+            let audible =
+                !track.muted && !group_muted && (!solo_active || track.solo || group_solo);
 
             if !audible {
                 if runtime.notes_active || !runtime.live.is_empty() {
@@ -919,26 +945,47 @@ impl Engine {
             let mut peak = 0.0_f32;
             let mut peak_l = 0.0_f32;
             let mut peak_r = 0.0_f32;
-            // 轨道输出路由到工程布局中的通道对；立体声布局下恒为前左/前右。
-            // Track output routes to a channel pair of the project layout; stereo always uses front
-            // left/right.
-            let pair = (track.output_pair as usize).min(master_count / 2 - 1);
-            let destination_l = pair * 2;
-            let destination_r = destination_l + 1;
-            // `split_at_mut` 同时取得左右声道，避免对同一 Vec 的两次可变借用。
-            // `split_at_mut` yields both channels without two mutable borrows of the same Vec.
-            if destination_r < master.len() {
-                let (front, back) = master.split_at_mut(destination_r);
-                let target_l = &mut front[destination_l];
-                let target_r = &mut back[0];
-                for frame in 0..frames {
-                    let l = track_l[frame] * gain_l;
-                    let r = track_r[frame] * gain_r;
-                    target_l[frame] += l;
-                    target_r[frame] += r;
-                    peak = peak.max(l.abs()).max(r.abs());
-                    peak_l = peak_l.max(l.abs());
-                    peak_r = peak_r.max(r.abs());
+            // 有上级组合时先累加到该组合总线；否则路由到工程布局中的通道对。
+            // With a parent group the mix goes to that bus first; otherwise it routes to a project
+            // channel pair.
+            let parent_group = self.group_parent.get(track_index).copied().flatten();
+            if let Some(group_index) = parent_group {
+                if let (Some(target_l), Some(target_r)) =
+                    (group_l.get_mut(group_index), group_r.get_mut(group_index))
+                {
+                    let usable = frames.min(target_l.len()).min(target_r.len());
+                    for frame in 0..usable {
+                        let l = track_l[frame] * gain_l;
+                        let r = track_r[frame] * gain_r;
+                        target_l[frame] += l;
+                        target_r[frame] += r;
+                        peak = peak.max(l.abs()).max(r.abs());
+                        peak_l = peak_l.max(l.abs());
+                        peak_r = peak_r.max(r.abs());
+                    }
+                }
+            } else {
+                // 轨道输出路由到工程布局中的通道对；立体声布局下恒为前左/前右。
+                // Track output routes to a channel pair of the project layout; stereo always uses
+                // front left/right.
+                let pair = (track.output_pair as usize).min(master_count / 2 - 1);
+                let destination_l = pair * 2;
+                let destination_r = destination_l + 1;
+                // `split_at_mut` 同时取得左右声道，避免对同一 Vec 的两次可变借用。
+                // `split_at_mut` yields both channels without two mutable borrows of the same Vec.
+                if destination_r < master.len() {
+                    let (front, back) = master.split_at_mut(destination_r);
+                    let target_l = &mut front[destination_l];
+                    let target_r = &mut back[0];
+                    for frame in 0..frames {
+                        let l = track_l[frame] * gain_l;
+                        let r = track_r[frame] * gain_r;
+                        target_l[frame] += l;
+                        target_r[frame] += r;
+                        peak = peak.max(l.abs()).max(r.abs());
+                        peak_l = peak_l.max(l.abs());
+                        peak_r = peak_r.max(r.abs());
+                    }
                 }
             }
             runtime.level = runtime.level * 0.6 + peak * 0.4;
@@ -955,6 +1002,144 @@ impl Engine {
             }
         }
 
+        // 组合轨道在成员之后自内向外处理：先跑自身效果链，再按音量/声像写入上级组合或主输出。
+        // Groups run after their members, inside out: own effect chain first, then volume/pan into
+        // the parent group or the master bus.
+        for group_index in &self.group_order {
+            let group_index = *group_index;
+            let Some(track) = self.project.tracks.get(group_index) else {
+                continue;
+            };
+            let Some(runtime) = self.tracks.get_mut(group_index) else {
+                continue;
+            };
+            let Some(mut bus_l) = group_l.get_mut(group_index).map(std::mem::take) else {
+                continue;
+            };
+            let Some(mut bus_r) = group_r.get_mut(group_index).map(std::mem::take) else {
+                continue;
+            };
+            let group_muted = self.group_muted.get(group_index).copied().unwrap_or(false);
+            if track.muted || group_muted || bus_l.len() < frames || bus_r.len() < frames {
+                // 静音的组合丢弃成员混音，取消静音时不会突然冒出旧内容。
+                // A muted group drops its members' mix so unmuting cannot replay stale audio.
+                bus_l.clear();
+                bus_r.clear();
+                runtime.level *= 0.7;
+                runtime.level_l *= 0.7;
+                runtime.level_r *= 0.7;
+                if let Some(slot) = self.levels.get_mut(group_index) {
+                    *slot = runtime.level;
+                }
+                if let Some(slot) = self.levels_l.get_mut(group_index) {
+                    *slot = runtime.level_l;
+                }
+                if let Some(slot) = self.levels_r.get_mut(group_index) {
+                    *slot = runtime.level_r;
+                }
+                group_l[group_index] = bus_l;
+                group_r[group_index] = bus_r;
+                continue;
+            }
+            let transport_samples =
+                (block_start * 60.0 / self.project.bpm.max(1.0) * sample_rate) as i64;
+            let transport = Some(vst3_host::TransportPosition {
+                samples: transport_samples,
+                quarter_notes: block_start,
+            });
+            for (effect_index, effect) in runtime.effects.iter_mut().enumerate() {
+                if !track
+                    .effects
+                    .get(effect_index)
+                    .is_some_and(|effect| effect.enabled())
+                {
+                    continue;
+                }
+                wet_l.clear();
+                wet_l.resize(frames, 0.0);
+                wet_r.clear();
+                wet_r.resize(frames, 0.0);
+                effect.process(
+                    sample_rate,
+                    frames,
+                    Some((&bus_l, &bus_r)),
+                    &[],
+                    &mut wet_l,
+                    &mut wet_r,
+                    transport,
+                );
+                std::mem::swap(&mut bus_l, &mut wet_l);
+                std::mem::swap(&mut bus_r, &mut wet_r);
+            }
+            let lane_volume = track
+                .controllers
+                .value_at(ControllerKind::Volume, block_start)
+                .unwrap_or(0.5);
+            let pan = track
+                .controllers
+                .value_at(ControllerKind::Pan, block_start)
+                .map(|value| value * 2.0 - 1.0)
+                .unwrap_or(track.pan)
+                .clamp(-1.0, 1.0);
+            let volume = track.volume.clamp(0.0, 1.5) * lane_volume * 2.0;
+            let gain_l = ((1.0 - pan) * 0.5).sqrt() * volume;
+            let gain_r = ((1.0 + pan) * 0.5).sqrt() * volume;
+            let mut peak = 0.0_f32;
+            let mut peak_l = 0.0_f32;
+            let mut peak_r = 0.0_f32;
+            let parent_group = self.group_parent.get(group_index).copied().flatten();
+            if let Some(parent_index) = parent_group {
+                if let (Some(target_l), Some(target_r)) =
+                    (group_l.get_mut(parent_index), group_r.get_mut(parent_index))
+                {
+                    let usable = frames.min(target_l.len()).min(target_r.len());
+                    for frame in 0..usable {
+                        let l = bus_l[frame] * gain_l;
+                        let r = bus_r[frame] * gain_r;
+                        target_l[frame] += l;
+                        target_r[frame] += r;
+                        peak = peak.max(l.abs()).max(r.abs());
+                        peak_l = peak_l.max(l.abs());
+                        peak_r = peak_r.max(r.abs());
+                    }
+                }
+            } else {
+                let pair = (track.output_pair as usize).min(master_count / 2 - 1);
+                let destination_l = pair * 2;
+                let destination_r = destination_l + 1;
+                if destination_r < master.len() {
+                    let (front, back) = master.split_at_mut(destination_r);
+                    let target_l = &mut front[destination_l];
+                    let target_r = &mut back[0];
+                    for frame in 0..frames {
+                        let l = bus_l[frame] * gain_l;
+                        let r = bus_r[frame] * gain_r;
+                        target_l[frame] += l;
+                        target_r[frame] += r;
+                        peak = peak.max(l.abs()).max(r.abs());
+                        peak_l = peak_l.max(l.abs());
+                        peak_r = peak_r.max(r.abs());
+                    }
+                }
+            }
+            runtime.level = runtime.level * 0.6 + peak * 0.4;
+            runtime.level_l = runtime.level_l * 0.6 + peak_l * 0.4;
+            runtime.level_r = runtime.level_r * 0.6 + peak_r * 0.4;
+            if let Some(slot) = self.levels.get_mut(group_index) {
+                *slot = runtime.level;
+            }
+            if let Some(slot) = self.levels_l.get_mut(group_index) {
+                *slot = runtime.level_l;
+            }
+            if let Some(slot) = self.levels_r.get_mut(group_index) {
+                *slot = runtime.level_r;
+            }
+            // 成员的补偿已经把组合链延迟计算在内，组合总线本身不再额外补齐。
+            // Member compensation already covers the group chain, so the bus itself pads nothing.
+            group_l[group_index] = bus_l;
+            group_r[group_index] = bus_r;
+        }
+
         self.gates_scratch = gates;
         // 试听（`advance == false`）没有把 kPlaying 发给插件，不能把这个标志置为已播放。
         // An audition (`advance == false`) never sent kPlaying, so the flag must stay untouched.
@@ -966,6 +1151,8 @@ impl Engine {
         self.audio_scratch_r = track_r;
         self.wet_scratch_l = wet_l;
         self.wet_scratch_r = wet_r;
+        self.group_bus_l = group_l;
+        self.group_bus_r = group_r;
 
         // 主效果器同样支持停用（旁路），关闭时保留实例供再次启用。环绕声布局下插件只处理
         // 前左/前右通道对，其余通道直通：插件固定 2 in / 2 out，逐对复用同一实例会串扰。

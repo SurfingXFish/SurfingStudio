@@ -7,12 +7,15 @@
 //! - `select_all`：按当前编辑上下文全选控制器点位、音符、效果器链或片段。
 //! - `delete_selection`：按优先级删除控制器点、音符、效果器、子轨或片段。
 //! - `selected_same_track_clips` / `merge_selected_clips`：同一轨道多选片段的合并判断与执行。
-//! - `insert_track_below`：在指定轨道下方插入一条同类型新轨道。
+//! - `insert_track_below`：在指定轨道子树下方插入一条同类型新轨道（继承上级组合）。
+//! - `is_track_selected` / `toggle_track_selection`：轨道多选查询与切换。
+//! - `create_group_from_selection`：把多选轨道创建为组合轨道。
+//! - `request_delete_track` / `confirm_group_delete`：删除轨道与组合的“整棵删除 / 释放成员”确认。
 //! - `remove_effect_at` / `add_native_effect` / `remove_controller`：效果器与控制器子轨增删。
 //! - `copy_child_lane_selection` / `lane_points` / `apply_lane_paste`：子轨复制与覆盖粘贴。
 //! - `copy_selection` / `cut_selection` / `copy_selection_synced` / `cut_selection_synced` /
 //!   `paste_clipboard`：复制、剪切与粘贴入口（含系统剪贴板同步）。
-//! - `validate_selection`：结构变化后校正失效选择。
+//! - `validate_selection`：结构变化后校正失效选择（含轨道多选）。
 //!
 //! Module: app / editing commands
 //! Purpose:
@@ -22,12 +25,15 @@
 //! Functions:
 //! - `select_all`: select controller points, notes, the effect chain or clips by context.
 //! - `delete_selection`: delete controller points, notes, effects, child lanes or clips in priority order.
-//! - `insert_track_below`: insert a new track of the same kind below the given track.
+//! - `insert_track_below`: insert a new track of the same kind below the given track's subtree
+//!   (inheriting its parent group).
+//! - `is_track_selected` / `toggle_track_selection`: track multi-selection query and toggle.
+//! - `create_group_from_selection`: build a group track from the multi-selection.
 //! - `remove_effect_at` / `add_native_effect` / `remove_controller`: effect and controller lane editing.
 //! - `copy_child_lane_selection` / `lane_points` / `apply_lane_paste`: child-lane copy and overwrite paste.
 //! - `copy_selection` / `cut_selection` / `copy_selection_synced` / `cut_selection_synced` /
 //!   `paste_clipboard`: copy, cut and paste entry points (with OS-clipboard sync).
-//! - `validate_selection`: fix stale selections after structural changes.
+//! - `validate_selection`: fix stale selections after structural changes (including track multi-select).
 
 use super::*;
 
@@ -173,6 +179,20 @@ impl SurfingApp {
         self.status = format!("已全选 {} 个片段", self.selected_clips.len());
     }
 
+    /// 所属模块：app / 编辑命令
+    /// 功能：Delete 的全局删除入口：按优先级删除控制器点、音符、效果器、控制器子轨、片段；
+    /// 没有这些选择时删除当前选中轨道（组合轨道转为确认弹窗）。
+    /// 输入：`self`。
+    /// 输出/副作用：修改工程或设置 `group_delete_prompt`；更新状态栏。
+    /// 复杂度：时间 O(片段数 + 音符数 + 控制点数量)，空间 O(选中项)。
+    ///
+    /// Module: app / editing commands
+    /// Purpose: Global Delete entry: remove controller points, notes, effects, controller lanes or
+    /// clips in priority order; with none selected it removes the current track (groups open the
+    /// confirmation modal).
+    /// Inputs: `self`.
+    /// Outputs / side effects: edits the project or sets `group_delete_prompt`; updates the status bar.
+    /// Complexity: O(clips + notes + controller points) time and O(selection) space.
     pub fn delete_selection(&mut self) {
         // 1. Controller points when the controller roll is open.
         if self.bottom_open {
@@ -309,6 +329,14 @@ impl SurfingApp {
                 self.mark_dirty();
                 self.status = "已删除片段".into();
             }
+            return;
+        }
+
+        // 6. 没有可删除的片段/音符/效果器/控制器时，Delete 作为全局快捷键删除当前选中轨道。
+        // With nothing else selected, Delete acts as the global shortcut and removes the current
+        // track; groups open the delete confirmation.
+        if !self.project.tracks.is_empty() {
+            self.request_delete_track(self.selected_track);
         }
     }
 
@@ -460,24 +488,40 @@ impl SurfingApp {
     /// the project dirty.
     /// Complexity: O(tracks) time and O(1) space.
     pub fn insert_track_below(&mut self, track_index: usize) {
-        let is_audio = self
+        let (is_audio, parent, insert_at) = self
             .project
             .tracks
             .get(track_index)
-            .map(|track| track.is_audio_lane())
-            .unwrap_or(false);
+            .map(|track| {
+                if track.is_group() {
+                    // 在组合轨道下方插入的轨道直接成为它的成员。
+                    // A track inserted below a group becomes one of its members.
+                    (false, Some(track.id), track_index.saturating_add(1))
+                } else {
+                    (
+                        track.is_audio_lane(),
+                        track.group,
+                        self.project.subtree_end(track_index),
+                    )
+                }
+            })
+            .unwrap_or((false, None, track_index.saturating_add(1)));
         self.push_undo_now();
         let index = self.project.insert_track(
-            track_index.saturating_add(1),
+            insert_at,
             crate::core::model::InstrumentRef::Synth(crate::core::model::SynthSettings::default()),
         );
-        if is_audio {
-            if let Some(track) = self.project.tracks.get_mut(index) {
+        // 新轨道与参考轨道同属一个上级组合，保持在组合内部。
+        // The new track shares the reference track's parent so it stays inside the group.
+        if let Some(track) = self.project.tracks.get_mut(index) {
+            track.group = parent;
+            if is_audio {
                 track.kind = crate::core::model::TrackKind::Audio;
                 track.name = format!("音频轨道 {}", track.id);
             }
         }
         self.selected_track = index;
+        self.selected_tracks = vec![index];
         self.selected_clip = None;
         self.selected_clips.clear();
         self.selected_note = None;
@@ -486,6 +530,268 @@ impl SurfingApp {
         self.status = "已在下方插入轨道".into();
     }
 
+    /// 所属模块：app / 编辑命令
+    /// 功能：判断某条轨道是否在当前多选中。
+    /// 输入：`track_index`：轨道下标。
+    /// 输出/副作用：布尔值；不修改状态。
+    /// 复杂度：时间 O(选中数)，空间 O(1)。
+    ///
+    /// Module: app / editing commands
+    /// Purpose: Whether a track is part of the current multi-selection.
+    /// Inputs: `track_index`: track index.
+    /// Outputs / side effects: the boolean; no state change.
+    /// Complexity: O(selected tracks) time and O(1) space.
+    pub fn is_track_selected(&self, track_index: usize) -> bool {
+        self.selected_tracks.contains(&track_index)
+    }
+
+    /// 所属模块：app / 编辑命令
+    /// 功能：Ctrl/Command 单击轨道时切换多选；主选随之更新。
+    /// 输入：`track_index`：被点击的轨道下标。
+    /// 输出/副作用：修改轨道选择并清理片段/音符选择；不修改工程。
+    /// 复杂度：时间 O(选中数)，空间 O(选中数)。
+    ///
+    /// Module: app / editing commands
+    /// Purpose: Toggle a track in the multi-selection on Ctrl/Command click; the primary selection
+    /// follows.
+    /// Inputs: `track_index`: clicked track index.
+    /// Outputs / side effects: updates track selection and clears clip/note selection; the project is
+    /// untouched.
+    /// Complexity: O(selected tracks) time and space.
+    pub fn toggle_track_selection(&mut self, track_index: usize) {
+        if track_index >= self.project.tracks.len() {
+            return;
+        }
+        if let Some(position) = self
+            .selected_tracks
+            .iter()
+            .position(|index| *index == track_index)
+        {
+            // 至少保留一条选中轨道，避免后续命令没有目标。
+            // Always keep one selected track so commands still have a target.
+            if self.selected_tracks.len() > 1 {
+                self.selected_tracks.remove(position);
+                self.selected_track = self.selected_tracks[0];
+            }
+        } else {
+            self.selected_tracks.push(track_index);
+            self.selected_tracks.sort_unstable();
+            self.selected_track = track_index;
+        }
+        self.selected_clip = None;
+        self.selected_clips.clear();
+        self.selected_note = None;
+        self.selected_notes.clear();
+        self.selected_controller = None;
+        self.selected_effect = None;
+        self.selected_effects_lane = None;
+    }
+
+    /// 所属模块：app / 编辑命令
+    /// 功能：把当前多选的轨道创建为一个组合轨道，并选中该组合轨道。
+    /// 输入：`self`。
+    /// 输出/副作用：记录撤销、重排工程并校正选择；失败时只写状态栏。
+    /// 复杂度：时间 O(轨道数²)，空间 O(轨道数)。
+    ///
+    /// Module: app / editing commands
+    /// Purpose: Create a group track from the current multi-selection and select it.
+    /// Inputs: `self`.
+    /// Outputs / side effects: records undo, reorders the project and fixes the selection; failures
+    /// only write the status bar.
+    /// Complexity: O(tracks²) time and O(tracks) space.
+    pub fn create_group_from_selection(&mut self) {
+        let members = self.selected_tracks.clone();
+        if members.len() < 2 {
+            self.status = "请先用 Ctrl 单击选择两条及以上轨道".into();
+            return;
+        }
+        self.push_undo_now();
+        match self.project.create_group(&members, None) {
+            Ok(index) => {
+                self.selected_track = index;
+                self.selected_tracks = vec![index];
+                self.selected_clip = None;
+                self.selected_clips.clear();
+                self.selected_note = None;
+                self.selected_notes.clear();
+                self.selected_controller = None;
+                self.selected_effect = None;
+                self.selected_effects_lane = None;
+                self.mark_dirty();
+                self.status = format!(
+                    "已创建{}",
+                    self.project
+                        .tracks
+                        .get(index)
+                        .map(|track| track.name.clone())
+                        .unwrap_or_else(|| "组合轨道".into())
+                );
+            }
+            Err(error) => self.status = error,
+        }
+    }
+
+    /// 所属模块：app / 编辑命令
+    /// 功能：请求删除一条轨道：普通轨道立即删除；组合轨道弹出“整棵删除 / 释放成员”确认。
+    /// 输入：`track_index`：目标轨道下标。
+    /// 输出/副作用：普通轨道会记录撤销并删除；组合轨道只设置 `group_delete_prompt`。
+    /// 复杂度：时间 O(轨道数)，空间 O(1)。
+    ///
+    /// Module: app / editing commands
+    /// Purpose: Request track deletion: ordinary tracks are removed immediately, while a group opens
+    /// the "delete subtree / release members" confirmation.
+    /// Inputs: `track_index`: target track index.
+    /// Outputs / side effects: ordinary tracks are undoably removed; a group only fills
+    /// `group_delete_prompt`.
+    /// Complexity: O(tracks) time and O(1) space.
+    pub fn request_delete_track(&mut self, track_index: usize) {
+        if self.track_render.is_rendering() {
+            self.status = "正在渲染轨道音频，暂时无法删除轨道".into();
+            return;
+        }
+        let Some(track) = self.project.tracks.get(track_index) else {
+            return;
+        };
+        if track.is_group() {
+            self.group_delete_prompt = Some(track.id);
+            self.status = format!("删除组合轨道「{}」：请选择删除方式", track.name);
+        } else {
+            self.delete_track(track.id, GroupDeleteMode::Release);
+        }
+    }
+
+    /// 所属模块：app / 编辑命令
+    /// 功能：按选定方式删除组合轨道并清理界面状态。
+    /// 输入：
+    /// - `group_id`：组合轨道 id。
+    /// - `mode`：整棵删除或只删组合、成员释放到上级。
+    /// 输出/副作用：记录撤销、删除轨道、清理编辑器/卷帘/插件缓存并选中邻近轨道。
+    /// 复杂度：时间 O(轨道数 + 片段数)，空间 O(被删除轨道数)。
+    ///
+    /// Module: app / editing commands
+    /// Purpose: Delete a group with the chosen mode and clean up UI state.
+    /// Inputs:
+    /// - `group_id`: group track id.
+    /// - `mode`: delete the whole subtree or only the group and release members to its parent.
+    /// Outputs / side effects: records undo, removes tracks, clears editors/rolls/plugin caches and
+    /// selects a neighbouring track.
+    /// Complexity: O(tracks + clips) time and O(removed tracks) space.
+    pub fn confirm_group_delete(&mut self, group_id: TrackId, mode: GroupDeleteMode) {
+        self.delete_track(group_id, mode);
+    }
+
+    /// 所属模块：app / 编辑命令
+    /// 功能：删除一条轨道（或整棵组合子树）并统一清理界面状态。
+    /// 输入：
+    /// - `track_id`：目标轨道 id。
+    /// - `mode`：组合轨道使用整棵删除还是释放成员；普通轨道忽略该参数。
+    /// 输出/副作用：记录撤销并修改工程；关闭被删除轨道的编辑器、卷帘与缓存。
+    /// 复杂度：时间 O(轨道数 + 片段数)，空间 O(被删除轨道数)。
+    ///
+    /// Module: app / editing commands
+    /// Purpose: Remove one track (or a whole group subtree) and clean up UI state.
+    /// Inputs:
+    /// - `track_id`: target track id.
+    /// - `mode`: for groups, delete the subtree or release members; ignored for ordinary tracks.
+    /// Outputs / side effects: records undo, edits the project and closes editors/rolls/caches of
+    /// removed tracks.
+    /// Complexity: O(tracks + clips) time and O(removed tracks) space.
+    fn delete_track(&mut self, track_id: TrackId, mode: GroupDeleteMode) {
+        let Some(index) = self.project.track_index_of(track_id) else {
+            self.group_delete_prompt = None;
+            return;
+        };
+        self.push_undo_now();
+        let removed = if mode == GroupDeleteMode::Whole {
+            self.project.remove_subtree(index)
+        } else {
+            self.project
+                .remove_track_at(index)
+                .into_iter()
+                .collect::<Vec<_>>()
+        };
+        if removed.is_empty() {
+            self.group_delete_prompt = None;
+            return;
+        }
+        let name = removed[0].name.clone();
+        let member_count = removed.len().saturating_sub(1);
+        self.cleanup_removed_tracks(&removed);
+        self.selected_track = self
+            .selected_track
+            .min(self.project.tracks.len().saturating_sub(1));
+        self.selected_tracks = vec![self.selected_track];
+        self.selected_clip = None;
+        self.selected_clips.clear();
+        self.selected_note = None;
+        self.selected_notes.clear();
+        self.selected_controller = None;
+        self.selected_effect = None;
+        self.selected_effects_lane = None;
+        self.group_delete_prompt = None;
+        self.mark_dirty();
+        self.status = match mode {
+            GroupDeleteMode::Whole if member_count > 0 => {
+                format!("已删除组合轨道「{name}」及 {member_count} 条成员")
+            }
+            GroupDeleteMode::Release if member_count > 0 => {
+                format!("已删除组合轨道「{name}」，成员已释放到上级")
+            }
+            _ => format!("已删除轨道「{name}」"),
+        };
+    }
+
+    /// 所属模块：app / 编辑命令
+    /// 功能：关闭并清理被删除轨道相关的编辑器、浮动卷帘、卷帘视图与插件缓存。
+    /// 输入：`removed`：被删除的轨道。
+    /// 输出/副作用：修改界面状态；不修改工程其余内容。
+    /// 复杂度：时间 O(被删除轨道数 × 缓存大小)，空间 O(1)。
+    ///
+    /// Module: app / editing commands
+    /// Purpose: Close and clear editors, floating rolls, roll views and plugin caches of removed
+    /// tracks.
+    /// Inputs: `removed`: removed tracks.
+    /// Outputs / side effects: edits UI state only; the rest of the project is untouched.
+    /// Complexity: O(removed tracks × cache size) time and O(1) space.
+    fn cleanup_removed_tracks(&mut self, removed: &[Track]) {
+        for track in removed {
+            let id = track.id;
+            self.editors.retain(|((track_id, _), _)| *track_id != id);
+            self.roll_windows.retain(|window| window.track_id != id);
+            self.piano_views.remove(&id);
+            self.invalidate_plugin_params(id);
+            self.effect_widths
+                .retain(|(track_id, _), _| *track_id != id);
+            self.effect_can_resize
+                .retain(|(track_id, _), _| *track_id != id);
+            self.inline_failed
+                .retain(|(track_id, _), _| *track_id != id);
+            self.effect_editor_flags
+                .retain(|(track_id, _), _| *track_id != id);
+            if let BottomView::Controller { track_id, .. } | BottomView::Effects { track_id } =
+                self.bottom_view
+            {
+                if track_id == id {
+                    self.bottom_view = BottomView::PianoRoll;
+                }
+            }
+            if self.selected_effects_lane == Some(id) {
+                self.selected_effects_lane = None;
+            }
+            if self
+                .selected_controller
+                .is_some_and(|(track_id, _)| track_id == id)
+            {
+                self.selected_controller = None;
+            }
+            if self
+                .selected_effect
+                .is_some_and(|(track_id, _)| track_id == id)
+            {
+                self.selected_effect = None;
+            }
+        }
+    }
     /// Remove one insert effect from a track.
     pub fn remove_effect_at(&mut self, track_id: TrackId, index: usize) {
         self.push_undo_now();
@@ -1156,6 +1462,21 @@ impl SurfingApp {
         if self.selected_track >= self.project.tracks.len() {
             self.selected_track = self.project.tracks.len().saturating_sub(1);
         }
+        // 折叠组合的成员不可见：主选落到折叠的组合轨道上，多选移除隐藏项。
+        // Folded group members are invisible: the primary selection moves to the folded group and
+        // hidden members drop out of the multi-selection.
+        if let Some(group_index) = self.project.collapsed_ancestor(self.selected_track) {
+            self.selected_track = group_index;
+        }
+        // 轨道多选：移除越界项；主选不在其中时退回单选，避免结构变化后残留高亮。
+        // Track multi-selection: drop out-of-range entries; fall back to a single selection when the
+        // primary track is missing so structural edits never leave stale highlights.
+        self.selected_tracks.retain(|index| {
+            *index < self.project.tracks.len() && !self.project.track_is_hidden(*index)
+        });
+        if self.selected_tracks.is_empty() || !self.selected_tracks.contains(&self.selected_track) {
+            self.selected_tracks = vec![self.selected_track];
+        }
         if let Some(clip) = self.selected_clip {
             let valid = self
                 .project
@@ -1170,11 +1491,13 @@ impl SurfingApp {
             }
         }
         self.selected_clips.retain(|(track, clip)| {
-            self.project
-                .tracks
-                .get(*track)
-                .map(|t| *clip < t.clips.len())
-                .unwrap_or(false)
+            !self.project.track_is_hidden(*track)
+                && self
+                    .project
+                    .tracks
+                    .get(*track)
+                    .map(|t| *clip < t.clips.len())
+                    .unwrap_or(false)
         });
         let mut alive: Vec<(usize, usize)> = Vec::new();
         if let Some(track) = self.current_track() {
