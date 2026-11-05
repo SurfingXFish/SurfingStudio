@@ -1931,6 +1931,33 @@ impl Engine {
     }
 
     /// 所属模块：audio::engine / 传输
+    /// 功能：开关自动停止，并按给定工程重新计算停止点；录音期间关闭，收尾时恢复。
+    /// 输入：
+    /// - `enabled`：是否启用自动停止。
+    /// - `project`：用于计算“内容结束后 2 小节”的工程。
+    /// 输出/副作用：更新 `auto_stop_enabled` 与 `auto_stop_at`；关闭时清除已停止标记。
+    /// 复杂度：时间 O(轨道数 + 片段数)，空间 O(1)。
+    ///
+    /// Module: audio::engine / transport
+    /// Purpose: Enable or disable auto-stop and recompute its limit from the given project; recording
+    /// disables it and finishing restores it.
+    /// Inputs:
+    /// - `enabled`: whether auto-stop is active.
+    /// - `project`: project used for the "two bars after content" limit.
+    /// Outputs / side effects: updates `auto_stop_enabled` and `auto_stop_at`; disabling clears the
+    /// stopped flag.
+    /// Complexity: O(tracks + clips) time and O(1) space.
+    pub fn set_auto_stop(&mut self, enabled: bool, project: &Project) {
+        self.auto_stop_enabled = enabled;
+        if enabled {
+            let limit = project.auto_stop_beat();
+            self.auto_stop_at = (limit > 0.0).then_some(limit);
+        } else {
+            self.auto_stopped = false;
+        }
+    }
+
+    /// 所属模块：audio::engine / 传输
     /// 功能：暂停播放并关闭全部音符。
     /// 输入：`self`。
     /// 输出/副作用：`playing=false`；关闭全部音符。

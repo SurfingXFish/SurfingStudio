@@ -8,10 +8,10 @@
 //! 函数清单：
 //! - `SharedServices::new`：加载设置与插件缓存、启动唯一音频输出与 MIDI 输入。
 //! - `SharedServices::start_audio`：按设置启动音频输出，失败时回退系统默认设备。
-//! - `SharedServices::audio_status` / `restart_audio` / `reconnect_midi`：音频与 MIDI 状态。
+//! - `SharedServices::audio_status` / `restart_audio` / `reconnect_midi_devices`：音频与 MIDI 状态。
 //! - `SharedServices::settings_snapshot` / `settings_if_newer` / `write_settings`：全局设置快照与写回。
 //! - `SharedServices::plugin_cache_snapshot` / `plugin_cache_if_newer` / `write_plugin_cache`：插件缓存快照与写回。
-//! - `SharedServices::midi_status` / `midi_events`：MIDI 状态与事件队列。
+//! - `SharedServices::midi_status` / `midi_default_device` / `midi_events`：MIDI 状态、默认端口与事件队列。
 //! - `SharedServices::next_window_id` / `last_focused_window` / `set_last_focused_window`：窗口编号与全局空格目标。
 //!
 //! Module: app / shared services for multiple windows
@@ -24,10 +24,10 @@
 //! Functions:
 //! - `SharedServices::new`: load settings and the plugin cache, start the single audio output and MIDI input.
 //! - `SharedServices::start_audio`: start the audio output from settings, falling back to the default device.
-//! - `SharedServices::audio_status` / `restart_audio` / `reconnect_midi`: audio and MIDI status.
+//! - `SharedServices::audio_status` / `restart_audio` / `reconnect_midi_devices`: audio and MIDI status.
 //! - `SharedServices::settings_snapshot` / `settings_if_newer` / `write_settings`: settings snapshot and write-back.
 //! - `SharedServices::plugin_cache_snapshot` / `plugin_cache_if_newer` / `write_plugin_cache`: plugin cache snapshot and write-back.
-//! - `SharedServices::midi_status` / `midi_events`: MIDI status and event queue.
+//! - `SharedServices::midi_status` / `midi_default_device` / `midi_events`: MIDI status, default port and events.
 //! - `SharedServices::next_window_id` / `last_focused_window` / `set_last_focused_window`: window ids and the global Space target.
 
 use super::settings::AppSettings;
@@ -35,7 +35,7 @@ use super::*;
 use crate::audio::backend::start_output;
 use crate::audio::backend::start_output_with;
 use crate::audio::{AudioOutput, AudioRouter};
-use crate::core::midi_input::{MidiInputManager, MidiKeyEvent};
+use crate::core::midi_input::{MidiInputEvent, MidiInputManager};
 use crate::diag;
 use crate::plugin::ScannedPlugin;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -111,7 +111,10 @@ impl SharedServices {
             ),
             ("detail", &audio_status),
         ]);
-        let midi = MidiInputManager::new(settings.controller_input_device.as_deref());
+        let midi = MidiInputManager::new(
+            settings.controller_input_device.as_deref(),
+            &settings.controller_enabled_input_devices,
+        );
         let shared = Arc::new(Self {
             settings: Mutex::new(SharedSettings {
                 settings,
@@ -222,21 +225,43 @@ impl SharedServices {
     }
 
     /// 所属模块：app / 多窗口共享服务 / MIDI
-    /// 功能：按设置重新连接 MIDI 输入端口。
-    /// 输入：`device`：端口名；`None` 自动选择第一个可用端口。
-    /// 输出/副作用：替换 MIDI 连接并返回新的状态文本。
-    /// 复杂度：时间 O(端口数)，空间 O(1)。
+    /// 功能：按设置重建 MIDI 输入连接：默认设备 + 启用的附加设备。
+    /// 输入：
+    /// - `default`：默认端口名；`None` 自动选择第一个可用端口。
+    /// - `enabled`：额外启用的端口名列表。
+    /// 输出/副作用：替换全部 MIDI 连接并返回新的状态文本。
+    /// 复杂度：时间 O(端口数)，空间 O(端口数)。
     ///
     /// Module: app / shared services / MIDI
-    /// Purpose: Reconnect the MIDI input port from the settings.
-    /// Inputs: `device`: port name; `None` selects the first available port.
-    /// Outputs / side effects: replaces the MIDI connection and returns the new status text.
-    /// Complexity: O(ports) time and O(1) space.
-    pub fn reconnect_midi(&self, device: Option<&str>) -> String {
+    /// Purpose: Rebuild the MIDI input connections from the settings: default plus enabled extras.
+    /// Inputs:
+    /// - `default`: default port name; `None` selects the first available port.
+    /// - `enabled`: additional enabled port names.
+    /// Outputs / side effects: replaces every MIDI connection and returns the new status text.
+    /// Complexity: O(ports) time and space.
+    pub fn reconnect_midi_devices(&self, default: Option<&str>, enabled: &[String]) -> String {
         self.midi
             .lock()
-            .map(|mut midi| midi.set_device(device))
+            .map(|mut midi| midi.set_devices(default, enabled))
             .unwrap_or_else(|_| "MIDI 输入不可用".into())
+    }
+
+    /// 所属模块：app / 多窗口共享服务 / MIDI
+    /// 功能：返回当前默认 MIDI 输入端口名。
+    /// 输入：`self`。
+    /// 输出/副作用：端口名或 `None`；不修改状态。
+    /// 复杂度：时间 O(1)，空间 O(端口名长度)。
+    ///
+    /// Module: app / shared services / MIDI
+    /// Purpose: Return the resolved default MIDI input port.
+    /// Inputs: `self`.
+    /// Outputs / side effects: the port name or `None`; no state change.
+    /// Complexity: O(1) time and O(port name length) space.
+    pub fn midi_default_device(&self) -> Option<String> {
+        self.midi
+            .lock()
+            .map(|midi| midi.default_port())
+            .unwrap_or_default()
     }
 
     /// 所属模块：app / 多窗口共享服务
@@ -425,7 +450,7 @@ impl SharedServices {
     /// Inputs: `self`.
     /// Outputs / side effects: events are removed from the queue.
     /// Complexity: O(events) time and space.
-    pub fn midi_events(&self) -> Vec<MidiKeyEvent> {
+    pub fn midi_events(&self) -> Vec<MidiInputEvent> {
         self.midi
             .lock()
             .map(|midi| midi.drain())

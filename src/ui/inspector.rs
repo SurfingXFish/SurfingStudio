@@ -19,6 +19,7 @@ enum EffectAction {
 
 impl SurfingApp {
     pub fn ui_inspector(&mut self, ui: &mut egui::Ui) {
+        let midi_inputs = self.midi_input_ports();
         let Some(mut track) = self.current_track().cloned() else {
             ui.heading("SurfingStudio");
             return;
@@ -80,6 +81,9 @@ impl SurfingApp {
         let mut master_params = master_params;
         let mut master_volume = self.project.master_volume;
         let mut master_native_changed = false;
+        // 选中绑定设备后需要自动启用该端口。
+        // Port that must be enabled after the user binds it.
+        let mut enable_input_device: Option<String> = None;
 
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
@@ -117,6 +121,44 @@ impl SurfingApp {
                         theme::track_color(track.color),
                     );
                 });
+                // MIDI 输入绑定：显式绑定优先于默认设备。
+                // MIDI input binding: an explicit binding takes priority over the default device.
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("MIDI 输入").color(theme::TEXT_DIM).size(11.0));
+                    let current = track
+                        .input_device
+                        .clone()
+                        .unwrap_or_else(|| "跟随默认设备".to_string());
+                    egui::ComboBox::from_id_salt(("track_midi_input", track_id))
+                        .width(180.0)
+                        .selected_text(current)
+                        .show_ui(ui, |ui| {
+                            if ui
+                                .selectable_value(&mut track.input_device, None, "跟随默认设备")
+                                .changed()
+                            {
+                                track_changed = true;
+                            }
+                            for port in &midi_inputs {
+                                if ui
+                                    .selectable_value(
+                                        &mut track.input_device,
+                                        Some(port.clone()),
+                                        port,
+                                    )
+                                    .changed()
+                                {
+                                    track_changed = true;
+                                    enable_input_device = Some(port.clone());
+                                }
+                            }
+                        });
+                });
+                ui.label(
+                    RichText::new("绑定后该设备直接控制本轨道；默认设备控制未绑定的选中轨道。")
+                        .size(10.0)
+                        .color(theme::TEXT_FAINT),
+                );
                 egui::CollapsingHeader::new("轨道颜色（256 色）")
                     .default_open(false)
                     .id_salt(("track_color", track_id))
@@ -718,6 +760,27 @@ impl SurfingApp {
                     .color(theme::TEXT_FAINT),
                 );
             });
+
+        // 绑定设备时自动把它加入“启用的设备”，否则该端口不会被打开，绑定将无效。
+        // Binding a device also enables it; otherwise the port is never opened and the binding
+        // would have no effect.
+        if let Some(device) = enable_input_device {
+            if !self
+                .settings
+                .controller_enabled_input_devices
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case(&device))
+            {
+                self.settings
+                    .controller_enabled_input_devices
+                    .push(device.clone());
+                self.commit_settings();
+                self.midi_status = self.shared.reconnect_midi_devices(
+                    self.settings.controller_input_device.as_deref(),
+                    &self.settings.controller_enabled_input_devices,
+                );
+            }
+        }
 
         // ---- apply edits ------------------------------------------------------
         if remove_track {

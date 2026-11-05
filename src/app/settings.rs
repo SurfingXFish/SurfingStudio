@@ -290,10 +290,15 @@ pub struct AppSettings {
     /// Controller latency offset in milliseconds, compensating controller input delay.
     #[serde(default)]
     pub controller_latency_offset_ms: f32,
-    /// 控制器启用的输入设备（MIDI 输入端口名）。
-    /// Enabled controller input device (MIDI input port name).
+    /// 控制器默认输入设备（MIDI 输入端口名）；`None` 自动选择第一个可用端口。
+    /// Default controller input device (MIDI input port name); `None` selects the first port.
     #[serde(default)]
     pub controller_input_device: Option<String>,
+    /// 额外启用的 MIDI 输入设备；与默认设备一起打开，可绑定到具体轨道。
+    /// Additional enabled MIDI input devices; opened together with the default device and usable
+    /// as per-track bindings.
+    #[serde(default)]
+    pub controller_enabled_input_devices: Vec<String>,
     /// 控制器启用的输出设备（MIDI 输出端口名）。
     /// Enabled controller output device (MIDI output port name).
     #[serde(default)]
@@ -766,6 +771,7 @@ impl Default for AppSettings {
             gpu_audio_realtime_enabled: false,
             controller_latency_offset_ms: 0.0,
             controller_input_device: None,
+            controller_enabled_input_devices: Vec::new(),
             controller_output_device: None,
             shortcuts: BTreeMap::new(),
         }
@@ -1691,15 +1697,16 @@ impl SurfingApp {
     }
 
     /// 所属模块：app / 全局设置 / 控制器
-    /// 功能：绘制控制器页：延迟偏移、启用的 MIDI 输入与输出设备。
+    /// 功能：绘制控制器页：延迟偏移、默认 MIDI 输入设备、启用的输入设备列表与输出设备。
     /// 输入：`ui`：设置内容区。
-    /// 输出/副作用：修改并保存设置；输入设备变更时立即重连 MIDI。
+    /// 输出/副作用：修改并保存设置；输入设备变更时立即重建 MIDI 连接。
     /// 复杂度：每帧 O(MIDI 端口数)。
     ///
     /// Module: app / global settings / controller
-    /// Purpose: Draw the controller page: latency offset and enabled MIDI input/output devices.
+    /// Purpose: Draw the controller page: latency offset, the default MIDI input device, the list
+    /// of enabled input devices and the output device.
     /// Inputs: `ui`: settings content area.
-    /// Outputs / side effects: edits and saves settings; reconnects MIDI when the input changes.
+    /// Outputs / side effects: edits and saves settings; rebuilds MIDI connections when devices change.
     /// Complexity: O(MIDI ports) per frame.
     fn ui_settings_controller(&mut self, ui: &mut egui::Ui) {
         let (inputs, outputs) = self.settings_midi_ports();
@@ -1720,34 +1727,60 @@ impl SurfingApp {
             settings_hint(ui, "正数延后控制器事件，负数提前；用于补偿设备输入延迟。");
         });
 
-        settings_section(ui, "启用的输入设备", |ui| {
+        settings_section(ui, "MIDI 输入", |ui| {
             if inputs.is_empty() {
                 settings_hint(ui, "未发现 MIDI 输入设备。");
             } else {
+                let auto_label = "自动（第一个可用端口）";
                 let mut selected = self
                     .settings
                     .controller_input_device
                     .clone()
-                    .unwrap_or_else(|| "自动（第一个可用端口）".to_string());
+                    .unwrap_or_else(|| auto_label.to_string());
                 ui.horizontal(|ui| {
-                    settings_field_label(ui, "输入端口");
+                    settings_field_label(ui, "默认设备");
                     settings_combo(ui, "settings_controller_input", selected.clone(), |ui| {
-                        ui.selectable_value(
-                            &mut selected,
-                            "自动（第一个可用端口）".to_string(),
-                            "自动（第一个可用端口）",
-                        );
+                        ui.selectable_value(&mut selected, auto_label.to_string(), auto_label);
                         for port in &inputs {
                             ui.selectable_value(&mut selected, port.clone(), port);
                         }
                     });
                 });
-                let mapped = (selected != "自动（第一个可用端口）").then_some(selected);
+                let mapped = (selected != auto_label).then_some(selected);
                 if mapped != self.settings.controller_input_device {
                     self.settings.controller_input_device = mapped;
                     self.commit_settings();
                     reconnect = true;
                 }
+
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new("启用的设备")
+                        .size(11.0)
+                        .color(theme::TEXT_DIM),
+                );
+                let mut enabled = self.settings.controller_enabled_input_devices.clone();
+                let mut enabled_changed = false;
+                for port in &inputs {
+                    let mut checked = enabled.iter().any(|name| name.eq_ignore_ascii_case(port));
+                    if ui.checkbox(&mut checked, port).changed() {
+                        if checked {
+                            enabled.push(port.clone());
+                        } else {
+                            enabled.retain(|name| !name.eq_ignore_ascii_case(port));
+                        }
+                        enabled_changed = true;
+                    }
+                }
+                if enabled_changed {
+                    self.settings.controller_enabled_input_devices = enabled;
+                    self.commit_settings();
+                    reconnect = true;
+                }
+                settings_hint(
+                    ui,
+                    "默认设备负责控制当前选中轨道；勾选的设备可绑定到具体轨道，多点输入可同时录音。",
+                );
             }
             ui.label(
                 egui::RichText::new(&self.midi_status)
@@ -1784,9 +1817,10 @@ impl SurfingApp {
         });
 
         if reconnect {
-            self.midi_status = self
-                .shared
-                .reconnect_midi(self.settings.controller_input_device.as_deref());
+            self.midi_status = self.shared.reconnect_midi_devices(
+                self.settings.controller_input_device.as_deref(),
+                &self.settings.controller_enabled_input_devices,
+            );
         }
     }
 
@@ -2355,6 +2389,22 @@ impl SurfingApp {
     }
 
     /// 所属模块：app / 全局设置 / 设备枚举
+    /// 功能：返回 MIDI 输入端口名；首次调用时枚举并缓存，供轨道绑定选择使用。
+    /// 输入：`self`。
+    /// 输出/副作用：可能写入 `settings_midi_ports`；只读 MIDI 端口。
+    /// 复杂度：时间 O(端口数)，空间 O(端口数)。
+    ///
+    /// Module: app / global settings / device enumeration
+    /// Purpose: Return MIDI input port names for the per-track binding picker, enumerating and
+    /// caching them on first use.
+    /// Inputs: `self`.
+    /// Outputs / side effects: may fill `settings_midi_ports`; reads MIDI ports only.
+    /// Complexity: O(ports) time and space.
+    pub(crate) fn midi_input_ports(&mut self) -> Vec<String> {
+        self.settings_midi_ports().0
+    }
+
+    /// 所属模块：app / 全局设置 / 设备枚举
     /// 功能：返回可用的 GPU 设备；进入渲染页时枚举一次并缓存，手动刷新时重建。
     /// 输入：`self`。
     /// 输出/副作用：可能写入 `settings_gpu_devices`；只读图形后端。
@@ -2875,6 +2925,7 @@ mod tests {
         assert_eq!(settings.audio_buffer_frames, DEFAULT_BUFFER_FRAMES);
         assert!(settings.audio_output_device.is_none());
         assert!(settings.controller_input_device.is_none());
+        assert!(settings.controller_enabled_input_devices.is_empty());
     }
 
     /// 覆盖：音频设置转换为启动选项时保留系统、设备、采样率与缓冲。

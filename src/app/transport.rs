@@ -13,7 +13,8 @@
 //!   插件加载判断与加载期间的延迟关闭。
 //! - `SurfingApp::refresh_engine_snapshot` / `playhead`：每帧 UI 遥测快照。
 //! - `SurfingApp::toggle_play` / `seek` / `jump_to_start` / `jump_to_end`：传输控制。
-//! - `SurfingApp::audition_on` / `audition_off` / `release_held_notes`：试听与挂音清理。
+//! - `SurfingApp::audition_on` / `audition_on_for` / `audition_off` / `audition_off_for` /
+//!   `release_track_notes` / `release_held_notes`：试听与挂音清理。
 //! - `PendingAudition` / `SurfingApp::queue_audition` / `SurfingApp::flush_pending_auditions`：
 //!   引擎锁被占用时暂存并按顺序补发试听事件。
 //!
@@ -33,7 +34,8 @@
 //!   plugin-load detection and deferred close during loading.
 //! - `SurfingApp::refresh_engine_snapshot` / `playhead`: per-frame UI telemetry snapshot.
 //! - `SurfingApp::toggle_play` / `seek` / `jump_to_start` / `jump_to_end`: transport control.
-//! - `SurfingApp::audition_on` / `audition_off` / `release_held_notes`: audition and note release.
+//! - `SurfingApp::audition_on` / `audition_on_for` / `audition_off` / `audition_off_for` /
+//!   `release_track_notes` / `release_held_notes`: audition and note release.
 //! - `PendingAudition` / `SurfingApp::queue_audition` / `SurfingApp::flush_pending_auditions`:
 //!   buffer audition events while the engine lock is busy and replay them in order.
 
@@ -515,6 +517,9 @@ impl SurfingApp {
         };
         if engine.is_playing() {
             drop(engine);
+            // 停止播放即退出录音：先按当前播放头收尾，再暂停走带。
+            // Stopping playback ends recording: finish at the current playhead before pausing.
+            self.finish_recording();
             if let Ok(mut engine) = self.engine.lock() {
                 engine.pause();
             }
@@ -556,22 +561,21 @@ impl SurfingApp {
     }
 
     /// 所属模块：app / 试听
-    /// 功能：触发试听音符。事件先进入待发送队列，由引擎锁空闲时按顺序补发，避免音频回调占用
-    /// 引擎锁期间直接丢弃（插件越重、锁占用越久，越容易出现连续音符漏音）。
+    /// 功能：触发当前选中轨道的试听音符。事件先进入待发送队列，由引擎锁空闲时按顺序补发，
+    /// 避免音频回调占用引擎锁期间直接丢弃。
     /// 输入：
     /// - `pitch`：MIDI 音高（0~127）。
     /// - `velocity`：力度（1~127）。
-    /// 输出/副作用：更新 `audition_track` / `held_pitches` 与 `pending_auditions`；可能激活本窗口音频输出。
+    /// 输出/副作用：更新 `audition_track` / `held_notes` 与 `pending_auditions`；可能激活本窗口音频输出。
     /// 复杂度：时间 O(待发送事件数)，空间 O(1)。
     ///
     /// Module: app / audition
-    /// Purpose: Trigger an audition note. Events go through the pending queue and are replayed in
-    /// order once the engine lock is free, so notes are never dropped while the audio callback holds
-    /// the lock (heavy plugins make lock contention, and missed consecutive notes, far more likely).
+    /// Purpose: Trigger an audition note on the selected track. Events go through the pending queue
+    /// and are replayed in order once the engine lock is free.
     /// Inputs:
     /// - `pitch`: MIDI pitch (0~127).
     /// - `velocity`: velocity (1~127).
-    /// Outputs / side effects: updates `audition_track` / `held_pitches` / `pending_auditions`; may
+    /// Outputs / side effects: updates `audition_track` / `held_notes` / `pending_auditions`; may
     /// make this window the audio output target.
     /// Complexity: O(pending events) time and O(1) space.
     pub fn audition_on(&mut self, pitch: u8, velocity: u8) {
@@ -579,9 +583,32 @@ impl SurfingApp {
             return;
         };
         if self.audition_track != Some(track_id) {
-            self.release_held_notes();
+            self.release_track_notes(self.audition_track);
             self.audition_track = Some(track_id);
         }
+        self.audition_on_for(track_id, pitch, velocity);
+    }
+
+    /// 所属模块：app / 试听
+    /// 功能：在指定轨道触发试听音符；同一音高重复触发时先补 Note Off。
+    /// 输入：
+    /// - `track_id`：目标轨道 id。
+    /// - `pitch`：MIDI 音高（0~127）。
+    /// - `velocity`：力度（1~127）。
+    /// 输出/副作用：更新 `held_notes` 与 `pending_auditions`；可能激活本窗口音频输出。
+    /// 复杂度：时间 O(待发送事件数)，空间 O(1)。
+    ///
+    /// Module: app / audition
+    /// Purpose: Trigger an audition note on the given track; a repeated pitch first receives a
+    /// Note Off so the plugin retriggers it.
+    /// Inputs:
+    /// - `track_id`: target track id.
+    /// - `pitch`: MIDI pitch (0~127).
+    /// - `velocity`: velocity (1~127).
+    /// Outputs / side effects: updates `held_notes` and `pending_auditions`; may make this window
+    /// the audio output target.
+    /// Complexity: O(pending events) time and O(1) space.
+    pub fn audition_on_for(&mut self, track_id: TrackId, pitch: u8, velocity: u8) {
         // 试听同样把本窗口设为输出目标，否则未激活的窗口不会发声。
         // Audition also makes this window the output target; otherwise an inactive window
         // would stay silent.
@@ -589,13 +616,11 @@ impl SurfingApp {
         // 同一音高重复触发时先补一条 Note Off 再发送 Note On：插件会重新起音，且不会留下挂音。
         // A repeated Note On for a held pitch first sends a Note Off, so plugins retrigger the note
         // without leaving a hanging voice.
-        let retrigger = !self.held_pitches.insert(pitch);
+        let retrigger = !self.held_notes.entry(track_id).or_default().insert(pitch);
         if self.engine_sync_pending() {
             // 引擎还没跟上工程：事件排队，同步完成后的每帧 `flush_pending_auditions` 补发。
-            // 以前这里直接返回，导致“刚改完就试听”完全没有声音。
             // The engine has not caught up with the project yet: queue the events; the per-frame
-            // `flush_pending_auditions` sends them once the sync finishes. Previously this returned
-            // immediately, so auditioning right after an edit stayed silent.
+            // `flush_pending_auditions` sends them once the sync finishes.
             if retrigger {
                 self.pending_auditions.push(PendingAudition {
                     track_id,
@@ -619,22 +644,69 @@ impl SurfingApp {
     }
 
     /// 所属模块：app / 试听
-    /// 功能：释放试听音符；同样经过待发送队列，锁忙时不会漏掉 Note Off。
+    /// 功能：释放当前选中轨道的试听音符。
     /// 输入：`pitch`：MIDI 音高（0~127）。
-    /// 输出/副作用：更新 `held_pitches` 与 `pending_auditions`。
+    /// 输出/副作用：更新 `held_notes` 与 `pending_auditions`。
     /// 复杂度：时间 O(待发送事件数)，空间 O(1)。
     ///
     /// Module: app / audition
-    /// Purpose: Release an audition note; it also goes through the pending queue so a busy lock
-    /// never loses the Note Off.
+    /// Purpose: Release an audition note on the selected track.
     /// Inputs: `pitch`: MIDI pitch (0~127).
-    /// Outputs / side effects: updates `held_pitches` and `pending_auditions`.
+    /// Outputs / side effects: updates `held_notes` and `pending_auditions`.
     /// Complexity: O(pending events) time and O(1) space.
     pub fn audition_off(&mut self, pitch: u8) {
-        if !self.held_pitches.remove(&pitch) {
+        if let Some(track_id) = self.audition_track {
+            self.audition_off_for(track_id, pitch);
+        }
+    }
+
+    /// 所属模块：app / 试听
+    /// 功能：释放指定轨道上的一个试听音符。
+    /// 输入：
+    /// - `track_id`：目标轨道 id。
+    /// - `pitch`：MIDI 音高（0~127）。
+    /// 输出/副作用：从 `held_notes` 移除并排入 Note Off。
+    /// 复杂度：时间 O(待发送事件数)，空间 O(1)。
+    ///
+    /// Module: app / audition
+    /// Purpose: Release one audition note on the given track.
+    /// Inputs:
+    /// - `track_id`: target track id.
+    /// - `pitch`: MIDI pitch (0~127).
+    /// Outputs / side effects: removes the pitch from `held_notes` and queues a Note Off.
+    /// Complexity: O(pending events) time and O(1) space.
+    pub fn audition_off_for(&mut self, track_id: TrackId, pitch: u8) {
+        let Some(held) = self.held_notes.get_mut(&track_id) else {
+            return;
+        };
+        if !held.remove(&pitch) {
             return;
         }
-        if let Some(track_id) = self.audition_track {
+        if held.is_empty() {
+            self.held_notes.remove(&track_id);
+        }
+        self.queue_audition(track_id, pitch, false, 0);
+    }
+
+    /// 所属模块：app / 试听
+    /// 功能：释放指定轨道全部挂起的试听音符。
+    /// 输入：`track_id`：轨道 id，可为 `None`。
+    /// 输出/副作用：Note Off 进入待发送队列；不修改工程。
+    /// 复杂度：时间 O(挂起音高数 + 待发送事件数)，空间 O(挂起音高数)。
+    ///
+    /// Module: app / audition
+    /// Purpose: Release every held audition note on one track.
+    /// Inputs: `track_id`: track id, may be `None`.
+    /// Outputs / side effects: queues Note Offs; the project is untouched.
+    /// Complexity: O(held pitches + pending events) time and O(held pitches) space.
+    pub fn release_track_notes(&mut self, track_id: Option<TrackId>) {
+        let Some(track_id) = track_id else {
+            return;
+        };
+        let Some(pitches) = self.held_notes.remove(&track_id) else {
+            return;
+        };
+        for pitch in pitches {
             self.queue_audition(track_id, pitch, false, 0);
         }
     }
@@ -642,17 +714,21 @@ impl SurfingApp {
     /// 所属模块：app / 试听
     /// 功能：释放本窗口全部挂起的试听音符，并清空键盘与虚拟键盘状态。
     /// 输入：`self`。
-    /// 输出/副作用：`held_pitches` 清空，Note Off 进入待发送队列；不修改工程。
+    /// 输出/副作用：`held_notes` 清空，Note Off 进入待发送队列；不修改工程。
     /// 复杂度：时间 O(挂起音高数 + 待发送事件数)，空间 O(挂起音高数)。
     ///
     /// Module: app / audition
     /// Purpose: Release every held audition note and reset the keyboard/virtual-key state.
     /// Inputs: `self`.
-    /// Outputs / side effects: clears `held_pitches` and queues Note Offs; the project is untouched.
+    /// Outputs / side effects: clears `held_notes` and queues Note Offs; the project is untouched.
     /// Complexity: O(held pitches + pending events) time and O(held pitches) space.
     pub fn release_held_notes(&mut self) {
-        let pitches: Vec<u8> = self.held_pitches.drain().collect();
-        if let Some(track_id) = self.audition_track {
+        let groups: Vec<(TrackId, Vec<u8>)> = self
+            .held_notes
+            .drain()
+            .map(|(track_id, pitches)| (track_id, pitches.into_iter().collect()))
+            .collect();
+        for (track_id, pitches) in groups {
             for pitch in pitches {
                 self.queue_audition(track_id, pitch, false, 0);
             }

@@ -60,6 +60,7 @@ mod input;
 mod panels;
 mod plugins;
 use plugins::PendingPluginApply;
+mod record;
 mod rolls;
 mod settings;
 mod shared;
@@ -406,7 +407,12 @@ pub struct SurfingApp {
     plugin_probe_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 
     pub audition_track: Option<TrackId>,
-    pub held_pitches: HashSet<u8>,
+    /// 当前按下的试听音符，按目标轨道分组；多个 MIDI 设备可同时向不同轨道试听。
+    /// Held audition notes grouped by target track; several MIDI devices may audition at once.
+    pub held_notes: HashMap<TrackId, HashSet<u8>>,
+    /// MIDI 录制状态；仅 UI 状态，不持久化。
+    /// MIDI recording state; UI-only and never persisted.
+    pub record: record::RecordState,
     /// 引擎锁被音频回调占用时暂存的试听事件，下一帧按顺序补发。
     /// Audition events queued while the audio callback holds the engine lock; replayed in order on
     /// a later frame.
@@ -1305,7 +1311,8 @@ impl SurfingApp {
             pending_plugin_apply: None,
             plugin_probe_cancel: None,
             audition_track: None,
-            held_pitches: HashSet::new(),
+            held_notes: HashMap::new(),
+            record: record::RecordState::default(),
             pending_auditions: Vec::new(),
             keyboard_held: HashMap::new(),
             virtual_key_note: None,
@@ -1815,6 +1822,11 @@ impl SurfingApp {
         }
 
         let auto_stopped = self.ui_auto_stopped;
+        // 防御性收尾：即使自动停止未被临时关闭，停止也意味着退出录音。
+        // Defensive finish: even if auto-stop was not suspended, stopping ends recording.
+        if auto_stopped && self.record.is_active() {
+            self.finish_recording();
+        }
         if auto_stopped && !self.last_auto_stopped {
             self.status = "已在最后一个 MIDI 片段结束后 2 小节自动停止".into();
         }

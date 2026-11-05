@@ -7,7 +7,7 @@
 //! - `SurfingApp::ui_lane_paste_prompt`：子轨覆盖确认弹窗。
 //! - `SurfingApp::app_bar`：应用栏：拖动窗口、隐藏下拉栏、项目栏与窗口按钮。
 //! - `SurfingApp::ui_main_menu`：主页 / 文件 / 编辑 / VST 插件 / 帮助 / 设置入口，返回菜单区域用于点击外部收起。
-//! - `SurfingApp::main_toolbar`：工具栏：走带、BPM/拍号、循环、自动翻页与鼠标模式。
+//! - `SurfingApp::main_toolbar`：工具栏：走带（含录音）、BPM/拍号、循环、自动翻页与鼠标模式。
 //! - `SurfingApp::window_resize_edges`：无边框窗口的边缘与角落缩放热区。
 //! - `SurfingApp::status_bar`：状态、CPU、音频设备与 MIDI 指示。
 //! - `apply_chrome_style` / `apply_menu_style`：IDEA 风格的应用栏与弹出菜单样式。
@@ -25,7 +25,8 @@
 //! - `SurfingApp::app_bar`: window drag, menu toggle, project chip and window buttons.
 //! - `SurfingApp::ui_main_menu`: home / file / edit / VST plugin / help / settings entries; returns
 //!   the menu rect for click-outside dismissal.
-//! - `SurfingApp::main_toolbar`: add-track, transport, BPM/time signature, loop and pointer tools.
+//! - `SurfingApp::main_toolbar`: transport (including record), BPM/time signature, loop and pointer
+//!   tools.
 //! - `SurfingApp::window_resize_edges`: resize hit areas along the borderless window edges.
 //! - `SurfingApp::status_bar`: status, CPU, audio device and MIDI indicators.
 //! - `apply_chrome_style` / `apply_menu_style`: IDEA-like styles for the app bar and its popups.
@@ -487,7 +488,7 @@ impl SurfingApp {
     }
 
     /// 所属模块：app / 面板
-    /// 功能：绘制工具栏：添加轨道、走带控制、BPM/拍号、循环起止与鼠标模式；窗口变窄时自动换行。
+    /// 功能：绘制工具栏：添加轨道、走带（含录音）、BPM/拍号、循环起止与鼠标模式；窗口变窄时自动换行。
     /// 输入：
     /// - `ctx`：egui 上下文。
     /// 输出/副作用：修改工程（BPM、拍号、循环）并 `mark_dirty`；切换播放与鼠标模式。
@@ -541,6 +542,28 @@ impl SurfingApp {
                         .clicked()
                     {
                         self.toggle_play();
+                    }
+                    // 录音按钮：未播放时自动开始播放；再次点击或停止播放都会结束录音。
+                    // Record button: starts playback when needed; clicking again or stopping
+                    // playback ends recording.
+                    let recording = self.record.is_active();
+                    let record_color = if recording {
+                        theme::RED
+                    } else {
+                        theme::APP_BAR_TEXT_DIM
+                    };
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new("⏺").size(14.0).color(record_color),
+                            )
+                            .selected(recording)
+                            .min_size(egui::Vec2::new(30.0, 24.0)),
+                        )
+                        .on_hover_text("录制 MIDI（停止播放后自动退出录音）")
+                        .clicked()
+                    {
+                        self.toggle_record();
                     }
                     if ui
                         .add(

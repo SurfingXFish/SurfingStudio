@@ -7,7 +7,7 @@
 //! - `handle_keyboard`：可配置快捷键、撤销、复制粘贴（含 Copy/Cut/Paste 事件）、试听与空格播放/暂停。
 //! - `handle_controller_tool_shortcuts`：控制器画笔的循环/直选快捷键。
 //! - `cancel_or_close`：取消/关闭当前弹窗或卷帘。
-//! - `poll_midi`：消费 MIDI 输入队列。
+//! - `poll_midi`：按设备绑定把 MIDI 输入路由到轨道，并处理试听与录音。
 //! - `keyboard_map`：电脑键盘到 MIDI 音高映射。
 //!
 //! Module: app / input
@@ -22,7 +22,7 @@
 //!   audition and Space play/pause.
 //! - `handle_controller_tool_shortcuts`: cycle/select controller brush shortcuts.
 //! - `cancel_or_close`: close the current popup or roll.
-//! - `poll_midi`: consume the MIDI input queue.
+//! - `poll_midi`: route MIDI input to tracks by device binding and handle audition/recording.
 //! - `keyboard_map`: map computer keys to MIDI pitches.
 
 use super::*;
@@ -409,6 +409,21 @@ impl SurfingApp {
         }
     }
 
+    /// 所属模块：app / 输入 / MIDI
+    /// 功能：消费 MIDI 输入队列：按设备绑定确定目标轨道，已绑定的轨道优先，默认设备控制
+    /// 当前选中轨道（该轨道未绑定其他设备时）；同时触发试听并写入录音缓冲。
+    /// 输入：`self`。
+    /// 输出/副作用：可能更新试听状态、录音缓冲与状态栏；不直接修改工程（录音在停止时建片段）。
+    /// 复杂度：时间 O(事件数 × 轨道数)，空间 O(事件数)。
+    ///
+    /// Module: app / input / MIDI
+    /// Purpose: Drain the MIDI queue: resolve target tracks by device binding (bound tracks first,
+    /// the default device drives the selected track when it has no other binding), then trigger
+    /// audition and write into the recording buffers.
+    /// Inputs: `self`.
+    /// Outputs / side effects: may update audition state, recording buffers and the status bar; the
+    /// project itself is not modified (clips are created when recording stops).
+    /// Complexity: O(events × tracks) time and O(events) space.
     pub(super) fn poll_midi(&mut self) {
         // 主页不发声；多个工程窗口只让最近获得焦点的窗口消费 MIDI，避免重复触发音符。
         // The home page makes no sound; among project windows only the one focused last consumes
@@ -422,10 +437,19 @@ impl SurfingApp {
             return;
         }
         for event in events {
-            if event.on {
-                self.audition_on(event.pitch, event.velocity);
-            } else {
-                self.audition_off(event.pitch);
+            let Some((on, pitch, velocity)) = super::record::note_from_message(&event.message)
+            else {
+                continue;
+            };
+            let targets = self.midi_target_tracks(&event.device);
+            for track_id in targets {
+                if on {
+                    self.audition_on_for(track_id, pitch, velocity);
+                    self.record_note_on(track_id, pitch, velocity);
+                } else {
+                    self.audition_off_for(track_id, pitch);
+                    self.record_note_off(track_id, pitch);
+                }
             }
         }
     }

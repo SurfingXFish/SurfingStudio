@@ -50,6 +50,13 @@ pub struct Track {
     /// so older projects decode through the default.
     #[serde(default)]
     pub output_pair: u8,
+    /// 绑定的 MIDI 输入端口名；`None` 表示跟随设置中的默认设备。
+    /// Bound MIDI input port name; `None` follows the default device in the settings.
+    /// 绑定后该端口的音符优先送到本轨道，默认设备只控制未绑定的选中轨道。
+    /// A bound port routes its notes to this track first; the default device only drives the
+    /// selected track when that track has no explicit binding.
+    #[serde(default)]
+    pub input_device: Option<String>,
     /// Incremented whenever the instrument, effects or controller content changes.
     #[serde(skip, default = "default_revision")]
     pub revision: u64,
@@ -72,6 +79,7 @@ impl Track {
             muted: false,
             solo: false,
             output_pair: 0,
+            input_device: None,
             expanded: false,
             revision: 1,
         }
