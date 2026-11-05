@@ -42,6 +42,11 @@ const DEFAULT_SAMPLE_RATE: f64 = 48_000.0;
 /// Default output buffer size in frames.
 const DEFAULT_BUFFER_FRAMES: u32 = 512;
 
+/// 缓冲区的最小时长（毫秒）：高采样率下固定帧数会短到无法调度。
+/// Minimum buffer duration in milliseconds: at high sample rates a fixed frame count becomes too
+/// short to schedule reliably.
+const MIN_BUFFER_MILLIS: u32 = 6;
+
 /// 音频系统：决定使用哪一条宿主路径打开设备。
 /// Audio system: selects which host path opens the device.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -676,11 +681,16 @@ fn start_cpal(
     // The sample rate belongs to the device, not to one window: store it on the router so every
     // registered engine follows it.
     router.set_sample_rate(config.sample_rate as f64);
-
     let channels = config.channels as usize;
     let sample_rate = config.sample_rate;
-    config.buffer_size =
-        cpal::BufferSize::Fixed(options.buffer_frames.unwrap_or(DEFAULT_BUFFER_FRAMES));
+    // 缓冲至少覆盖 6 ms：192 kHz 下 512 帧只有 2.7 ms，回调稍有抖动就欠载，
+    // 驱动会把输出延迟越拉越大（听感上整首歌“晚半秒”）。
+    // Keep at least 6 ms of buffer: 512 frames at 192 kHz is only 2.7 ms, so any callback jitter
+    // underruns and the driver keeps growing the output latency.
+    let requested_frames = options.buffer_frames.unwrap_or(DEFAULT_BUFFER_FRAMES);
+    let minimum_frames = (sample_rate as u64 * MIN_BUFFER_MILLIS as u64 / 1000) as u32;
+    let buffer_frames = requested_frames.max(minimum_frames.min(8192));
+    config.buffer_size = cpal::BufferSize::Fixed(buffer_frames);
 
     let stream = match sample_format {
         cpal::SampleFormat::F32 => build::<f32>(&device, &config, router.clone(), channels),
@@ -703,7 +713,9 @@ fn start_cpal(
 
     Ok(AudioOutput {
         _stream: AudioStream::Cpal(stream),
-        description: format!("{device_name} · {sample_rate} Hz · {channels} ch"),
+        description: format!(
+            "{device_name} · {sample_rate} Hz · {channels} ch · {buffer_frames} 帧"
+        ),
     })
 }
 
@@ -761,10 +773,14 @@ where
     // engine lock. `lock_engine` first spins for a couple of milliseconds so a
     // short background sync never turns into an audible dropout.
     let mut recovering = false;
+    // 采样率按值捕获：闭包必须 `'static`，不能借用调用方的配置。
+    // Capture the sample rate by value: the closure must be `'static` and cannot borrow the
+    // caller's configuration.
+    let callback_rate = config.sample_rate as f64;
     device
         .build_output_stream(
             *config,
-            move |data: &mut [T], _info: &cpal::OutputCallbackInfo| {
+            move |data: &mut [T], info: &cpal::OutputCallbackInfo| {
                 let frames = data.len() / channels.max(1);
                 if frames == 0 {
                     return;
@@ -782,12 +798,25 @@ where
                     active = slot;
                 }
                 let mut ok = false;
+                let mut render = Duration::ZERO;
                 if let Some(engine) = &active {
                     if let Some(mut engine) = lock_engine(engine) {
+                        let started = Instant::now();
                         engine.process_output(&mut buffers);
+                        render = started.elapsed();
                         ok = true;
                     }
                 }
+                // 驱动报告的输出延迟（playback - callback）：区分“设备缓冲本身很长”与
+                // “引擎算不过来”。音频线程内只做原子累加，不写日志。
+                // Driver-reported output latency (playback - callback): separates "the device buffer
+                // itself is long" from "the engine cannot keep up". Atomic accumulation only inside
+                // the audio thread.
+                let timestamp = info.timestamp();
+                let latency = timestamp
+                    .playback
+                    .checked_duration_since(timestamp.callback);
+                crate::diag::note_audio_callback(callback_rate, frames, render, latency, ok);
                 let fade = (frames / 8).max(1) as f32;
                 if ok {
                     if recovering {

@@ -41,11 +41,14 @@ pub use render::{OfflineRender, OfflineRenderOptions, OfflineRenderSession, Rend
 use crate::audio::fx::NativeEffectProcessor;
 use crate::audio::gpu::GpuRenderConfig;
 use crate::audio::io::{AudioFile, AudioRuntime};
-use crate::audio::synth::{DrumKit, GateKind, ModeledInstrument, PolySynth, SynthEvent};
+use crate::audio::synth::{
+    DrumKit, GateKind, ModeledInstrument, PolySynth, SampledInstrument, SynthEvent,
+};
 use crate::core::model::{
     ChannelLayout, ControllerKind, ControllerLanes, EffectRef, InstrumentRef, Project, Track,
     TrackId, evaluate_automation,
 };
+use crate::diag;
 use crate::plugin::{ParamView, PluginHost, PluginKind, PluginRuntime};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -59,6 +62,22 @@ pub enum SlotKind {
     Master,
 }
 
+/// 内部渲染块长：约 10 ms 音频，限制在 512 ~ 4096 帧。
+/// 512 帧在 192 kHz 下只有 2.67 ms，每秒要调用插件 375 次（48 kHz 只有 94 次）；
+/// 桥接类插件（VOCALOID / ACE Bridge）每次 `process` 都要与外部编辑器进程同步，
+/// 高频调用会把它们和编辑器一起拖慢。按采样率放大块长后，高采样率下的调用频率
+/// 回到与 48 kHz 同一量级，回调内的块长也保持恒定（避免 512/512/128 这类尾块）。
+/// Internal render block: about 10 ms of audio, clamped to 512 ~ 4096 frames.
+/// 512 frames is only 2.67 ms at 192 kHz, so plugins would be called 375 times a second
+/// (94 times at 48 kHz). Bridge plugins (VOCALOID / ACE Bridge) synchronise with an external editor
+/// process on every `process` call, and that rate drags both the plugin and its editor down.
+/// Scaling the block with the sample rate brings the call rate back to the 48 kHz ballpark and keeps
+/// the block length constant (no 512/512/128 tail blocks).
+fn render_block_size(sample_rate: f64) -> usize {
+    let frames = (sample_rate.max(1.0) * 0.010).round() as usize;
+    frames.clamp(512, 4096)
+}
+
 pub struct Engine {
     pub sample_rate: f64,
     pub block_size: usize,
@@ -68,6 +87,10 @@ pub struct Engine {
     master_effect_key: Option<String>,
     plugins_sample_rate: f64,
     last_tempo: f64,
+    /// 上一次记录的“最慢链 / 主效果器”延迟（采样数），用于延迟日志去重。
+    /// Last recorded slowest-chain / master-effect latency in samples, used to de-duplicate the log.
+    last_max_latency: usize,
+    last_master_latency: usize,
     last_parameter_poll: Instant,
     /// 参数轮询游标：每次只检查一条轨道，避免一次扫描全部插件阻塞 UI。
     /// Parameter poll cursor: check one track per tick so scanning a project
@@ -75,6 +98,21 @@ pub struct Engine {
     parameter_poll_cursor: usize,
     playing: bool,
     position_beats: f64,
+    /// 插件链总延迟（采样）：实时渲染提前这么多，抵消“开启效果器后声音整体后延”。
+    /// Total plugin-chain latency in samples: the realtime renderer runs this far ahead so enabling
+    /// an effect no longer shifts the whole mix behind the playhead.
+    render_ahead_samples: usize,
+    /// 预卷剩余帧数：先用当前位置的内容填满补偿延迟线并丢弃输出，之后声音与播放头对齐。
+    /// Remaining pre-roll frames: fill the compensation delay lines with the content at the current
+    /// position and drop the output, after which playback lines up with the playhead.
+    preroll_frames: usize,
+    /// 预卷期间对外显示的播放位置。
+    /// Playhead shown while pre-rolling.
+    preroll_position_beats: f64,
+    /// 是否启用前瞻补偿；离线导出关闭，导出文件保持从 0 开始的原始对齐。
+    /// Whether look-ahead compensation is active; offline export turns it off so the file keeps its
+    /// original alignment from frame zero.
+    lookahead_enabled: bool,
     levels: Vec<f32>,
     levels_l: Vec<f32>,
     levels_r: Vec<f32>,
@@ -83,6 +121,12 @@ pub struct Engine {
     master_peak_r: f32,
     cpu_load: f32,
     live_timeout: f32,
+    /// 是否有插件编辑器打开：停止走带时仍需持续处理，插件编辑器里的试听（VOCALOID 点音符）
+    /// 才会出声。只在乐器编辑器打开期间启用，避免整首工程在暂停时也一直占用 CPU。
+    /// Whether a plugin editor is open: while the transport is stopped the chain must still be
+    /// processed so editor previews (clicking a note in VOCALOID) are audible. Enabled only while
+    /// an instrument editor is open, so an idle paused project does not burn CPU.
+    plugin_editor_active: bool,
     auto_stop_enabled: bool,
     auto_stopped: bool,
     /// Cached per-sync project facts used by the audio callback.
@@ -120,12 +164,21 @@ pub struct Engine {
     /// 实时 GPU 主总线软限幅；`None` 表示使用 CPU。
     /// Realtime GPU master-bus limiter; `None` means the CPU path.
     gpu_realtime: Option<crate::audio::gpu::GpuRealtimeLimiter>,
+    /// GPU 神经音色训练器；与实时限幅共用同一配置，失败时神经音色退回 CPU 训练。
+    /// GPU neural timbre trainer; shares the realtime config and falls back to CPU training.
+    gpu_timbre: Option<crate::audio::gpu::GpuTimbreTrainer>,
     /// 当前实时 GPU 配置；与设置比较，避免每次同步都重建设备。
     /// Current realtime GPU config; compared with the settings so devices are not rebuilt every sync.
     gpu_realtime_config: Option<GpuRenderConfig>,
     /// 最近一次实时 GPU 限幅失败原因；由 UI 取走后清空。
     /// Last realtime GPU limiter failure; cleared once the UI takes it.
     gpu_realtime_warning: Option<String>,
+    /// 插件当前是否收到“正在播放”的走带状态；停止时只补发一次 kPlaying=false。
+    /// Whether plugins were last told the transport is playing; stop is sent once.
+    plugin_transport_playing: bool,
+    /// 下一次插件渲染是否需要补发位置（开始播放、定位、循环回绕、新实例）。
+    /// Whether the next plugin render must resend the position (play, seek, loop wrap, new instance).
+    plugin_transport_seek: bool,
     /// Reused MIDI gate buffer for direct (live) playback.
     gates_scratch: Vec<SynthEvent>,
     /// 工程输出声道布局。
@@ -141,19 +194,18 @@ pub struct Engine {
     offline: Option<render::OfflineRenderSession>,
 }
 
-/// 乐器插件实例化的时间片预算：一次同步只新建时间片内的插件，其余留到下一次调用。
-/// Instrument plugin instantiation budget: one sync creates only the plugins that fit in the time
-/// slice and leaves the rest for the next call.
-struct InstrumentLoadBudget {
-    /// 本轮允许创建插件的截止时刻；`None` 表示不限时（普通同步与后台同步）。
-    /// Deadline for creating plugins in this pass; `None` means unlimited (regular and background
-    /// syncs).
+/// 插件实例化的时间片预算：一次同步只新建时间片内的插件，其余留到下一次调用。
+/// Plugin instantiation budget: one sync creates only the plugins that fit in the time slice and
+/// leaves the rest for the next call.
+struct PluginLoadBudget {
+    /// 本轮允许创建插件的截止时刻；`None` 表示不限时（普通编辑后的同步）。
+    /// Deadline for creating plugins in this pass; `None` means unlimited (a sync after an edit).
     deadline: Option<Instant>,
     /// 本轮已创建的插件数量；至少允许创建一个，保证每次调用都有进展。
     /// Plugins created in this pass; at least one is allowed so every call makes progress.
     created: usize,
-    /// 因预算耗尽而推迟到下一次调用的乐器插件数量。
-    /// Instrument plugins postponed to the next call because the budget ran out.
+    /// 因预算耗尽而推迟到下一次调用的插件数量。
+    /// Plugins postponed to the next call because the budget ran out.
     pending: usize,
 }
 
@@ -185,14 +237,41 @@ struct TrackEngine {
     last_bend: Option<f32>,
     last_param_poll: Instant,
     last_full_param_poll: Instant,
+    /// 本条链（乐器 + 效果器）上报的总延迟，同步时重新计算。
+    /// Total latency reported by this chain (instrument + effects), recomputed on sync.
+    chain_latency: usize,
+    /// 延迟补偿：把本轨补到全工程最慢的一条链。
+    /// Delay compensation: pads this track to the slowest chain in the project.
+    comp_delay: CompDelay,
 }
 
 enum InstrumentRuntime {
     Synth(PolySynth),
     Drums(DrumKit),
     Native(ModeledInstrument),
+    Sample(SampledInstrument),
     Plugin(PluginRuntime),
     Failed(String),
+}
+
+impl InstrumentRuntime {
+    /// 所属模块：audio::engine / 乐器运行时
+    /// 功能：返回插件乐器上报的处理延迟（采样数）；内置乐器为 0。
+    /// 输入：`self`。
+    /// 输出/副作用：延迟采样数；插件忙时返回上一次缓存值。
+    /// 复杂度：时间 O(1)，空间 O(1)。
+    ///
+    /// Module: audio::engine / instrument runtime
+    /// Purpose: Reported latency of a plugin instrument in samples; `0` for built-in instruments.
+    /// Inputs: `self`.
+    /// Outputs / side effects: latency in samples; the last cached value while the plugin is busy.
+    /// Complexity: O(1) time and space.
+    fn latency_samples(&mut self) -> usize {
+        match self {
+            InstrumentRuntime::Plugin(plugin) => plugin.latency_samples(),
+            _ => 0,
+        }
+    }
 }
 
 /// 效果链运行时：VST 插件或内置原生效果器。
@@ -217,6 +296,23 @@ impl EffectRuntime {
     fn panic(&mut self) {
         if let EffectRuntime::Plugin(plugin) = self {
             plugin.panic();
+        }
+    }
+
+    /// 所属模块：audio::engine / 效果链运行时
+    /// 功能：把播放状态写进插件效果器的走带上下文。
+    /// 输入：`playing` 播放中为真。
+    /// 输出/副作用：插件效果器收到 `kPlaying`；内置效果忽略。
+    /// 复杂度：时间 O(1)，空间 O(1)。
+    ///
+    /// Module: audio::engine / effect runtime
+    /// Purpose: Push the playing state into the effect plug-in's transport context.
+    /// Inputs: `playing`.
+    /// Outputs / side effects: plug-in effects receive `kPlaying`; native effects ignore it.
+    /// Complexity: O(1) time and space.
+    fn set_playing(&mut self, playing: bool) {
+        if let EffectRuntime::Plugin(plugin) = self {
+            plugin.set_playing(playing);
         }
     }
 
@@ -257,6 +353,24 @@ impl EffectRuntime {
     }
 
     /// 所属模块：audio::engine / 效果链运行时
+    /// 功能：返回插件上报的处理延迟（采样数）；内置效果为 0。
+    /// 输入：`self`。
+    /// 输出/副作用：延迟采样数；插件忙时返回上一次缓存值。
+    /// 复杂度：时间 O(1)，空间 O(1)。
+    ///
+    /// Module: audio::engine / effect runtime
+    /// Purpose: Reported processing latency in samples; `0` for native effects.
+    /// Inputs: `self`.
+    /// Outputs / side effects: latency in samples; the last cached value while the plugin is busy.
+    /// Complexity: O(1) time and space.
+    fn latency_samples(&mut self) -> usize {
+        match self {
+            EffectRuntime::Plugin(plugin) => plugin.latency_samples(),
+            EffectRuntime::Native(_) => 0,
+        }
+    }
+
+    /// 所属模块：audio::engine / 效果链运行时
     /// 功能：处理一个 block 的效果音频。
     /// 输入：
     /// - `sample_rate` / `frames`：采样率与本块帧数。
@@ -284,10 +398,11 @@ impl EffectRuntime {
         gates: &[SynthEvent],
         out_l: &mut [f32],
         out_r: &mut [f32],
+        transport: Option<vst3_host::TransportPosition>,
     ) {
         match self {
             EffectRuntime::Plugin(plugin) => {
-                plugin.process(sample_rate, frames, input, gates, out_l, out_r)
+                plugin.process(sample_rate, frames, input, gates, out_l, out_r, transport)
             }
             EffectRuntime::Native(native) => match input {
                 Some((left, right)) => native.process(frames, left, right, out_l, out_r),
@@ -304,6 +419,261 @@ impl EffectRuntime {
             },
         }
     }
+}
+
+/// 轨道延迟补偿：按插件上报的延迟给轨道补一段延迟，使所有轨道对齐到最慢的一条。
+/// 没有补偿时，开启 Pro-MB（192 kHz 下 3840 采样 ≈ 20 ms）或 Pro-DS（2880 采样 ≈ 15 ms）
+/// 会让该轨道整体晚于其他轨道，听感就是“开启效果器后声音延迟”。
+/// Track delay compensation: pads a track by the latency its plugins report so every track aligns
+/// to the slowest chain. Without it, enabling Pro-MB (3840 samples ≈ 20 ms at 192 kHz) or Pro-DS
+/// (2880 samples ≈ 15 ms) shifts that track behind the others, heard as "enabling an effect adds
+/// latency".
+pub(super) struct CompDelay {
+    left: Vec<f32>,
+    right: Vec<f32>,
+    /// 环形缓冲写指针。
+    /// Ring-buffer write cursor.
+    write: usize,
+    /// 需要补偿的采样数；`0` 表示直通。
+    /// Samples to delay; `0` bypasses the line.
+    delay: usize,
+    /// 缓冲内是否还有未播放的旧内容（用于静音时一次性清零）。
+    /// Whether the line still holds unplayed audio (so muting can clear it once).
+    dirty: bool,
+}
+
+impl CompDelay {
+    fn new() -> Self {
+        Self {
+            left: Vec::new(),
+            right: Vec::new(),
+            write: 0,
+            delay: 0,
+            dirty: false,
+        }
+    }
+
+    /// 所属模块：audio::engine / 延迟补偿
+    /// 功能：设置补偿采样数；长度变化时才重新分配（只在同步线程调用）。
+    /// 输入：`samples`：需要补偿的采样数，`0` 表示直通。
+    /// 输出/副作用：可能重新分配缓冲区并清空；不修改其他轨道状态。
+    /// 复杂度：时间 O(采样数)（仅长度变化时），空间 O(采样数)。
+    ///
+    /// Module: audio::engine / delay compensation
+    /// Purpose: Set the compensation in samples; reallocates only when the length changes (sync
+    /// thread only).
+    /// Inputs: `samples`: samples to delay, `0` bypasses.
+    /// Outputs / side effects: may reallocate and clear the buffers; nothing else changes.
+    /// Complexity: O(samples) time only when the length changes, O(samples) space.
+    fn set(&mut self, samples: usize) {
+        if samples == 0 {
+            self.left.clear();
+            self.right.clear();
+            self.write = 0;
+            self.delay = 0;
+            self.dirty = false;
+            return;
+        }
+        let len = samples + 1;
+        if self.left.len() != len {
+            self.left.clear();
+            self.left.resize(len, 0.0);
+            self.right.clear();
+            self.right.resize(len, 0.0);
+            self.write = 0;
+            self.dirty = false;
+        }
+        self.delay = samples;
+    }
+
+    /// 所属模块：audio::engine / 延迟补偿
+    /// 功能：是否启用补偿。
+    /// 输入：`self`。
+    /// 输出/副作用：布尔值；不修改状态。
+    /// 复杂度：O(1)。
+    ///
+    /// Module: audio::engine / delay compensation
+    /// Purpose: Whether compensation is active.
+    /// Inputs: `self`.
+    /// Outputs / side effects: the boolean; no state change.
+    /// Complexity: O(1).
+    fn is_active(&self) -> bool {
+        self.delay > 0 && self.left.len() > self.delay
+    }
+
+    /// 所属模块：audio::engine / 延迟补偿
+    /// 功能：丢弃缓冲内残留的音频（暂停、定位、静音时调用）。
+    /// 输入：`self`。
+    /// 输出/副作用：清零左右缓冲并复位写指针；不改变补偿长度。
+    /// 复杂度：时间 O(采样数)（仅在确实有残留时）。
+    ///
+    /// Module: audio::engine / delay compensation
+    /// Purpose: Drop audio left in the line (called on pause, seek and mute).
+    /// Inputs: `self`.
+    /// Outputs / side effects: clears both buffers and resets the write cursor; the delay length is
+    /// unchanged.
+    /// Complexity: O(samples) time only when something is still buffered.
+    fn reset(&mut self) {
+        if self.dirty {
+            self.left.fill(0.0);
+            self.right.fill(0.0);
+            self.write = 0;
+            self.dirty = false;
+        }
+    }
+
+    /// 所属模块：audio::engine / 延迟补偿
+    /// 功能：把一对声道延迟固定采样数。
+    /// 输入：`left` / `right`：本块音频。
+    /// 输出/副作用：原地改写为延迟后的音频；推进写指针。
+    /// 复杂度：时间 O(帧数)，空间 O(1)。
+    ///
+    /// Module: audio::engine / delay compensation
+    /// Purpose: Delay a stereo pair by a fixed number of samples.
+    /// Inputs: `left` / `right`: this block's audio.
+    /// Outputs / side effects: rewrites the block in place with the delayed audio and advances the
+    /// write cursor.
+    /// Complexity: O(frames) time and O(1) space.
+    fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
+        if !self.is_active() {
+            return;
+        }
+        let len = self.left.len();
+        let delay = self.delay;
+        let mut write = self.write;
+        self.dirty = true;
+        for index in 0..left.len() {
+            let read = if write >= delay {
+                write - delay
+            } else {
+                write + len - delay
+            };
+            let out_l = self.left[read];
+            let out_r = self.right[read];
+            self.left[write] = left[index];
+            self.right[write] = right[index];
+            left[index] = out_l;
+            right[index] = out_r;
+            write += 1;
+            if write == len {
+                write = 0;
+            }
+        }
+        self.write = write;
+    }
+}
+
+/// 所属模块：audio::engine / ARA
+/// 功能：由轨道片段计算 ARA 播放区域的工程时间范围（秒）。
+/// 输入：`track` 轨道、`bpm` 当前速度、`project_end_beat` 工程最后一拍。
+/// 输出/副作用：返回（起始秒、时长秒）；轨道没有片段时覆盖整首工程。
+/// 复杂度：时间 O(片段数)，空间 O(1)。
+///
+/// Module: audio::engine / ARA
+/// Purpose: Compute the ARA playback region's project time range (seconds) from a track's clips.
+/// Inputs: `track`, `bpm`, `project_end_beat` — the project's last beat.
+/// Outputs / side effects: (start seconds, duration seconds); an empty track covers the whole
+/// project.
+/// Complexity: O(clips) time and O(1) space.
+fn ara_span_seconds(track: &Track, bpm: f64, project_end_beat: f64) -> (f64, f64) {
+    let mut start = f64::INFINITY;
+    let mut end = f64::NEG_INFINITY;
+    for clip in &track.clips {
+        start = start.min(clip.start);
+        end = end.max(clip.end());
+    }
+    if !start.is_finite() || end <= start {
+        // 没有片段的轨道（VOCALOID Bridge 的人声数据在编辑器里）必须覆盖整首工程：
+        // 区域只有几拍时，播放渲染器过了区域末尾就不再出声。
+        // A track without clips (the VOCALOID Bridge keeps its vocal in the editor) must cover
+        // the whole project: with a region of only a few beats the playback renderer stops
+        // sounding once playback passes the region end.
+        start = 0.0;
+        end = project_end_beat.max(4.0);
+    }
+    let start = start.max(0.0);
+    let seconds_per_beat = if bpm.is_finite() && bpm > 0.0 {
+        60.0 / bpm
+    } else {
+        0.5
+    };
+    (
+        start * seconds_per_beat,
+        ((end - start) * seconds_per_beat).max(0.5),
+    )
+}
+
+/// 所属模块：audio::engine / ARA
+/// 功能：把轨道时间线与速度同步给插件效果器的 ARA 文档。
+/// 输入：`runtime` 插件运行时、`track` 轨道、`bpm` 速度、`time_sig` 拍号、
+/// `project_end_beat` 工程最后一拍。
+/// 输出/副作用：只在值变化时调用插件；失败原因记录到诊断日志（前几次）。
+/// 复杂度：时间 O(片段数)（仅在变化时），空间 O(1)。
+///
+/// Module: audio::engine / ARA
+/// Purpose: Push the track timeline and tempo into a plug-in effect's ARA document.
+/// Inputs: `runtime`, `track`, `bpm`, `time_sig`, `project_end_beat`.
+/// Outputs / side effects: calls the plug-in only when values changed; the first failures are
+/// logged instead of silently dropped.
+/// Complexity: O(clips) time (only when changed) and O(1) space.
+fn sync_ara_timeline(
+    runtime: &mut PluginRuntime,
+    track: &Track,
+    bpm: f64,
+    time_sig: (u8, u8),
+    project_end_beat: f64,
+) {
+    let (start, length) = ara_span_seconds(track, bpm, project_end_beat);
+    let _ = runtime.set_ara_tempo(bpm, time_sig);
+    if let Err(error) = runtime.set_ara_timeline(start, length) {
+        // ARA 文档操作受线程约束，失败原因不能静默丢弃：记录前几次供排障。
+        // ARA document calls are thread-bound; never drop the reason silently — log the first few.
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static WARNED: AtomicU32 = AtomicU32::new(0);
+        if WARNED.fetch_add(1, Ordering::Relaxed) < 5 {
+            diag::warn(
+                "engine.ara",
+                "ara.timeline_failed",
+                &[("plugin", runtime.display_name()), ("error", &error)],
+            );
+        }
+    }
+    // 归档导出只在保存工程时执行：部分插件（VOCALOID Bridge）导出时会同步等待编辑器应用，
+    // 放在音频/界面同步路径上会导致界面长时间无响应。
+    // Archive export happens only when saving: some plug-ins (VOCALOID Bridge) block while their
+    // editor app serialises, so doing it in the sync path freezes the UI.
+}
+
+/// 所属模块：audio::engine / ARA
+/// 功能：轨道使用 VOCALOID VSTi 但没有插入 VOCALOID Bridge 时记录一次提示。
+/// 输入：`track` 轨道。
+/// 输出/副作用：首次命中时写一条诊断日志；不影响音频。
+/// 复杂度：时间 O(效果器数)，空间 O(1)。
+///
+/// Module: audio::engine / ARA
+/// Purpose: Log a one-time hint when a track uses the VOCALOID VSTi without the VOCALOID Bridge.
+/// Inputs: `track`.
+/// Outputs / side effects: one diagnostic entry on the first hit; audio is unaffected.
+/// Complexity: O(effects) time and O(1) space.
+fn warn_vocaloid_bridge_missing(track: &Track) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    let instrument = track.instrument.key().to_lowercase();
+    if !instrument.contains("vocaloid") {
+        return;
+    }
+    let has_bridge = track.effects.iter().any(|effect| {
+        let key = effect.key().to_lowercase();
+        key.contains("vocaloidbridge") || key.contains("vocaloid bridge")
+    });
+    if has_bridge || WARNED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    crate::diag::warn(
+        "plugin.ara",
+        "ara.vocaloid_vsti_without_bridge",
+        &[("track", &track.name)],
+    );
 }
 
 impl TrackEngine {
@@ -327,31 +697,33 @@ impl TrackEngine {
             last_bend: None,
             last_param_poll: Instant::now(),
             last_full_param_poll: Instant::now(),
+            chain_latency: 0,
+            comp_delay: CompDelay::new(),
         }
     }
 
     /// 所属模块：audio::engine / 轨道运行时
-    /// 功能：按乐器身份键增量维护乐器运行时；可延后插件乐器，并可按时间片推迟剩余插件。
+    /// 功能：按乐器身份键增量维护乐器运行时，并按时间片推迟剩余插件。
     /// 输入：
     /// - `track`：轨道快照。
     /// - `sample_rate` / `block_size` / `bpm` / `time_sig`：插件实例参数。
     /// - `force_reload`：为真时丢弃旧实例（采样率变化）。
-    /// - `defer_plugin_instruments`：为真时不在本线程创建 VST 乐器实例。
-    /// - `budget`：本轮乐器插件实例化预算；时间片用尽后剩余插件推迟到下一次调用。
+    /// - `budget`：本轮插件实例化预算；时间片用尽后剩余插件推迟到下一次调用。
+    /// - `project_end_beat`：工程最后一拍（空轨道的 ARA 区域覆盖整首工程）。
     /// - `warnings`：插件加载失败信息。
     /// 输出/副作用：更新 `instrument_key` 与 `instrument`；内置乐器只同步参数。
     /// 复杂度：时间 O(1 + 插件加载)，空间 O(1)。
     ///
     /// Module: audio::engine / track runtime
-    /// Purpose: Incrementally maintain the instrument runtime by identity key; optionally defer
-    /// plugin instruments, and postpone the rest when the time slice is exhausted.
+    /// Purpose: Incrementally maintain the instrument runtime by identity key and postpone the rest
+    /// when the time slice is exhausted.
     /// Inputs:
     /// - `track`: track snapshot.
     /// - `sample_rate` / `block_size` / `bpm` / `time_sig`: plugin instance parameters.
     /// - `force_reload`: drop the old instance when true (sample-rate change).
-    /// - `defer_plugin_instruments`: when true, VST instrument instances are not created here.
-    /// - `budget`: instrument instantiation budget for this pass; remaining plugins are postponed to
-    ///   the next call once the slice is exhausted.
+    /// - `budget`: plugin instantiation budget for this pass; remaining plugins are postponed to the
+    ///   next call once the slice is exhausted.
+    /// - `project_end_beat`: the project's last beat (an empty track's ARA region covers it).
     /// - `warnings`: plugin load failures.
     /// Outputs / side effects: updates `instrument_key` and `instrument`; native instruments only
     /// sync their settings.
@@ -363,25 +735,15 @@ impl TrackEngine {
         sample_rate: f64,
         block_size: usize,
         force_reload: bool,
-        defer_plugin_instruments: bool,
-        budget: &mut InstrumentLoadBudget,
+        budget: &mut PluginLoadBudget,
         bpm: f64,
         time_sig: (u8, u8),
+        project_end_beat: f64,
         warnings: &mut Vec<String>,
+        gpu: Option<&mut crate::audio::gpu::GpuTimbreTrainer>,
     ) {
         let desired = track.instrument.key();
         if desired != self.instrument_key || force_reload {
-            // 后台同步线程不创建乐器插件实例：VOCALOID 等插件会在实例化线程创建
-            // WPF 窗口，随后在另一个线程重建/析构时可能崩溃。KEY 保持为空，
-            // 由 UI 线程完成加载后再建立实例。
-            // The background sync thread never instantiates instrument plugins: plugins such as
-            // VOCALOID create WPF windows on the instantiating thread, and rebuilding or destroying
-            // them from another thread can crash. Keep the key empty so the UI thread loads them.
-            if defer_plugin_instruments && matches!(track.instrument, InstrumentRef::Plugin(_)) {
-                self.instrument_key.clear();
-                self.instrument = InstrumentRuntime::Failed("乐器插件将在界面线程加载".into());
-                return;
-            }
             // 界面线程补载乐器插件时按时间片分批：本轮已创建过插件且时间片用尽，就把剩余
             // 轨道留到下一帧，避免一次同步让窗口长时间无响应。
             // UI-thread instrument loading is sliced by time: once a plugin has been created in
@@ -411,6 +773,19 @@ impl TrackEngine {
                     native.settings.clone(),
                     sample_rate as f32,
                 )),
+                InstrumentRef::Sample(sample) => match sample.entry() {
+                    Some(entry) => InstrumentRuntime::Sample(SampledInstrument::new(
+                        entry,
+                        sample.settings.clone(),
+                        sample_rate as f32,
+                        gpu,
+                    )),
+                    None => {
+                        let message = format!("未找到音色：{}", sample.bank);
+                        warnings.push(format!("{}: {}", track.name, message));
+                        InstrumentRuntime::Failed(message)
+                    }
+                },
                 InstrumentRef::Plugin(pref) => {
                     // 逐插件记录加载开始/结束：插件在加载中崩溃时，最后一条 begin 就是现场。
                     // Log each instrument load: when a plugin crashes while loading, the last begin
@@ -436,14 +811,32 @@ impl TrackEngine {
                     ) {
                         Ok(mut runtime) => {
                             // 导入的未验证状态只保留数据，不自动恢复，避免插件崩溃；
-                            // 此时用导入的程序号尽量还原预设选择。
+                            // 此时用导入的程序号尽量还原预设选择。空状态同样回退到程序号，
+                            // 否则“先选工厂预设、再打开编辑器”会让插件重置为默认音色。
                             // Unverified imported state is preserved but not applied; the imported
-                            // program number is used to restore the preset selection instead.
-                            if pref.restore_state {
-                                runtime.restore_state(&pref.state, &pref.params);
+                            // program number is used to restore the preset selection instead. Empty
+                            // state also falls back to the program so opening the editor after
+                            // choosing a factory preset cannot reset the plug-in to its default.
+                            let (state_bytes, ara_archive) =
+                                crate::plugin::split_plugin_state(&pref.state);
+                            if pref.restore_state && !state_bytes.is_empty() {
+                                runtime.restore_state(state_bytes, &pref.params);
                             } else if let Some(program) = pref.program {
                                 runtime.select_program(program);
                             }
+                            if !ara_archive.is_empty() {
+                                if let Err(error) = runtime.restore_ara_archive(ara_archive) {
+                                    warnings.push(format!("{}: {}", track.name, error));
+                                }
+                            }
+                            // ARA 插件的播放区域与速度跟随工程内容。
+                            // ARA plug-ins follow the project's timeline and tempo.
+                            let (ara_start, ara_length) =
+                                ara_span_seconds(track, bpm, project_end_beat);
+                            if let Err(error) = runtime.set_ara_timeline(ara_start, ara_length) {
+                                warnings.push(format!("{}: {}", track.name, error));
+                            }
+                            let _ = runtime.set_ara_tempo(bpm, time_sig);
                             span.end(&[("status", "ok")]);
                             InstrumentRuntime::Plugin(runtime)
                         }
@@ -471,9 +864,25 @@ impl TrackEngine {
                 (InstrumentRuntime::Native(native), InstrumentRef::Native(instrument)) => {
                     native.set_settings(instrument.settings.clone());
                 }
+                (InstrumentRuntime::Sample(sample), InstrumentRef::Sample(reference)) => {
+                    sample.set_settings(reference.settings.clone());
+                }
                 _ => {}
             }
+            // 已加载的插件乐器：每帧同步 ARA 时间线/速度，内部只在变化时调用插件。
+            // Already-loaded plugin instruments: sync the ARA timeline/tempo each pass; the
+            // runtime only calls the plug-in when something actually changed.
+            if let (InstrumentRuntime::Plugin(runtime), InstrumentRef::Plugin(_)) =
+                (&mut self.instrument, &track.instrument)
+            {
+                let (ara_start, ara_length) = ara_span_seconds(track, bpm, project_end_beat);
+                let _ = runtime.set_ara_tempo(bpm, time_sig);
+                if let Err(error) = runtime.set_ara_timeline(ara_start, ara_length) {
+                    warnings.push(format!("{}: {}", track.name, error));
+                }
+            }
         }
+        warn_vocaloid_bridge_missing(track);
     }
 
     /// 所属模块：audio::engine / 轨道运行时
@@ -482,6 +891,8 @@ impl TrackEngine {
     /// - `track`：轨道快照。
     /// - `sample_rate` / `block_size` / `bpm` / `time_sig`：插件实例参数。
     /// - `force_reload`：为真时丢弃全部旧实例。
+    /// - `project_end_beat`：工程最后一拍（空轨道的 ARA 区域覆盖整首工程）。
+    /// - `budget`：本轮插件实例化预算；时间片用尽后剩余轨道推迟到下一次调用。
     /// - `warnings`：插件加载失败信息。
     /// 输出/副作用：更新 `effect_keys` 与 `effects`；内置效果同步参数但不重建实例。
     /// 复杂度：时间 O(效果器数 + 新增插件加载)，空间 O(效果器数)。
@@ -493,10 +904,14 @@ impl TrackEngine {
     /// - `track`: track snapshot.
     /// - `sample_rate` / `block_size` / `bpm` / `time_sig`: plugin instance parameters.
     /// - `force_reload`: drop every existing instance when true.
+    /// - `project_end_beat`: the project's last beat (an empty track's ARA region covers it).
+    /// - `budget`: plugin instantiation budget; remaining tracks wait for the next call once the
+    ///   slice is exhausted.
     /// - `warnings`: plugin load failures.
     /// Outputs / side effects: updates `effect_keys` and `effects`; native effects only sync
     /// parameters and keep their DSP state.
     /// Complexity: O(effect count + new plugin loads) time and O(effect count) space.
+    #[allow(clippy::too_many_arguments)]
     fn ensure_effects(
         &mut self,
         track: &Track,
@@ -505,17 +920,41 @@ impl TrackEngine {
         force_reload: bool,
         bpm: f64,
         time_sig: (u8, u8),
+        project_end_beat: f64,
+        budget: &mut PluginLoadBudget,
         warnings: &mut Vec<String>,
     ) {
         let desired: Vec<String> = track.effects.iter().map(EffectRef::key).collect();
+        // 新增了插件效果器且时间片已用尽：整条链留到下一次调用，避免一次同步让窗口无响应。
+        // A new plug-in effect arrived and the slice is exhausted: leave the whole chain for the
+        // next call so one sync never blocks the window.
+        let needs_plugin_load = (force_reload
+            && track.effects.iter().any(|effect| effect.plugin().is_some()))
+            || desired.iter().enumerate().any(|(index, key)| {
+                self.effect_keys.get(index) != Some(key)
+                    && matches!(track.effects.get(index), Some(EffectRef::Plugin(_)))
+            });
+        if needs_plugin_load {
+            if let Some(deadline) = budget.deadline {
+                if budget.created > 0 && Instant::now() >= deadline {
+                    budget.pending += 1;
+                    return;
+                }
+            }
+        }
         if desired == self.effect_keys && !force_reload {
-            // 参数变化不会改变身份键；内置效果需每帧同步参数。
-            // Parameter edits do not change the identity key, so native effects sync settings.
+            // 参数变化不会改变身份键；内置效果需每帧同步参数，插件效果同步 ARA 时间线。
+            // Parameter edits do not change the identity key: native effects sync settings every
+            // pass and plug-in effects sync their ARA timeline.
             for (runtime, effect) in self.effects.iter_mut().zip(track.effects.iter()) {
-                if let (EffectRuntime::Native(native), EffectRef::Native(reference)) =
-                    (runtime, effect)
-                {
-                    native.set_settings(reference.settings.clone());
+                match (runtime, effect) {
+                    (EffectRuntime::Native(native), EffectRef::Native(reference)) => {
+                        native.set_settings(reference.settings.clone());
+                    }
+                    (EffectRuntime::Plugin(plugin), EffectRef::Plugin(_)) => {
+                        sync_ara_timeline(plugin, track, bpm, time_sig, project_end_beat);
+                    }
+                    _ => {}
                 }
             }
             return;
@@ -539,6 +978,9 @@ impl TrackEngine {
                     .position(|key| *key == desired[index])
                     .and_then(|old| previous.get_mut(old).and_then(Option::take))
             };
+            // 新建的插件效果器计入时间片预算；复用的实例不重复计数。
+            // A newly created plug-in effect counts against the slice; reused instances do not.
+            let created_plugin = reused.is_none() && matches!(effect, EffectRef::Plugin(_));
             let runtime = reused.unwrap_or_else(|| match effect {
                 EffectRef::Native(native) => EffectRuntime::Native(NativeEffectProcessor::new(
                     native.kind,
@@ -546,7 +988,31 @@ impl TrackEngine {
                     sample_rate as f32,
                 )),
                 EffectRef::Plugin(pref) => {
-                    match PluginHost::load_plugin(
+                    // 把真实轨道范围交给 ARA 会话：播放区域必须在插件激活前创建，
+                    // 激活后再 `addPlaybackRegion` 不会被播放渲染器接受。
+                    // Hand the real track range to the ARA session: the playback region has to be
+                    // created before the plug-in is activated; `addPlaybackRegion` afterwards is
+                    // not taken by the playback renderer.
+                    crate::plugin::ara::set_initial_timeline_hint(Some(ara_span_seconds(
+                        track,
+                        bpm,
+                        project_end_beat,
+                    )));
+                    // 效果器加载没有 span：崩溃/卡死时无法判断是哪一个插件，这里补上。
+                    // Effect loads had no span, so a crash/hang could not be attributed; add one.
+                    let path_text = pref.path.display().to_string();
+                    let tid = crate::diag::thread_id().to_string();
+                    let span = crate::diag::Span::start_logged(
+                        "app.engine",
+                        "engine.effect.load",
+                        &[
+                            ("name", &pref.name),
+                            ("path", &path_text),
+                            ("track", &track.name),
+                            ("thread", &tid),
+                        ],
+                    );
+                    let loaded = PluginHost::load_plugin(
                         pref.format,
                         &pref.path,
                         &pref.uid,
@@ -554,29 +1020,54 @@ impl TrackEngine {
                         block_size,
                         bpm,
                         time_sig,
-                    ) {
+                    );
+                    crate::plugin::ara::set_initial_timeline_hint(None);
+                    match loaded {
                         Ok(mut runtime) => {
-                            if pref.restore_state {
-                                runtime.restore_state(&pref.state, &pref.params);
+                            let (state_bytes, ara_archive) =
+                                crate::plugin::split_plugin_state(&pref.state);
+                            if pref.restore_state && !state_bytes.is_empty() {
+                                runtime.restore_state(state_bytes, &pref.params);
                             } else if let Some(program) = pref.program {
                                 runtime.select_program(program);
                             }
+                            if !ara_archive.is_empty() {
+                                // 恢复失败会让 Bridge 的编辑器内容为空，不能静默。
+                                // A failed restore leaves the Bridge's editor empty; never silent.
+                                if let Err(error) = runtime.restore_ara_archive(ara_archive) {
+                                    diag::warn(
+                                        "engine.ara",
+                                        "ara.archive_restore_failed",
+                                        &[("track", &track.name), ("error", &error)],
+                                    );
+                                }
+                            }
+                            span.end(&[("status", "ok")]);
                             EffectRuntime::Plugin(runtime)
                         }
                         Err(error) => {
+                            span.end(&[("status", "error"), ("error", &error)]);
                             warnings.push(format!("{} 效果器: {}", track.name, error));
                             EffectRuntime::Plugin(PluginRuntime::Failed(error))
                         }
                     }
                 }
             });
+            if created_plugin {
+                budget.created += 1;
+            }
             effects.push(runtime);
         }
         self.effects = effects;
         for (runtime, effect) in self.effects.iter_mut().zip(track.effects.iter()) {
-            if let (EffectRuntime::Native(native), EffectRef::Native(reference)) = (runtime, effect)
-            {
-                native.set_settings(reference.settings.clone());
+            match (runtime, effect) {
+                (EffectRuntime::Native(native), EffectRef::Native(reference)) => {
+                    native.set_settings(reference.settings.clone());
+                }
+                (EffectRuntime::Plugin(plugin), EffectRef::Plugin(_)) => {
+                    sync_ara_timeline(plugin, track, bpm, time_sig, project_end_beat);
+                }
+                _ => {}
             }
         }
     }
@@ -586,12 +1077,17 @@ impl TrackEngine {
             InstrumentRuntime::Synth(synth) => synth.all_notes_off(),
             InstrumentRuntime::Drums(drums) => drums.all_notes_off(),
             InstrumentRuntime::Native(native) => native.all_notes_off(),
+            InstrumentRuntime::Sample(sample) => sample.all_notes_off(),
             InstrumentRuntime::Plugin(plugin) => plugin.panic(),
             InstrumentRuntime::Failed(_) => {}
         }
         for effect in &mut self.effects {
             effect.panic();
         }
+        // 暂停/定位时补偿延迟里还留着上一段的音频，必须丢弃，否则恢复播放会先冒出旧声音。
+        // Audio left in the compensation line must be dropped on pause/seek, otherwise resuming
+        // replays the previous position.
+        self.comp_delay.reset();
         self.live.clear();
         self.notes_active = false;
     }
@@ -669,17 +1165,23 @@ impl Engine {
     fn build(sample_rate: f64) -> Self {
         Self {
             sample_rate,
-            block_size: 512,
+            block_size: render_block_size(sample_rate),
             project: Project::default(),
             tracks: Vec::new(),
             master_effect: None,
             master_effect_key: None,
             plugins_sample_rate: 0.0,
             last_tempo: 0.0,
+            last_max_latency: 0,
+            last_master_latency: 0,
             last_parameter_poll: Instant::now(),
             parameter_poll_cursor: 0,
             playing: false,
             position_beats: 0.0,
+            render_ahead_samples: 0,
+            preroll_frames: 0,
+            preroll_position_beats: 0.0,
+            lookahead_enabled: true,
             levels: Vec::new(),
             levels_l: Vec::new(),
             levels_r: Vec::new(),
@@ -688,6 +1190,7 @@ impl Engine {
             master_peak_r: 0.0,
             cpu_load: 0.0,
             live_timeout: 0.0,
+            plugin_editor_active: false,
             auto_stop_enabled: true,
             auto_stopped: false,
             any_solo: false,
@@ -707,8 +1210,11 @@ impl Engine {
             stereo_scratch: vec![Vec::new(), Vec::new()],
             gpu_interleave_scratch: Vec::new(),
             gpu_realtime: None,
+            gpu_timbre: None,
             gpu_realtime_config: None,
             gpu_realtime_warning: None,
+            plugin_transport_playing: false,
+            plugin_transport_seek: true,
             gates_scratch: Vec::new(),
             output_layout: ChannelLayout::Stereo,
             defer_master_clip: false,
@@ -730,6 +1236,7 @@ impl Engine {
     pub fn set_sample_rate(&mut self, sample_rate: f64) {
         if (self.sample_rate - sample_rate).abs() > 1.0 {
             self.sample_rate = sample_rate;
+            self.block_size = render_block_size(sample_rate);
             self.plugins_sample_rate = 0.0;
         }
     }
@@ -802,7 +1309,7 @@ impl Engine {
     /// 功能：按设置启用或关闭实时主总线 GPU 软限幅；配置未变化时不重建设备。
     /// 输入：`config`：GPU 设备/驱动/API 选择；`None` 表示关闭并回到 CPU。
     /// 输出/副作用：可能创建 GPU 设备并把失败原因存入 `gpu_realtime_warning`；
-    /// 成功后实时回调在 `GPU_REALTIME_TIMEOUT_MS` 内等待结果，超时自动回退 CPU。
+    /// 成功后实时回调只在 GPU 已算完时使用其结果，否则本块回退 CPU，绝不等待。
     /// 复杂度：时间 O(GPU 设备创建)（配置变化时），空间 O(1)。
     ///
     /// Module: audio::engine / GPU realtime rendering
@@ -810,8 +1317,8 @@ impl Engine {
     /// unchanged config never rebuilds the device.
     /// Inputs: `config`: GPU device/driver/API selection; `None` disables and returns to the CPU.
     /// Outputs / side effects: may create a GPU device and store a failure reason in
-    /// `gpu_realtime_warning`; on success the callback waits at most `GPU_REALTIME_TIMEOUT_MS` and
-    /// falls back to the CPU on timeout.
+    /// `gpu_realtime_warning`; on success the callback uses the GPU result only when it is already
+    /// available and otherwise limits that block on the CPU without waiting.
     /// Complexity: O(GPU device creation) time when the config changes, O(1) space.
     pub fn configure_gpu_realtime(&mut self, config: Option<GpuRenderConfig>) {
         // 配置相同即返回：失败后不会在每次同步时反复创建设备；用户切换设置可触发重试。
@@ -821,10 +1328,18 @@ impl Engine {
             return;
         }
         self.gpu_realtime = None;
+        self.gpu_timbre = None;
         self.gpu_realtime_config = config.clone();
         let Some(config) = config else {
             return;
         };
+        // 神经音色训练器与实时限幅共用配置：打不开就静默退回 CPU 训练，不影响播放。
+        // The timbre trainer shares the config: when it cannot open, training silently stays on the
+        // CPU and playback is unaffected.
+        let (hidden_1, hidden_2) = crate::audio::synth::HIDDEN_WIDTHS;
+        self.gpu_timbre = crate::audio::gpu::GpuRuntime::standard()
+            .open_timbre_trainer(&config, hidden_1, hidden_2)
+            .ok();
         match crate::audio::gpu::GpuRealtimeLimiter::open(&config) {
             Ok(limiter) => {
                 self.gpu_realtime = Some(limiter);
@@ -886,36 +1401,11 @@ impl Engine {
     /// and note events; returns plugin/audio warnings.
     /// Complexity: O(tracks + clips + notes log notes + plugin load) time and O(project) space.
     pub fn sync_project(&mut self, project: &Project) -> Vec<String> {
-        self.sync_project_with(project, false)
+        self.sync_project_budgeted(project, None).0
     }
 
     /// 所属模块：audio::engine / 同步
-    /// 功能：同步工程；可选择延后乐器插件实例化，交由 UI 线程完成。
-    /// 输入：
-    /// - `project`：工程快照。
-    /// - `defer_plugin_instruments`：为真时不在本线程创建 VST 乐器实例。
-    /// 输出/副作用：重建轨道运行时、效果链、主效果器与音符事件；返回加载警告。
-    /// 复杂度：时间 O(轨道数 + 片段数 + 音符数 log 音符数 + 新增插件加载)，空间 O(工程大小)。
-    ///
-    /// Module: audio::engine / sync
-    /// Purpose: Sync the project, optionally deferring VST instrument instantiation to the UI thread.
-    /// Inputs:
-    /// - `project`: project snapshot.
-    /// - `defer_plugin_instruments`: when true, VST instrument instances are not created here.
-    /// Outputs / side effects: rebuilds track runtimes, effect chains, the master effect and note
-    /// events; returns load warnings.
-    /// Complexity: O(tracks + clips + notes log notes + new plugin loads) time and O(project) space.
-    pub fn sync_project_with(
-        &mut self,
-        project: &Project,
-        defer_plugin_instruments: bool,
-    ) -> Vec<String> {
-        self.sync_project_budgeted(project, defer_plugin_instruments, None)
-            .0
-    }
-
-    /// 所属模块：audio::engine / 同步
-    /// 功能：按时间片补载乐器插件：一次调用最多实例化时间片内的插件，其余推迟到下一次。
+    /// 功能：按时间片补载插件：一次调用最多实例化时间片内的插件，其余推迟到下一次。
     /// 输入：
     /// - `project`：工程快照。
     /// - `budget`：本轮允许创建插件的时长；至少会创建第一个插件，保证每次调用都有进展。
@@ -923,8 +1413,8 @@ impl Engine {
     /// 复杂度：时间 O(轨道数 + 片段数 + 音符数 log 音符数 + 新增插件加载)，空间 O(工程大小)。
     ///
     /// Module: audio::engine / sync
-    /// Purpose: Load instrument plugins in time slices: one call instantiates at most the plugins
-    /// that fit in the slice and postpones the rest to the next call.
+    /// Purpose: Load plugins in time slices: one call instantiates at most the plugins that fit in
+    /// the slice and postpones the rest to the next call.
     /// Inputs:
     /// - `project`: project snapshot.
     /// - `budget`: how long this pass may spend creating plugins; the first plugin is always
@@ -938,39 +1428,35 @@ impl Engine {
         budget: Duration,
     ) -> (Vec<String>, Vec<PathBuf>, usize) {
         let (warnings, pending) =
-            self.sync_project_budgeted(project, false, Some(Instant::now() + budget));
+            self.sync_project_budgeted(project, Some(Instant::now() + budget));
         let requests = self.take_audio_requests();
         (warnings, requests, pending)
     }
 
     /// 所属模块：audio::engine / 同步
-    /// 功能：同步工程；可选延后乐器插件实例化，并可按时间片限制本轮新建的插件数量。
+    /// 功能：同步工程，并可按时间片限制本轮新建的插件数量。
     /// 输入：
     /// - `project`：工程快照。
-    /// - `defer_plugin_instruments`：为真时不在本线程创建 VST 乐器实例。
-    /// - `instrument_deadline`：本轮创建插件的截止时刻；`None` 表示不限时。
-    /// 输出/副作用：重建轨道运行时、效果链、主效果器与音符事件；返回（加载警告、推迟的乐器数）。
+    /// - `plugin_deadline`：本轮创建插件的截止时刻；`None` 表示不限时。
+    /// 输出/副作用：重建轨道运行时、效果链、主效果器与音符事件；返回（加载警告、推迟的插件数）。
     /// 复杂度：时间 O(轨道数 + 片段数 + 音符数 log 音符数 + 新增插件加载)，空间 O(工程大小)。
     ///
     /// Module: audio::engine / sync
-    /// Purpose: Sync the project, optionally deferring VST instrument instantiation to the UI
-    /// thread, and optionally limiting how many new plugins this pass may create.
+    /// Purpose: Sync the project and optionally limit how many new plugins this pass may create.
     /// Inputs:
     /// - `project`: project snapshot.
-    /// - `defer_plugin_instruments`: when true, VST instrument instances are not created here.
-    /// - `instrument_deadline`: deadline for creating plugins in this pass; `None` means unlimited.
+    /// - `plugin_deadline`: deadline for creating plugins in this pass; `None` means unlimited.
     /// Outputs / side effects: rebuilds track runtimes, effect chains, the master effect and note
-    /// events; returns (load warnings, postponed instrument count).
+    /// events; returns (load warnings, postponed plugin count).
     /// Complexity: O(tracks + clips + notes log notes + new plugin loads) time and O(project) space.
     fn sync_project_budgeted(
         &mut self,
         project: &Project,
-        defer_plugin_instruments: bool,
-        instrument_deadline: Option<Instant>,
+        plugin_deadline: Option<Instant>,
     ) -> (Vec<String>, usize) {
         let mut warnings = Vec::new();
-        let mut budget = InstrumentLoadBudget {
-            deadline: instrument_deadline,
+        let mut budget = PluginLoadBudget {
+            deadline: plugin_deadline,
             created: 0,
             pending: 0,
         };
@@ -994,6 +1480,10 @@ impl Engine {
         self.levels_l.resize(project.tracks.len(), 0.0);
         self.levels_r.resize(project.tracks.len(), 0.0);
         let time_sig = (project.time_sig_num, project.time_sig_den);
+        // 空轨道的 ARA 播放区域用工程长度兜底，避免区域太短导致中途无声。
+        // Empty tracks fall back to the project length for their ARA region so playback does not
+        // go silent past a short region.
+        let project_end_beat = project.end_beat();
 
         let mut old_tracks = std::mem::take(&mut self.tracks);
         let mut needed_audio: HashSet<PathBuf> = HashSet::new();
@@ -1009,11 +1499,12 @@ impl Engine {
                 self.sample_rate,
                 self.block_size,
                 force_reload,
-                defer_plugin_instruments,
                 &mut budget,
                 project.bpm,
                 time_sig,
+                project_end_beat,
                 &mut warnings,
+                self.gpu_timbre.as_mut(),
             );
             runtime.ensure_effects(
                 track,
@@ -1022,9 +1513,25 @@ impl Engine {
                 force_reload,
                 project.bpm,
                 time_sig,
+                project_end_beat,
+                &mut budget,
                 &mut warnings,
             );
             runtime.has_audio_clips = track.has_audio_clips();
+            // 插件上报的处理延迟：乐器加全部“启用中”的效果器（停用的效果器被旁路，不产生延迟）。
+            // Reported processing latency: the instrument plus every enabled effect (bypassed
+            // effects add no latency).
+            let mut chain_latency = runtime.instrument.latency_samples();
+            for (index, effect) in runtime.effects.iter_mut().enumerate() {
+                if track
+                    .effects
+                    .get(index)
+                    .is_some_and(|reference| reference.enabled())
+                {
+                    chain_latency = chain_latency.saturating_add(effect.latency_samples());
+                }
+            }
+            runtime.chain_latency = chain_latency;
             // 只有片段内容/时间变化时才重建事件表，控制器或插件编辑不会重复排序。
             // Rebuild the event table only when clip content/timing changes; controller and
             // plugin edits do not re-sort notes.
@@ -1041,7 +1548,19 @@ impl Engine {
         debug_assert_eq!(self.tracks.len(), project.tracks.len());
 
         let desired_master = project.master_effect.as_ref().map(EffectRef::key);
-        if desired_master != self.master_effect_key || force_reload {
+        let master_needs_plugin = desired_master != self.master_effect_key
+            && matches!(project.master_effect.as_ref(), Some(EffectRef::Plugin(_)));
+        let budget_exhausted = budget
+            .deadline
+            .is_some_and(|deadline| budget.created > 0 && Instant::now() >= deadline);
+        if master_needs_plugin && budget_exhausted {
+            // 主效果器同样按时间片推迟，下一帧继续加载。
+            // The master effect follows the same slice and is loaded on the next call.
+            budget.pending += 1;
+        } else if desired_master != self.master_effect_key || force_reload {
+            if matches!(project.master_effect.as_ref(), Some(EffectRef::Plugin(_))) {
+                budget.created += 1;
+            }
             self.master_effect_key = desired_master;
             self.master_effect = project
                 .master_effect
@@ -1064,10 +1583,15 @@ impl Engine {
                         time_sig,
                     ) {
                         Ok(mut runtime) => {
-                            if pref.restore_state {
-                                runtime.restore_state(&pref.state, &pref.params);
+                            let (state_bytes, ara_archive) =
+                                crate::plugin::split_plugin_state(&pref.state);
+                            if pref.restore_state && !state_bytes.is_empty() {
+                                runtime.restore_state(state_bytes, &pref.params);
                             } else if let Some(program) = pref.program {
                                 runtime.select_program(program);
+                            }
+                            if !ara_archive.is_empty() {
+                                let _ = runtime.restore_ara_archive(ara_archive);
                             }
                             Some(EffectRuntime::Plugin(runtime))
                         }
@@ -1082,6 +1606,29 @@ impl Engine {
         {
             native.set_settings(reference.settings.clone());
         }
+
+        // 延迟补偿：把所有轨道对齐到最慢的一条链。没有这一步时，开启 Pro-MB（192 kHz 下
+        // 3840 采样 ≈ 20 ms）或 Pro-DS（2880 采样 ≈ 15 ms）会让该轨整体晚于其他轨道。
+        // 主效果器的延迟对所有轨道相同，无法靠轨道补偿消除，只记录到日志。
+        // Delay compensation: align every track to the slowest chain. Without it, enabling Pro-MB
+        // (3840 samples ≈ 20 ms at 192 kHz) or Pro-DS (2880 samples ≈ 15 ms) shifts that track
+        // behind the rest. Master-effect latency applies to everything equally and cannot be
+        // compensated per track, so it is only reported.
+        let master_latency = self
+            .master_effect
+            .as_mut()
+            .map(EffectRuntime::latency_samples)
+            .unwrap_or(0);
+        let max_latency = self.apply_latency_compensation(master_latency);
+        let slowest = self
+            .tracks
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, track)| track.chain_latency)
+            .and_then(|(index, _)| project.tracks.get(index))
+            .map(|track| track.name.clone())
+            .unwrap_or_default();
+        self.report_plugin_latency(max_latency, master_latency, &slowest);
 
         if tempo_changed {
             for track in &mut self.tracks {
@@ -1115,7 +1662,169 @@ impl Engine {
             self.audio_requests.push(path);
         }
 
+        // 本轮新建过插件实例时补发一次位置：新实例的 ProcessContext 还没有工程定位。
+        // Resend the position after this pass created plugin instances: their ProcessContext has no
+        // project position yet.
+        if budget.created > 0 {
+            self.plugin_transport_seek = true;
+        }
         (warnings, budget.pending)
+    }
+
+    /// 所属模块：audio::engine / 延迟补偿
+    /// 功能：插件上报的延迟变化时写一条 `engine.latency` 记录，便于定位“开启效果器后变晚”。
+    /// 输入：
+    /// - `max_latency`：全工程最慢链的延迟（采样数）。
+    /// - `master_latency`：主效果器的延迟（采样数）。
+    /// - `slowest`：最慢轨道的名字。
+    /// 输出/副作用：延迟变化时写日志；不修改引擎状态（只更新记录用的缓存）。
+    /// 复杂度：时间 O(1)，空间 O(1)。
+    ///
+    /// Module: audio::engine / delay compensation
+    /// Purpose: Log one `engine.latency` record whenever the reported plugin latency changes, so
+    /// "sounds late after enabling an effect" can be traced.
+    /// Inputs:
+    /// - `max_latency`: latency of the slowest chain in the project, in samples.
+    /// - `master_latency`: master-effect latency in samples.
+    /// - `slowest`: name of the slowest track.
+    /// Outputs / side effects: writes a log record when the values change; no engine state changes.
+    /// Complexity: O(1) time and space.
+    fn report_plugin_latency(&mut self, max_latency: usize, master_latency: usize, slowest: &str) {
+        if max_latency == self.last_max_latency && master_latency == self.last_master_latency {
+            return;
+        }
+        self.last_max_latency = max_latency;
+        self.last_master_latency = master_latency;
+        if max_latency == 0 && master_latency == 0 {
+            return;
+        }
+        let rate = self.sample_rate.max(1.0);
+        let samples_text = max_latency.to_string();
+        let ms_text = (max_latency as f64 / rate * 1_000.0).round().to_string();
+        let master_ms_text = (master_latency as f64 / rate * 1_000.0).round().to_string();
+        crate::diag::info(
+            "app.engine",
+            "engine.latency",
+            &[
+                ("comp_samples", &samples_text),
+                ("comp_ms", &ms_text),
+                ("master_ms", &master_ms_text),
+                ("slowest", slowest),
+            ],
+        );
+    }
+
+    /// 所属模块：audio::engine / 延迟补偿
+    /// 功能：按当前各轨链延迟重新计算补偿量与实时前瞻量。
+    /// 输入：`master_latency`：主效果器延迟（采样数）。
+    /// 输出/副作用：更新每轨 `comp_delay` 与 `render_ahead_samples`；播放中前瞻量变化会重新预卷。
+    /// 返回全工程最慢链的延迟。
+    /// 复杂度：时间 O(轨道数)，空间 O(1)。
+    ///
+    /// Module: audio::engine / delay compensation
+    /// Purpose: Recompute the per-track compensation and the realtime look-ahead from the current
+    /// chain latencies.
+    /// Inputs: `master_latency`: master-effect latency in samples.
+    /// Outputs / side effects: updates each track's `comp_delay` and `render_ahead_samples`;
+    /// a change during playback re-runs the pre-roll. Returns the slowest chain latency.
+    /// Complexity: O(tracks) time and O(1) space.
+    fn apply_latency_compensation(&mut self, master_latency: usize) -> usize {
+        let max_latency = self
+            .tracks
+            .iter()
+            .map(|track| track.chain_latency)
+            .max()
+            .unwrap_or(0);
+        for track in &mut self.tracks {
+            let compensation = max_latency.saturating_sub(track.chain_latency);
+            track.comp_delay.set(compensation);
+        }
+        // 前瞻量 = 最慢轨道链 + 主效果器延迟：实时渲染提前这么多，听感就和播放头对齐。
+        // 主效果器的延迟对所有轨道相同，只能靠整体前瞻抵消。
+        // Look-ahead = slowest track chain + master-effect latency: rendering this far ahead makes
+        // the audible result line up with the playhead. Master latency affects every track the same
+        // way, so only a global look-ahead can cancel it.
+        let ahead = max_latency.saturating_add(master_latency);
+        if ahead != self.render_ahead_samples {
+            let grew = ahead > self.render_ahead_samples;
+            self.render_ahead_samples = ahead;
+            // 只有变长时才需要重新预卷（把更长的延迟线填满）；变短时旧内容本来就在线里，
+            // 再预卷反而会额外丢掉一段声音，听感更碎。
+            // Only a longer look-ahead needs a pre-roll (to fill the longer delay lines). When it
+            // shrinks the existing lines already hold the content, and pre-rolling again would drop
+            // another chunk of audio and sound worse.
+            if self.playing && grew {
+                self.begin_preroll();
+            }
+        }
+        max_latency
+    }
+
+    /// 所属模块：audio::engine / 延迟补偿
+    /// 功能：轮询插件提出的宿主请求（`restartComponent`），把延迟变化立刻并入补偿。
+    /// 输入：`self`。
+    /// 输出/副作用：刷新每轨链延迟；有变化时重新分配补偿缓冲并写 `engine.latency`。
+    /// 只在 UI 线程调用（插件锁用 `try_lock`，不会阻塞音频线程）。
+    /// 复杂度：时间 O(轨道数 × 插件数)，空间 O(1)。
+    ///
+    /// Module: audio::engine / delay compensation
+    /// Purpose: Poll the host requests plugins raise through `restartComponent` and fold latency
+    /// changes into the compensation immediately.
+    /// Inputs: `self`.
+    /// Outputs / side effects: refreshes each chain's latency, reallocates the compensation lines
+    /// and logs `engine.latency` when something changed. UI thread only (plugin locks use
+    /// `try_lock`, so the audio thread never blocks).
+    /// Complexity: O(tracks × plugins) time and O(1) space.
+    pub fn refresh_plugin_latency(&mut self) {
+        let mut changed = false;
+        for (index, runtime) in self.tracks.iter_mut().enumerate() {
+            let Some(track) = self.project.tracks.get(index) else {
+                continue;
+            };
+            let mut latency = 0usize;
+            if let InstrumentRuntime::Plugin(plugin) = &mut runtime.instrument {
+                changed |= plugin.refresh_host_requests();
+                latency = latency.saturating_add(plugin.latency_samples());
+            }
+            for (slot, effect) in runtime.effects.iter_mut().enumerate() {
+                if !track
+                    .effects
+                    .get(slot)
+                    .is_some_and(|reference| reference.enabled())
+                {
+                    continue;
+                }
+                if let EffectRuntime::Plugin(plugin) = effect {
+                    changed |= plugin.refresh_host_requests();
+                    latency = latency.saturating_add(plugin.latency_samples());
+                }
+            }
+            if latency != runtime.chain_latency {
+                runtime.chain_latency = latency;
+                changed = true;
+            }
+        }
+        if let Some(EffectRuntime::Plugin(plugin)) = &mut self.master_effect {
+            changed |= plugin.refresh_host_requests();
+        }
+        if !changed {
+            return;
+        }
+        let master_latency = self
+            .master_effect
+            .as_mut()
+            .map(EffectRuntime::latency_samples)
+            .unwrap_or(0);
+        let max_latency = self.apply_latency_compensation(master_latency);
+        let slowest = self
+            .tracks
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, track)| track.chain_latency)
+            .and_then(|(index, _)| self.project.tracks.get(index))
+            .map(|track| track.name.clone())
+            .unwrap_or_default();
+        self.report_plugin_latency(max_latency, master_latency, &slowest);
     }
 
     /// 所属模块：audio::engine / 传输
@@ -1145,7 +1854,57 @@ impl Engine {
     /// Outputs / side effects: playhead in beats; no state change.
     /// Complexity: O(1) time and space.
     pub fn position_beats(&self) -> f64 {
+        if self.playing && self.lookahead_enabled {
+            if self.preroll_frames > 0 {
+                // 预卷期间内部游标已经提前，显示值仍停在起播位置。
+                // While pre-rolling the internal cursor is already ahead; keep showing the start.
+                return self.preroll_position_beats;
+            }
+            // 内部游标（内容位置）比实际听到的声音早一个插件链延迟，显示值取听感位置。
+            // The internal cursor (content position) runs one chain latency ahead of what is heard,
+            // so the playhead reports the audible position.
+            return (self.position_beats - self.render_ahead_beats()).max(0.0);
+        }
         self.position_beats
+    }
+
+    /// 所属模块：audio::engine / 传输
+    /// 功能：把插件链延迟（采样）换算成拍数。
+    /// 输入：`self`。
+    /// 输出/副作用：返回拍数；不修改状态。
+    /// 复杂度：时间 O(1)，空间 O(1)。
+    ///
+    /// Module: audio::engine / transport
+    /// Purpose: Convert the plugin-chain latency in samples to beats.
+    /// Inputs: `self`.
+    /// Outputs / side effects: the beat count; no state change.
+    /// Complexity: O(1) time and space.
+    fn render_ahead_beats(&self) -> f64 {
+        self.render_ahead_samples as f64 * self.project.bpm.max(1.0) / (60.0 * self.sample_rate)
+    }
+
+    /// 所属模块：audio::engine / 传输
+    /// 功能：安排一次预卷：先把补偿延迟线填满，再开始输出。
+    /// 输入：`self`。
+    /// 输出/副作用：设置预卷帧数与显示位置；关闭前瞻时立即结束预卷。
+    /// 复杂度：时间 O(轨道数)，空间 O(1)。
+    ///
+    /// Module: audio::engine / transport
+    /// Purpose: Schedule a pre-roll so the compensation lines are filled before output starts.
+    /// Inputs: `self`.
+    /// Outputs / side effects: sets the pre-roll length and displayed position; a disabled
+    /// look-ahead ends the pre-roll immediately.
+    /// Complexity: O(tracks) time and O(1) space.
+    fn begin_preroll(&mut self) {
+        if !self.lookahead_enabled || self.render_ahead_samples == 0 {
+            self.preroll_frames = 0;
+            return;
+        }
+        self.preroll_frames = self.render_ahead_samples;
+        self.preroll_position_beats = self.position_beats;
+        for track in &mut self.tracks {
+            track.comp_delay.reset();
+        }
     }
 
     /// 所属模块：audio::engine / 传输
@@ -1165,7 +1924,9 @@ impl Engine {
             self.live_timeout = 0.0;
             self.auto_stopped = false;
             self.audio_cursors.clear();
+            self.plugin_transport_seek = true;
             self.reset_note_state(self.position_beats);
+            self.begin_preroll();
         }
     }
 
@@ -1183,6 +1944,15 @@ impl Engine {
     pub fn pause(&mut self) {
         if self.playing {
             self.playing = false;
+            // 前瞻时内部游标比听感位置早一个链延迟，暂停要把游标退回听感位置，
+            // 否则播放头会突然向前跳一段，再次播放还会从更晚的地方开始。
+            // With look-ahead the internal cursor is one chain latency ahead of what was heard;
+            // pull it back on pause so the playhead does not jump and playback resumes from the
+            // position the user actually heard.
+            if self.lookahead_enabled && self.preroll_frames == 0 {
+                self.position_beats = (self.position_beats - self.render_ahead_beats()).max(0.0);
+            }
+            self.preroll_frames = 0;
             self.reset_note_state(self.position_beats);
         }
     }
@@ -1200,9 +1970,16 @@ impl Engine {
     /// Complexity: O(tracks + log events) time and O(1) space.
     pub fn seek(&mut self, beat: f64) {
         self.position_beats = beat.max(0.0);
+        self.plugin_transport_seek = true;
         self.audio_cursors.clear();
         self.auto_stopped = false;
         self.reset_note_state(self.position_beats);
+        if self.playing {
+            // 定位后补偿延迟线里是旧位置的音频，重新预卷一次，避免定位后先冒出旧声音。
+            // After a seek the compensation lines still hold the old position; pre-roll again so
+            // stale audio cannot leak out.
+            self.begin_preroll();
+        }
     }
 
     /// 所属模块：audio::engine / 传输
@@ -1219,6 +1996,10 @@ impl Engine {
     /// Complexity: O(tracks + log events) time and O(1) space.
     pub fn reset_playback_state(&mut self) {
         self.audio_cursors.clear();
+        // 工程被替换时旧的前瞻预卷没有意义，直接取消，避免丢掉新工程的头部声音。
+        // A pre-roll from the previous project is meaningless after a replacement; cancel it so the
+        // new project never loses its first samples.
+        self.preroll_frames = 0;
         self.reset_note_state(self.position_beats);
         // 工程内容可能被替换但 revision 未持久化；强制重建避免签名碰撞。
         // Project content can change while revisions are not persisted; force a rebuild
@@ -1357,6 +2138,22 @@ impl Engine {
         self.live_timeout > 0.0 || self.tracks.iter().any(|track| !track.live.is_empty())
     }
 
+    /// 所属模块：audio::engine / 试听
+    /// 功能：告知引擎当前是否有乐器插件编辑器打开，停止走带时据此决定是否继续处理插件链。
+    /// 输入：`active`：至少一个乐器编辑器打开时为真。
+    /// 输出/副作用：更新 `plugin_editor_active`；不立即处理音频。
+    /// 复杂度：时间 O(1)，空间 O(1)。
+    ///
+    /// Module: audio::engine / audition
+    /// Purpose: Tell the engine whether an instrument editor is open; while the transport is
+    /// stopped this decides whether the plugin chain keeps being processed.
+    /// Inputs: `active`: true while at least one instrument editor is open.
+    /// Outputs / side effects: updates `plugin_editor_active`; processes no audio immediately.
+    /// Complexity: O(1) time and space.
+    pub fn set_plugin_editor_active(&mut self, active: bool) {
+        self.plugin_editor_active = active;
+    }
+
     pub fn plugin_kind(&self, track_id: TrackId, slot: SlotKind) -> Option<PluginKind> {
         self.runtime_for(track_id, slot).map(PluginRuntime::kind)
     }
@@ -1376,6 +2173,59 @@ pub fn format_position(beats: f64, beats_per_bar: f64) -> String {
 mod tests {
     use super::*;
     use crate::core::model::Clip;
+
+    /// 覆盖：补偿延迟把音频整体后移固定采样数，暂停/静音清空后不再输出旧音频。
+    /// Covers: the compensation line shifts audio by a fixed number of samples and drops leftovers
+    /// once reset.
+    #[test]
+    fn compensation_delay_shifts_audio_and_resets() {
+        let mut delay = CompDelay::new();
+        delay.set(3);
+        let mut left = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let mut right = left.clone();
+        delay.process(&mut left, &mut right);
+        assert_eq!(&left[..3], &[0.0, 0.0, 0.0]);
+        assert_eq!(&left[3..], &[1.0, 2.0, 3.0]);
+        assert_eq!(left, right, "both channels must be delayed identically");
+
+        let mut next = vec![7.0, 8.0, 9.0];
+        let mut next_r = next.clone();
+        delay.process(&mut next, &mut next_r);
+        assert_eq!(next, vec![4.0, 5.0, 6.0]);
+
+        delay.reset();
+        let mut after = vec![1.0, 1.0, 1.0];
+        let mut after_r = after.clone();
+        delay.process(&mut after, &mut after_r);
+        assert_eq!(after, vec![0.0, 0.0, 0.0]);
+    }
+
+    /// 覆盖：补偿为 0 时缓冲直通，不改变音频。
+    /// Covers: zero compensation bypasses the line and leaves the audio untouched.
+    #[test]
+    fn compensation_delay_with_zero_latency_is_transparent() {
+        let mut delay = CompDelay::new();
+        delay.set(0);
+        let mut left = vec![0.25, -0.5, 0.75];
+        let mut right = vec![-0.25, 0.5, -0.75];
+        let expected = left.clone();
+        delay.process(&mut left, &mut right);
+        assert_eq!(left, expected);
+        assert!(!delay.is_active());
+    }
+
+    /// 覆盖：内部块长按采样率放大到约 10 ms，低采样率不低于 512 帧。
+    /// Covers: the internal block scales to roughly 10 ms and never drops below 512 frames.
+    #[test]
+    fn render_block_size_tracks_the_sample_rate() {
+        assert_eq!(render_block_size(44_100.0), 512);
+        assert_eq!(render_block_size(48_000.0), 512);
+        assert_eq!(render_block_size(96_000.0), 960);
+        assert_eq!(render_block_size(192_000.0), 1920);
+        // 极端采样率也不会越界。
+        assert_eq!(render_block_size(8_000.0), 512);
+        assert_eq!(render_block_size(768_000.0), 4096);
+    }
 
     /// 覆盖：Demo 工程可离线渲染出可听音频。
     /// Covers: the demo project renders audible audio offline.
@@ -1426,6 +2276,38 @@ mod tests {
         assert!(
             peak > 0.01,
             "native chain should produce audio, peak={peak}"
+        );
+    }
+
+    /// 覆盖：采样音色库乐器可经由引擎渲染链产生输出。
+    /// Covers: a sampled-bank instrument renders through the engine chain.
+    #[test]
+    fn sampled_instrument_renders_through_the_engine() {
+        let mut project = Project::default();
+        project.bpm = 120.0;
+        let mut track = Track::new(
+            1,
+            "Sampled",
+            [0, 0, 0],
+            InstrumentRef::Sample(crate::core::model::SampleInstrument::new("GrandPiano")),
+        );
+        let mut clip = Clip::new(1, "clip", 0.0, 2.0);
+        clip.notes.push(crate::core::model::Note {
+            start: 0.0,
+            length: 1.0,
+            pitch: 60,
+            velocity: 100,
+        });
+        track.clips.push(clip);
+        project.tracks.push(track);
+
+        let samples = Engine::render_offline(&project, 48_000.0).expect("offline render");
+        let peak = samples
+            .iter()
+            .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
+        assert!(
+            peak > 0.01,
+            "sampled instrument should produce audio, peak={peak}"
         );
     }
 
@@ -1488,6 +2370,96 @@ mod tests {
         }
         assert!(audible, "note starting at beat 0.25 should be audible");
         assert!(engine.position_beats() > 0.0);
+    }
+
+    /// 覆盖：启用前瞻时先做一次预卷（输出静音、播放头停在起点），之后播放头取听感位置。
+    /// Covers: with look-ahead the engine pre-rolls first (silent output, playhead held at the
+    /// start) and then reports the audible position.
+    #[test]
+    fn lookahead_prerolls_then_reports_audible_position() {
+        let mut project = Project::default();
+        let mut track = Track::new(
+            1,
+            "Test",
+            [0, 255, 0],
+            InstrumentRef::Synth(crate::core::model::SynthSettings::default()),
+        );
+        let mut clip = Clip::new(1, "clip", 0.0, 2.0);
+        clip.notes.push(crate::core::model::Note {
+            start: 0.0,
+            length: 1.0,
+            pitch: 60,
+            velocity: 100,
+        });
+        track.clips.push(clip);
+        project.tracks.push(track);
+
+        let mut engine = Engine::new(48_000.0);
+        engine.sync_project(&project);
+        // 人为给 4800 采样（0.1 s）的前瞻量，等价于 192 kHz 下 Pro-MB + Pro-DS 的链延迟。
+        // Pretend the chain latency is 4800 samples (0.1 s), the Pro-MB + Pro-DS total at 192 kHz.
+        engine.render_ahead_samples = 4_800;
+        engine.play();
+
+        let mut left = vec![0.0_f32; 512];
+        let mut right = vec![0.0_f32; 512];
+        // 7 块 = 3584 帧 < 4800：仍在预卷中，输出必须静音，播放头停在 0。
+        // 7 blocks = 3584 frames < 4800: still pre-rolling, so the output is silent and the
+        // playhead stays at 0.
+        for _ in 0..7 {
+            engine.process(&mut left, &mut right);
+            assert!(
+                left.iter().all(|sample| *sample == 0.0),
+                "pre-roll must not emit audio"
+            );
+            assert_eq!(engine.position_beats(), 0.0);
+        }
+
+        // 再推进到 13 块（6656 帧）：预卷已结束，声音开始输出，显示位置 = 内部游标 - 前瞻量。
+        // Advance to 13 blocks (6656 frames): the pre-roll is over, audio starts and the reported
+        // position is the internal cursor minus the look-ahead.
+        let mut audible = false;
+        for _ in 0..6 {
+            engine.process(&mut left, &mut right);
+            audible |= left.iter().any(|sample| sample.abs() > 1e-4);
+        }
+        assert!(audible, "audio must start once the chains are primed");
+        let beats_per_frame = project.bpm.max(1.0) / 60.0 / 48_000.0;
+        let expected = 13.0 * 512.0 * beats_per_frame - 4_800.0 * beats_per_frame;
+        assert!(
+            (engine.position_beats() - expected).abs() < 1e-9,
+            "reported position should be {} but was {}",
+            expected,
+            engine.position_beats()
+        );
+    }
+
+    /// 覆盖：插件延迟变化后重新计算补偿量与前瞻量（Pro-Q 4 切线性相位走这条路径）。
+    /// Covers: a latency change recomputes the compensation and look-ahead (the path Pro-Q 4 takes
+    /// when switching to linear phase).
+    #[test]
+    fn latency_change_recomputes_compensation_and_ahead() {
+        let project = Project::demo();
+        assert!(project.tracks.len() >= 2, "demo project needs two tracks");
+        let mut engine = Engine::new(48_000.0);
+        engine.sync_project(&project);
+        assert_eq!(engine.render_ahead_samples, 0);
+
+        // 人为把第一轨的链条延迟改成 4800 采样（Pro-Q 4 线性相位在 48 kHz 下的量级）。
+        // Pretend the first track's chain reports 4800 samples (Pro-Q 4 linear phase at 48 kHz).
+        engine.tracks[0].chain_latency = 4_800;
+        let slowest = engine.apply_latency_compensation(0);
+
+        assert_eq!(slowest, 4_800, "slowest chain should be the edited track");
+        assert_eq!(engine.render_ahead_samples, 4_800);
+        assert_eq!(
+            engine.tracks[0].comp_delay.delay, 0,
+            "the slowest track needs no extra compensation"
+        );
+        assert_eq!(
+            engine.tracks[1].comp_delay.delay, 4_800,
+            "other tracks must be padded to the slowest chain"
+        );
     }
 
     /// 覆盖：传输位置格式化为 `bar.beat.tick`。

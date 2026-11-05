@@ -90,6 +90,167 @@ impl Engine {
         }
     }
 
+    /// 所属模块：audio::engine / 插件编辑器
+    /// 功能：给**所有**带编辑器的插件转发一次处理器输出参数反馈。
+    /// 输入：`self`。
+    /// 输出/副作用：可能调用 `setParamNormalized`；插件忙时跳过本轮。
+    /// 复杂度：时间 O(轨道数 + 效果器数)，空间 O(1)。
+    ///
+    /// Module: audio::engine / plugin editors
+    /// Purpose: Forward processor output-parameter feedback for **every** plugin that has an editor.
+    /// Inputs: `self`.
+    /// Outputs / side effects: may call `setParamNormalized`; skips plugins currently busy.
+    /// Complexity: O(tracks + effects) time and O(1) space.
+    ///
+    /// 插件**自己创建**的编辑器窗口（VOCALOID6 Editor 等）不在宿主的编辑器槽位表里，
+    /// 只按槽位转发会让这类窗口收不到反馈而停在上一帧。
+    /// Windows created by plugins themselves (VOCALOID6 Editor and friends) are not in the host's
+    /// editor-slot table; forwarding by slot alone leaves such windows without feedback, stuck on
+    /// their previous frame.
+    pub fn service_all_editor_feedback(&mut self) {
+        for track in &mut self.tracks {
+            if let InstrumentRuntime::Plugin(plugin) = &mut track.instrument {
+                plugin.pump_editor_feedback();
+            }
+            for effect in &mut track.effects {
+                if let EffectRuntime::Plugin(plugin) = effect {
+                    plugin.pump_editor_feedback();
+                }
+            }
+        }
+        if let Some(EffectRuntime::Plugin(plugin)) = &mut self.master_effect {
+            plugin.pump_editor_feedback();
+        }
+    }
+
+    /// 所属模块：audio::engine / 插件生命周期
+    /// 功能：重试所有插件被拒绝的状态恢复（VOCALOID 这类插件要等自己的编辑器就绪才接受）。
+    /// 输入：`self`。
+    /// 输出/副作用：可能再次调用插件 `setState`；成功后写 `plugin.state`。
+    /// 复杂度：时间 O(轨道数 + 效果器数)，空间 O(1)。
+    ///
+    /// Module: audio::engine / plugin lifecycle
+    /// Purpose: Retry every state restore a plugin declined (plugins such as VOCALOID accept it only
+    /// once their own editor is ready).
+    /// Inputs: `self`.
+    /// Outputs / side effects: may call the plugin's `setState` again; logs `plugin.state` on success.
+    /// Complexity: O(tracks + effects) time and O(1) space.
+    pub fn retry_all_state_restores(&mut self) {
+        // 每秒最多重试一次：状态块可能有几十 KB，不能每帧都塞给插件。
+        // At most one retry per second: the state blob can be tens of KB and must not be pushed
+        // every frame.
+        static LAST: std::sync::OnceLock<std::sync::Mutex<Option<Instant>>> =
+            std::sync::OnceLock::new();
+        {
+            let last = LAST.get_or_init(|| std::sync::Mutex::new(None));
+            let mut guard = match last.lock() {
+                Ok(guard) => guard,
+                Err(poison) => poison.into_inner(),
+            };
+            let now = Instant::now();
+            if let Some(previous) = *guard {
+                if now.duration_since(previous) < Duration::from_millis(1000) {
+                    return;
+                }
+            }
+            *guard = Some(now);
+        }
+        for track in &mut self.tracks {
+            if let InstrumentRuntime::Plugin(plugin) = &mut track.instrument {
+                plugin.retry_state_restore();
+            }
+            for effect in &mut track.effects {
+                if let EffectRuntime::Plugin(plugin) = effect {
+                    plugin.retry_state_restore();
+                }
+            }
+        }
+        if let Some(EffectRuntime::Plugin(plugin)) = &mut self.master_effect {
+            plugin.retry_state_restore();
+        }
+    }
+
+    /// 所属模块：audio::engine / 播放探查
+    /// 功能：每 5 秒写一条播放探查：插件乐器的内部走带位置与各轨电平。
+    /// 输入：`self`。
+    /// 输出/副作用：在播放中写 `engine.plugin.transport` 与 `engine.track.levels`；不改引擎状态。
+    /// 复杂度：时间 O(轨道数)，空间 O(轨道数)。
+    ///
+    /// Module: audio::engine / playback probe
+    /// Purpose: Every 5 s log each plugin instrument's internal transport position and every track's
+    /// level.
+    /// Inputs: `self`.
+    /// Outputs / side effects: writes `engine.plugin.transport` and `engine.track.levels` while
+    /// playing; no engine state changes.
+    /// Complexity: O(tracks) time and space.
+    ///
+    /// 这两条记录用来回答两个问题：插件自己的走带有没有跟着宿主走、某一轨到底有没有出声。
+    /// These two records answer two questions: does the plugin's own transport follow the host, and
+    /// does a given track produce any level at all.
+    pub fn log_playback_probe(&self) {
+        if !self.playing {
+            return;
+        }
+        static LAST: std::sync::OnceLock<std::sync::Mutex<Option<Instant>>> =
+            std::sync::OnceLock::new();
+        let last = LAST.get_or_init(|| std::sync::Mutex::new(None));
+        {
+            let mut guard = match last.lock() {
+                Ok(guard) => guard,
+                Err(poison) => poison.into_inner(),
+            };
+            let now = Instant::now();
+            if let Some(previous) = *guard {
+                if now.duration_since(previous) < Duration::from_secs(5) {
+                    return;
+                }
+            }
+            *guard = Some(now);
+        }
+        let host_beats = self.position_beats;
+        for track in &self.tracks {
+            let InstrumentRuntime::Plugin(plugin) = &track.instrument else {
+                continue;
+            };
+            let name = plugin.display_name().to_string();
+            let (samples, music) = plugin
+                .transport_snapshot()
+                .map(|(samples, music)| (samples.to_string(), format!("{music:.3}")))
+                .unwrap_or_else(|| ("?".into(), "?".into()));
+            let host = format!("{host_beats:.3}");
+            crate::diag::info(
+                "app.engine",
+                "engine.plugin.transport",
+                &[
+                    ("name", &name),
+                    ("plugin_samples", &samples),
+                    ("plugin_music", &music),
+                    ("host_beats", &host),
+                ],
+            );
+        }
+        let levels: Vec<String> = self
+            .tracks
+            .iter()
+            .enumerate()
+            .map(|(index, runtime)| {
+                let name = self
+                    .project
+                    .tracks
+                    .get(index)
+                    .map(|track| track.name.as_str())
+                    .unwrap_or("?");
+                format!("{name}={:.4}", runtime.level)
+            })
+            .collect();
+        let levels_text = levels.join(" ");
+        crate::diag::info(
+            "app.engine",
+            "engine.track.levels",
+            &[("levels", &levels_text)],
+        );
+    }
+
     pub fn has_editor(&self, track_id: TrackId, slot: SlotKind) -> bool {
         self.runtime_for(track_id, slot)
             .map(|runtime| runtime.has_editor())
@@ -180,6 +341,11 @@ impl Engine {
         // the first scan after a project finishes loading.
         let index = self.parameter_poll_cursor % count;
         self.parameter_poll_cursor = (index + 1) % count;
+        // 顺手处理插件用 restartComponent 提出的延迟/总线变化（Pro-Q 4 切线性相位等）：
+        // 不处理会一直按旧延迟补偿。
+        // Also service latency/bus changes plugins raise through restartComponent (Pro-Q 4 when
+        // switching to linear phase, for example); otherwise the old latency keeps being used.
+        self.refresh_plugin_latency();
         if self.tracks[index].poll_parameters(playing) {
             vec![self.tracks[index].id]
         } else {
@@ -195,8 +361,8 @@ impl Engine {
             };
             if let InstrumentRef::Plugin(pref) = &mut track.instrument {
                 if let Some(plugin) = runtime.plugin() {
-                    let (state, params) = plugin.capture_state();
-                    pref.state = state.into();
+                    let (state, params) = capture_plugin_snapshot(plugin);
+                    pref.state = state;
                     pref.params = params;
                 }
             }
@@ -205,8 +371,8 @@ impl Engine {
                     continue;
                 };
                 if let Some(effect) = runtime.effects.get(index).and_then(EffectRuntime::plugin) {
-                    let (state, params) = effect.capture_state();
-                    pref.state = state.into();
+                    let (state, params) = capture_plugin_snapshot(effect);
+                    pref.state = state;
                     pref.params = params;
                 }
             }
@@ -214,8 +380,8 @@ impl Engine {
         if let (Some(effect_ref), Some(runtime)) = (&mut project.master_effect, &self.master_effect)
         {
             if let (Some(pref), Some(effect)) = (effect_ref.plugin_mut(), runtime.plugin()) {
-                let (state, params) = effect.capture_state();
-                pref.state = state.into();
+                let (state, params) = capture_plugin_snapshot(effect);
+                pref.state = state;
                 pref.params = params;
             }
         }
@@ -250,75 +416,6 @@ impl Engine {
         }
     }
 
-    /// 所属模块：audio::engine / 插件编辑器
-    /// 功能：丢弃一条轨道（或主输出）的插件运行时，强制下一次同步重建。
-    /// 输入：`track_id` 轨道 id；`MASTER_TRACK_ID` 表示主效果器链。
-    /// 输出/副作用：清空运行时与键；下一次 `sync_project` 会重新加载插件。
-    /// 复杂度：时间 O(效果器数量)，空间 O(1)。
-    ///
-    /// Module: audio::engine / plugin editors
-    /// Purpose: Drop the plugin runtimes of one track (or the master chain) so the next sync
-    /// rebuilds them.
-    /// Inputs: `track_id`; `MASTER_TRACK_ID` selects the master effect.
-    /// Outputs / side effects: clears runtimes and keys; the next `sync_project` reloads them.
-    /// Complexity: O(effect count) time and O(1) space.
-    pub fn invalidate_track_plugins(&mut self, track_id: TrackId) {
-        if track_id == crate::core::model::MASTER_TRACK_ID {
-            self.master_effect = None;
-            self.master_effect_key = None;
-            return;
-        }
-        if let Some(track) = self.tracks.iter_mut().find(|track| track.id == track_id) {
-            track.effect_keys.clear();
-            track.effects.clear();
-            // 乐器没有“空态”，旧实例会在下一次同步时按新键替换。
-            // Instruments have no empty state; the old instance is replaced by the next sync.
-            track.instrument_key.clear();
-        }
-    }
-
-    /// 所属模块：audio::engine / 插件运行时
-    /// 功能：只丢弃指定槽位的插件运行时，下一次同步时按工程重建该实例。
-    /// 输入：
-    /// - `track_id`：轨道 id（主输出传 `MASTER_TRACK_ID`）。
-    /// - `slot`：乐器 / 第几个效果器 / 主效果器。
-    /// 输出/副作用：清空该槽位的身份键并移除旧实例；其它槽位保持不动。
-    /// 复杂度：时间 O(轨道数 + 效果器数)，空间 O(1)。
-    ///
-    /// Module: audio::engine / plugin runtimes
-    /// Purpose: Drop only the runtime of one slot so the next sync rebuilds that instance.
-    /// Inputs:
-    /// - `track_id`: track id (`MASTER_TRACK_ID` for the master bus).
-    /// - `slot`: instrument / effect index / master effect.
-    /// Outputs / side effects: clears that slot's identity key and removes its runtime; other slots
-    /// are untouched.
-    /// Complexity: O(tracks + effects) time and O(1) space.
-    pub fn invalidate_plugin_slot(&mut self, track_id: TrackId, slot: SlotKind) {
-        match slot {
-            SlotKind::Master => {
-                self.master_effect = None;
-                self.master_effect_key = None;
-            }
-            SlotKind::Instrument => {
-                if let Some(track) = self.tracks.iter_mut().find(|track| track.id == track_id) {
-                    // 乐器没有空态；清空身份键后，下一次同步会重新创建。
-                    // Instruments have no empty state; clearing the key makes the next sync reload.
-                    track.instrument_key.clear();
-                    track.instrument = InstrumentRuntime::Failed("正在重建插件实例…".into());
-                }
-            }
-            SlotKind::Effect(index) => {
-                if let Some(track) = self.tracks.iter_mut().find(|track| track.id == track_id) {
-                    if let Some(key) = track.effect_keys.get_mut(index) {
-                        // 只让该下标无法复用旧运行时，其它效果器仍按身份键复用。
-                        // Only this index fails to reuse its old runtime; the others still match.
-                        key.clear();
-                    }
-                }
-            }
-        }
-    }
-
     /// 把单条轨道的插件状态写回工程（参数编辑结束后调用）。
     /// Capture one track's plugin state back into the project (after an edit settles).
     pub fn capture_track_plugin_states(&self, track_id: TrackId, project: &mut Project) {
@@ -330,8 +427,8 @@ impl Engine {
         };
         if let InstrumentRef::Plugin(pref) = &mut track.instrument {
             if let Some(plugin) = runtime.plugin() {
-                let (state, params) = plugin.capture_state();
-                pref.state = state.into();
+                let (state, params) = capture_plugin_snapshot(plugin);
+                pref.state = state;
                 pref.params = params;
             }
         }
@@ -340,10 +437,32 @@ impl Engine {
                 continue;
             };
             if let Some(effect) = runtime.effects.get(index).and_then(EffectRuntime::plugin) {
-                let (state, params) = effect.capture_state();
-                pref.state = state.into();
+                let (state, params) = capture_plugin_snapshot(effect);
+                pref.state = state;
                 pref.params = params;
             }
         }
     }
+}
+
+/// 所属模块：audio::engine / 插件状态
+/// 功能：抓取插件状态并打包 ARA 归档，供 `.sfsd` 保存。
+/// 输入：`plugin` 插件运行时。
+/// 输出/副作用：先尝试在控制器线程刷新 ARA 归档（失败时沿用缓存），再返回（状态块、参数）。
+/// 复杂度：时间 O(状态 + 归档大小)，空间 O(状态 + 归档大小)。
+///
+/// Module: audio::engine / plugin state
+/// Purpose: Capture the plug-in state and pack the ARA archive for `.sfsd`.
+/// Inputs: `plugin`.
+/// Outputs / side effects: first tries to refresh the ARA archive on the controller thread (falls
+/// back to the cache on failure), then returns (state blob, parameters).
+/// Complexity: O(state + archive size) time and space.
+fn capture_plugin_snapshot(plugin: &PluginRuntime) -> (std::sync::Arc<[u8]>, Vec<f32>) {
+    let (state, params) = plugin.capture_state();
+    let _ = plugin.refresh_ara_archive();
+    let ara = plugin.ara_archive_snapshot().unwrap_or_default();
+    (
+        crate::plugin::pack_plugin_state(&state, &ara).into(),
+        params,
+    )
 }

@@ -26,6 +26,15 @@ const MAX_EDITOR_FEEDBACK_UPDATES: usize = 64;
 const VST3_STATE_MAGIC: &[u8; 16] = b"VST3HOST_STATE\0\0";
 
 pub struct Vst3Runtime {
+    /// 已绑定的 ARA 文档会话；插件不支持 ARA 时为 `None`。
+    /// Bound ARA document session; `None` when the plug-in does not support ARA.
+    ///
+    /// 必须声明在 `plugin` 之前：Rust 按字段声明顺序析构，ARA 文档控制器必须在插件
+    /// 卸载模块之前销毁，否则销毁回调会访问已卸载的插件代码。
+    /// Must be declared before `plugin`: Rust drops fields in declaration order, and the ARA
+    /// document controller has to be destroyed before the plug-in unloads its module, otherwise
+    /// the teardown callbacks would execute unmapped plug-in code.
+    pub ara: Option<crate::plugin::ara::AraSession>,
     pub plugin: Arc<Mutex<Vst3Plugin>>,
     pub name: String,
     pub params: Vec<ParamView>,
@@ -38,6 +47,24 @@ pub struct Vst3Runtime {
     /// 实时线程复用的处理缓冲；块大小变化时才重新分配。
     /// Processing buffers reused by the realtime thread; reallocated only when the block size changes.
     pub audio_buffers: Option<vst3_host::AudioBuffers>,
+    /// 尚未送达插件的播放状态：插件锁被音频/界面线程占用时保留，由下一块补发。
+    /// Playing state not yet delivered: kept while the plugin lock is busy and sent on the next block.
+    pub pending_playing: Option<bool>,
+    /// 尚未送达插件的走带位置：同上，避免定位被静默丢弃。
+    /// Transport position not yet delivered: same as above, so a seek is never silently dropped.
+    pub pending_transport: Option<vst3_host::TransportPosition>,
+    /// 只做走带同步、不产生音频（VOCALOID Bridge）：输出直通输入。
+    /// Transport-sync only, produces no audio (VOCALOID Bridge): its output passes the input through.
+    pub sync_only: bool,
+    /// 插件上报的处理延迟（采样数）缓存；插件忙时沿用上一次的值。
+    /// Cached reported processing latency in samples; the last value is kept while the plugin is busy.
+    pub latency_samples: usize,
+    /// 插件拒绝（`kResultFalse`）恢复的状态；编辑器就绪后重试。
+    /// State the plugin declined (`kResultFalse`); retried once its editor is ready.
+    pub pending_state: Option<Vec<u8>>,
+    /// 已重试次数；超过上限后放弃，避免每秒把几十 KB 状态塞给插件。
+    /// Retry count; after the cap the retry stops so tens of KB are not pushed every second.
+    pub state_retries: u32,
 }
 
 /// 单实例插件的可复用实例：关闭工程时不终止，下一个工程按路径取回同一实例，
@@ -97,6 +124,18 @@ pub(crate) fn stash_reusable(runtime: &PluginRuntime) {
         return;
     };
     if !is_single_instance_name(&v.name) {
+        return;
+    }
+    // ARA 文档控制器与插件实例绑定在一起；保留实例却不保留文档会让下次绑定失败，
+    // 因此 ARA 插件不做跨工程复用（按普通插件卸载）。
+    // An ARA document controller is tied to the instance; keeping the instance without its
+    // document would break the next binding, so ARA plug-ins are not reused across projects.
+    if v.ara.is_some() {
+        crate::diag::info(
+            "plugin.runtime",
+            "plugin.reuse",
+            &[("phase", "skip_ara"), ("name", &v.name)],
+        );
         return;
     }
     {
@@ -174,6 +213,13 @@ impl PluginRuntime {
             kind: entry.kind,
             path_key: entry.path_key,
             audio_buffers: None,
+            pending_playing: None,
+            pending_transport: None,
+            sync_only: false,
+            latency_samples: 0,
+            pending_state: None,
+            state_retries: 0,
+            ara: None,
         }))
     }
 }
@@ -200,6 +246,112 @@ pub enum PluginRuntime {
 }
 
 impl PluginRuntime {
+    /// 所属模块：plugin / 统一运行时 / ARA
+    /// 功能：把 ARA 播放区域更新到工程时间范围（秒）；非 ARA 插件为空操作。
+    /// 输入：`start` 起始秒、`duration` 时长秒。
+    /// 输出/副作用：更新插件侧 ARA 模型；失败时返回中文错误。
+    /// 复杂度：时间 O(1)（未变化时），空间 O(1)。
+    ///
+    /// Module: plugin / unified runtime / ARA
+    /// Purpose: Move the ARA playback region to a project time range (seconds); a no-op for
+    /// non-ARA plug-ins.
+    /// Inputs: `start`, `duration`.
+    /// Outputs / side effects: updates the plug-in's ARA model; errors carry Chinese context.
+    /// Complexity: O(1) time when unchanged and O(1) space.
+    pub fn set_ara_timeline(&mut self, start: f64, duration: f64) -> Result<(), String> {
+        match self {
+            PluginRuntime::Vst3(v) => match v.ara.as_mut() {
+                Some(session) => session.set_timeline(start, duration),
+                None => Ok(()),
+            },
+            _ => Ok(()),
+        }
+    }
+
+    /// 所属模块：plugin / 统一运行时 / ARA
+    /// 功能：把工程速度与拍号同步给 ARA 音乐上下文；未变化或非 ARA 插件为空操作。
+    /// 输入：`bpm` 速度、`time_sig` 拍号。
+    /// 输出/副作用：更新插件侧音乐上下文内容；失败时返回中文错误。
+    /// 复杂度：时间 O(1)（未变化时），空间 O(1)。
+    ///
+    /// Module: plugin / unified runtime / ARA
+    /// Purpose: Push project tempo and time signature into the ARA musical context; a no-op
+    /// when unchanged or for non-ARA plug-ins.
+    /// Inputs: `bpm`, `time_sig`.
+    /// Outputs / side effects: updates the plug-in's musical context; errors carry Chinese context.
+    /// Complexity: O(1) time when unchanged and O(1) space.
+    pub fn set_ara_tempo(&mut self, bpm: f64, time_sig: (u8, u8)) -> Result<(), String> {
+        match self {
+            PluginRuntime::Vst3(v) => match v.ara.as_mut() {
+                Some(session) => session.set_tempo(bpm, time_sig),
+                None => Ok(()),
+            },
+            _ => Ok(()),
+        }
+    }
+
+    /// 所属模块：plugin / 统一运行时 / ARA
+    /// 功能：在文档控制器线程上把插件侧 ARA 状态导出到缓存。
+    /// 输入：`self`。
+    /// 输出/副作用：内容变化时调用 `storeObjectsToArchive`；线程不符时返回错误。
+    /// 复杂度：时间 O(归档大小)，空间 O(归档大小)。
+    ///
+    /// Module: plugin / unified runtime / ARA
+    /// Purpose: Export the plug-in-side ARA state into the cache on the document controller thread.
+    /// Inputs: `self`.
+    /// Outputs / side effects: calls `storeObjectsToArchive` when content changed; a thread
+    /// mismatch returns an error.
+    /// Complexity: O(archive size) time and space.
+    pub fn refresh_ara_archive(&self) -> Result<(), String> {
+        match self {
+            PluginRuntime::Vst3(v) => match v.ara.as_ref() {
+                Some(session) => session.refresh_archive(),
+                None => Ok(()),
+            },
+            _ => Ok(()),
+        }
+    }
+
+    /// 所属模块：plugin / 统一运行时 / ARA
+    /// 功能：返回缓存的 ARA 归档；没有归档时为 `None`。
+    /// 输入：`self`。
+    /// 输出/副作用：返回归档副本；不调用插件。
+    /// 复杂度：时间 O(归档大小)，空间 O(归档大小)。
+    ///
+    /// Module: plugin / unified runtime / ARA
+    /// Purpose: Return the cached ARA archive, or `None` when empty.
+    /// Inputs: `self`.
+    /// Outputs / side effects: a copy of the archive; no plug-in calls.
+    /// Complexity: O(archive size) time and space.
+    pub fn ara_archive_snapshot(&self) -> Option<Vec<u8>> {
+        match self {
+            PluginRuntime::Vst3(v) => v.ara.as_ref().map(|session| session.archive_snapshot()),
+            _ => None,
+        }
+    }
+
+    /// 所属模块：plugin / 统一运行时 / ARA
+    /// 功能：把保存的 ARA 归档恢复到插件侧文档。
+    /// 输入：`bytes` 归档字节。
+    /// 输出/副作用：调用插件恢复状态；空归档或非 ARA 插件为空操作。
+    /// 复杂度：时间 O(归档大小)，空间 O(归档大小)。
+    ///
+    /// Module: plugin / unified runtime / ARA
+    /// Purpose: Restore a saved ARA archive into the plug-in-side document.
+    /// Inputs: `bytes`.
+    /// Outputs / side effects: restores the plug-in state; empty archives and non-ARA plug-ins are
+    /// no-ops.
+    /// Complexity: O(archive size) time and space.
+    pub fn restore_ara_archive(&self, bytes: &[u8]) -> Result<(), String> {
+        match self {
+            PluginRuntime::Vst3(v) => match v.ara.as_ref() {
+                Some(session) => session.restore_archive(bytes),
+                None => Ok(()),
+            },
+            _ => Ok(()),
+        }
+    }
+
     pub fn display_name(&self) -> &str {
         match self {
             PluginRuntime::Vst3(v) => &v.name,
@@ -430,7 +582,29 @@ impl PluginRuntime {
                 // the host header are restored.
                 if !state.is_empty() && state.starts_with(VST3_STATE_MAGIC) {
                     let mut plugin = v.plugin.lock().unwrap_or_else(|p| p.into_inner());
-                    let _ = plugin.load_state(state);
+                    // `setState` 可能返回 `kResultFalse`（VOCALOID 6 在编辑器尚未就绪时会拒绝），
+                    // 此时状态没有被应用：记下字节，等编辑器起来后再重试，并写日志而不是静默丢弃。
+                    // `setState` may return `kResultFalse` (VOCALOID 6 declines it until its editor is
+                    // ready). The state is then NOT applied: keep the bytes, retry once the editor is
+                    // up, and log it instead of dropping it silently.
+                    match plugin.load_state(state) {
+                        Ok(()) => v.pending_state = None,
+                        Err(error) => {
+                            v.pending_state = Some(state.to_vec());
+                            v.state_retries = 0;
+                            let bytes = state.len().to_string();
+                            crate::diag::warn(
+                                "app.plugin",
+                                "plugin.state",
+                                &[
+                                    ("name", &v.name),
+                                    ("status", "declined"),
+                                    ("bytes", &bytes),
+                                    ("error", &error.to_string()),
+                                ],
+                            );
+                        }
+                    }
                     // 恢复状态后同步参数快照，否则加载完成后的首次全量扫描会把
                     // 恢复出来的值当成用户改动，触发一次多余的重新同步。
                     // Refresh the snapshot after restoring so the first full scan
@@ -505,6 +679,197 @@ impl PluginRuntime {
             }
             PluginRuntime::Vst2(_) | PluginRuntime::Failed(_) => {}
         }
+    }
+
+    /// 所属模块：plugin / 运行时
+    /// 功能：把走带播放状态写进插件收到的 ProcessContext（只在状态变化时调用）。
+    /// 输入：`playing` 是否正在播放。
+    /// 输出/副作用：先记入待发送状态；拿到插件锁时立即发送，否则由下一块补发。
+    /// 复杂度：时间 O(1)，空间 O(1)。
+    ///
+    /// Module: plugin / runtime
+    /// Purpose: Push the transport playing state into the plugin's ProcessContext; call it only
+    /// when the state changes.
+    /// Inputs: `playing`.
+    /// Outputs / side effects: records it as pending, sends immediately when the lock is free and
+    /// otherwise by the next block.
+    /// Complexity: O(1) time and space.
+    pub fn set_playing(&mut self, playing: bool) {
+        let PluginRuntime::Vst3(v) = self else {
+            return;
+        };
+        // 插件锁被占用时不能丢弃状态：VOCALOID 等插件收不到 kPlaying 就不会推进内部时间轴。
+        // Never drop the state when the lock is busy: without kPlaying, plugins such as VOCALOID
+        // never advance their internal timeline.
+        v.pending_playing = Some(playing);
+        if let Some(mut plugin) = lock_plugin(&v.plugin) {
+            let _ = plugin.set_playing(playing);
+            v.pending_playing = None;
+        }
+    }
+
+    /// 所属模块：plugin / 运行时
+    /// 功能：把走带位置写进插件 ProcessContext；只在定位、开始播放与循环回绕时调用。
+    /// 输入：`quarter_notes` 四分音符位置（拍）、`samples` 工程采样位置。
+    /// 输出/副作用：先记入待发送状态；拿到插件锁时立即发送，否则由下一块补发。
+    /// 复杂度：时间 O(1)，空间 O(1)。
+    ///
+    /// Module: plugin / runtime
+    /// Purpose: Push the transport position into the plugin ProcessContext; call it only on seek,
+    /// playback start and loop wrap.
+    /// Inputs: `quarter_notes` (beats), `samples` (project sample position).
+    /// Outputs / side effects: records it as pending, sends immediately when the lock is free and
+    /// otherwise by the next block.
+    /// Complexity: O(1) time and space.
+    pub fn seek_transport(&mut self, quarter_notes: f64, samples: i64) {
+        let PluginRuntime::Vst3(v) = self else {
+            return;
+        };
+        // 每个 block 都调用会让插件反复重置内部定位（VOCALOID 6 会直接卡住并产生巨大延迟），
+        // 因此位置只在时间轴不连续时发送，连续播放由插件自行推进。
+        // 锁被占用时保留待发送位置：定位丢了会让插件从旧位置继续播放，听感上就是“不跟随走带”。
+        // Calling this every block makes plugins re-seek constantly (VOCALOID 6 freezes and adds
+        // huge latency), so the position is sent only on discontinuities and the plugin advances on
+        // its own during continuous playback. A busy lock keeps the position pending: a dropped seek
+        // makes the plugin keep playing from the old position, heard as "not following the host".
+        let position = vst3_host::TransportPosition {
+            samples,
+            quarter_notes,
+        };
+        v.pending_transport = Some(position);
+        if let Some(mut plugin) = lock_plugin(&v.plugin) {
+            let _ = plugin.set_transport_position(position);
+            v.pending_transport = None;
+        }
+    }
+
+    /// 所属模块：plugin / 运行时
+    /// 功能：返回插件上报的处理延迟（采样数），用于轨道延迟补偿。
+    /// 输入：`self`。
+    /// 输出/副作用：插件忙（音频线程正在处理）时返回上一次缓存值；VST2 与失败实例返回 0。
+    /// 复杂度：时间 O(1)，空间 O(1)。
+    ///
+    /// Module: plugin / runtime
+    /// Purpose: Return the reported processing latency in samples for track delay compensation.
+    /// Inputs: `self`.
+    /// Outputs / side effects: the last cached value while the audio thread is inside the plugin;
+    /// VST2 and failed runtimes report 0.
+    /// Complexity: O(1) time and space.
+    pub fn latency_samples(&mut self) -> usize {
+        let PluginRuntime::Vst3(v) = self else {
+            return 0;
+        };
+        if let Some(plugin) = lock_plugin(&v.plugin) {
+            v.latency_samples = plugin.latency_samples() as usize;
+        }
+        v.latency_samples
+    }
+
+    /// 所属模块：plugin / 运行时
+    /// 功能：处理插件通过 `restartComponent` 提出的请求（延迟/总线变化），并刷新延迟缓存。
+    /// 输入：`self`。
+    /// 输出/副作用：必要时按 VST3 要求暂停/停用/重启用插件；返回延迟采样数是否变化。
+    /// 插件锁被占用时直接跳过，UI 线程绝不阻塞。
+    /// 复杂度：时间 O(插件请求数)，空间 O(1)。
+    ///
+    /// Module: plugin / runtime
+    /// Purpose: Service requests the plugin raised through `restartComponent` (latency / bus
+    /// changes) and refresh the cached latency.
+    /// Inputs: `self`.
+    /// Outputs / side effects: suspends/deactivates/reactivates the plugin as VST3 requires when
+    /// needed; returns whether the latency in samples changed. Skipped while the plugin lock is
+    /// busy so the UI thread never blocks.
+    /// Complexity: O(plugin requests) time and O(1) space.
+    pub fn refresh_host_requests(&mut self) -> bool {
+        let PluginRuntime::Vst3(v) = self else {
+            return false;
+        };
+        let Some(mut plugin) = lock_plugin(&v.plugin) else {
+            return false;
+        };
+        // Pro-Q 4 这类插件在切换到线性相位或改变过采样时会发 kLatencyChanged；不处理的话宿主
+        // 一直按旧延迟（常见是 0）补偿，该轨就会整体晚一截。
+        // Plugins such as Pro-Q 4 raise kLatencyChanged when switching to linear phase or changing
+        // oversampling. Ignoring it leaves the host compensating with the old latency (usually 0),
+        // so that track stays late.
+        let _ = plugin.service_host_requests();
+        let latency = plugin.latency_samples() as usize;
+        if latency == v.latency_samples {
+            return false;
+        }
+        v.latency_samples = latency;
+        true
+    }
+
+    /// 所属模块：plugin / 统一运行时
+    /// 功能：重试此前被插件拒绝的状态恢复（编辑器就绪后通常即可成功）。
+    /// 输入：`self`。
+    /// 输出/副作用：成功时清空待恢复字节并写 `plugin.state`（`phase=retry`）；
+    /// 插件忙或仍未接受时保持原样。
+    /// 复杂度：时间 O(状态长度)，空间 O(1)。
+    ///
+    /// Module: plugin / unified runtime
+    /// Purpose: Retry a state restore the plugin declined earlier (usually succeeds once its editor
+    /// is ready).
+    /// Inputs: `self`.
+    /// Outputs / side effects: clears the pending bytes and writes `plugin.state`
+    /// (`phase=retry`) on success; leaves everything as is while the plugin is busy or still
+    /// declines.
+    /// Complexity: O(state length) time and O(1) space.
+    pub fn retry_state_restore(&mut self) {
+        let PluginRuntime::Vst3(v) = self else {
+            return;
+        };
+        let Some(state) = v.pending_state.clone() else {
+            return;
+        };
+        // 状态块可达数十 KB；只在插件编辑器刚起来的窗口期重试有限次，避免每秒都塞给插件。
+        // The blob can be tens of KB; retry a bounded number of times right after the editor comes
+        // up instead of pushing it every second forever.
+        v.state_retries = v.state_retries.saturating_add(1);
+        if v.state_retries > 8 {
+            v.pending_state = None;
+            crate::diag::warn(
+                "app.plugin",
+                "plugin.state",
+                &[("name", &v.name), ("status", "gave_up")],
+            );
+            return;
+        }
+        let Some(mut plugin) = lock_plugin(&v.plugin) else {
+            return;
+        };
+        if plugin.load_state(&state).is_ok() {
+            v.pending_state = None;
+            crate::diag::info(
+                "app.plugin",
+                "plugin.state",
+                &[("name", &v.name), ("status", "ok"), ("phase", "retry")],
+            );
+        }
+    }
+
+    /// 所属模块：plugin / 运行时
+    /// 功能：读取插件内部走带位置（采样数与拍），用于确认插件是否跟随宿主播放。
+    /// 输入：`self`。
+    /// 输出/副作用：插件忙或非 VST3 时返回 `None`；不修改插件状态。
+    /// 复杂度：时间 O(1)，空间 O(1)。
+    ///
+    /// Module: plugin / runtime
+    /// Purpose: Read the plugin's internal transport position (samples and beats) to verify it
+    /// follows host playback.
+    /// Inputs: `self`.
+    /// Outputs / side effects: `None` when the plugin is busy or not VST3; no state change.
+    /// Complexity: O(1) time and space.
+    pub fn transport_snapshot(&self) -> Option<(i64, f64)> {
+        let PluginRuntime::Vst3(v) = self else {
+            return None;
+        };
+        let plugin = v.plugin.try_lock().ok()?;
+        plugin
+            .transport_position()
+            .ok()
+            .map(|position| (position.samples, position.quarter_notes))
     }
 
     /// Poll plugin editors for parameter gestures made behind our back.
@@ -748,6 +1113,7 @@ impl PluginRuntime {
         gates: &[SynthEvent],
         out_l: &mut [f32],
         out_r: &mut [f32],
+        transport: Option<vst3_host::TransportPosition>,
     ) {
         out_l.fill(0.0);
         out_r.fill(0.0);
@@ -759,8 +1125,40 @@ impl PluginRuntime {
                 // block instead of waiting, otherwise the whole output stream stalls (heard as silence
                 // with plugins such as Kontakt).
                 let Some(mut plugin) = lock_plugin(&v.plugin) else {
+                    // 本块该插件没有参与处理：统计一次，并记下宿主位置。
+                    // 插件内部的走带只在真正处理时推进，跳过一块它就会落后一份；
+                    // 不补发位置的话，每跳过一次就永久多欠一截，听感是“越放越晚”，
+                    // VOCALOID 这类插件连编辑器都停在旧位置。
+                    // This plugin did not process the block: count it and remember the host position.
+                    // Its internal timeline only advances while it processes, so a skipped block makes
+                    // it lag; without re-sending the position every skip adds permanent delay ("gets
+                    // later and later") and editors such as VOCALOID stay at the old position.
+                    crate::diag::note_plugin_lock_miss();
+                    if let Some(position) = transport {
+                        v.pending_transport = Some(position);
+                    }
                     return;
                 };
+                // 每块都把宿主位置写进 ProcessContext（与 Cubase 等宿主一致）：插件据此推进
+                // 编辑器里的播放头与内部时间轴。这里只改结构体字段，不会触发插件的重新定位。
+                // VOCALOID 6 这类“独立编辑器窗口”的插件只有收到每块的宿主位置才会跟着走条。
+                // Write the host position into the ProcessContext on every block, as Cubase and
+                // other DAWs do: editors such as VOCALOID 6 follow the transport from it. This only
+                // updates struct fields and never makes the plugin re-seek.
+                if let Some(position) = transport {
+                    let _ = plugin.set_transport_position(position);
+                    v.pending_transport = None;
+                } else if let Some(position) = v.pending_transport.take() {
+                    // 没有本块位置时（效果器）才补发旧记录，绝不覆盖新的宿主位置。
+                    // Only without a current block position (effects) is the older record delivered;
+                    // it must never override the fresh host position.
+                    let _ = plugin.set_transport_position(position);
+                }
+                // 补发此前因插件忙而没能送达的播放状态。
+                // Deliver the playing state that could not be sent earlier because the plugin was busy.
+                if let Some(playing) = v.pending_playing.take() {
+                    let _ = plugin.set_playing(playing);
+                }
                 for gate in gates {
                     let event = match gate.kind {
                         GateKind::On => Vst3MidiEvent::NoteOn {
@@ -777,23 +1175,35 @@ impl PluginRuntime {
                     let _ = plugin.send_midi_event_at(event, gate.frame as i32);
                 }
 
-                // 实时线程只在块大小变化时分配缓冲，其余时间复用并清零。
-                // The realtime thread allocates only when the block size changes and reuses the
-                // buffers otherwise.
-                let needs_buffers = match &v.audio_buffers {
-                    Some(buffers) => {
-                        buffers.block_size != frames
-                            || buffers.inputs.len() < 2
-                            || buffers.outputs.len() < 2
+                // 实时线程只在容量不足时分配缓冲，其余时间复用：块长在 512/512/128 之间
+                // 来回变化时，按块长重建会让每个插件每块做多次堆分配。
+                // The realtime thread allocates only when the capacity is too small and reuses the
+                // buffers otherwise: rebuilding by block length makes every plugin allocate several
+                // times per callback while the block length alternates between 512/512/128.
+                let capacity = v.audio_buffers.as_ref().map(|buffers| buffers.block_size);
+                let needs_buffers = match capacity {
+                    Some(capacity) => {
+                        capacity < frames
+                            || v.audio_buffers.as_ref().is_none_or(|buffers| {
+                                buffers.inputs.len() < 2 || buffers.outputs.len() < 2
+                            })
                     }
                     None => true,
                 };
                 if needs_buffers {
-                    v.audio_buffers = Some(vst3_host::AudioBuffers::new(2, 2, frames, sample_rate));
+                    let block_size = capacity.unwrap_or(0).max(frames);
+                    v.audio_buffers =
+                        Some(vst3_host::AudioBuffers::new(2, 2, block_size, sample_rate));
                 }
                 if let Some(buffers) = v.audio_buffers.as_mut() {
                     buffers.sample_rate = sample_rate;
-                    buffers.clear();
+                    // 先清零再按本块长度收缩/展开：容量保留，插件看到的仍是本块真实帧数。
+                    // Clear, then shrink/grow to this block's length: capacity is kept while the
+                    // plugin still sees the true frame count of this block.
+                    for channel in buffers.inputs.iter_mut().chain(buffers.outputs.iter_mut()) {
+                        channel.clear();
+                        channel.resize(frames, 0.0);
+                    }
                     if let Some((l, r)) = input {
                         if let Some(dst) = buffers.inputs.get_mut(0) {
                             dst[..frames.min(l.len())].copy_from_slice(&l[..frames.min(l.len())]);
@@ -802,7 +1212,20 @@ impl PluginRuntime {
                             dst[..frames.min(r.len())].copy_from_slice(&r[..frames.min(r.len())]);
                         }
                     }
-                    if plugin.process_audio(buffers).is_ok() {
+                    if let Err(error) = plugin.process_audio(buffers) {
+                        // 插件拒绝处理时输出保持静音；失败原因必须留痕，否则现象只是“没有声音”。
+                        // A rejected process leaves the output silent; the reason must be logged or
+                        // the only symptom is "no sound".
+                        use std::sync::atomic::{AtomicU32, Ordering};
+                        static WARNED: AtomicU32 = AtomicU32::new(0);
+                        if WARNED.fetch_add(1, Ordering::Relaxed) < 5 {
+                            crate::diag::warn(
+                                "plugin.runtime",
+                                "plugin.process_failed",
+                                &[("plugin", &v.name), ("error", &error.to_string())],
+                            );
+                        }
+                    } else {
                         let first = buffers.outputs.first();
                         if let Some(src) = first {
                             let n = frames.min(src.len());
@@ -816,6 +1239,36 @@ impl PluginRuntime {
                         if let Some(src) = second {
                             let n = frames.min(src.len());
                             out_r[..n].copy_from_slice(&src[..n]);
+                        }
+                        // 同步桥不发声：保留输入原样，编辑器里的试听与 VSTi 人声都不会被
+                        // 它的静音渲染替换。走带/速度已经在上面的 `process_audio` 里送达。
+                        // A sync bridge makes no sound: keep the input untouched so its silent render
+                        // can never replace the editor preview or the VOCALOID VSTi output; transport
+                        // was already delivered by `process_audio` above.
+                        if v.sync_only {
+                            if let Some((l, r)) = input {
+                                let n = frames.min(l.len()).min(r.len());
+                                out_l[..n].copy_from_slice(&l[..n]);
+                                out_r[..n].copy_from_slice(&r[..n]);
+                            }
+                            // 只需一条证据：Bridge 是否真的在走带时被处理（收到 ProcessContext）。
+                            // One proof line is enough: is the Bridge really processed during
+                            // playback (i.e. does it receive the ProcessContext)?
+                            use std::sync::atomic::{AtomicBool, Ordering};
+                            static PROCESSED: AtomicBool = AtomicBool::new(false);
+                            if !PROCESSED.swap(true, Ordering::Relaxed) {
+                                let samples = transport.map(|p| p.samples).unwrap_or(-1);
+                                let music = transport.map(|p| p.quarter_notes).unwrap_or(-1.0);
+                                crate::diag::info(
+                                    "plugin.ara",
+                                    "ara.bridge_processed",
+                                    &[
+                                        ("plugin", &v.name),
+                                        ("samples", &samples.to_string()),
+                                        ("quarter_notes", &format!("{music:.3}")),
+                                    ],
+                                );
+                            }
                         }
                     }
                 }

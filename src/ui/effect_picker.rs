@@ -277,7 +277,14 @@ impl SurfingApp {
                     self.add_native_effect(track_id, kind);
                 }
             } else if let Some(plugin) = option.plugin {
-                self.apply_plugin(target, plugin.format, plugin.path, plugin.name, plugin.uid);
+                self.apply_plugin(
+                    target,
+                    plugin.format,
+                    plugin.path,
+                    plugin.name,
+                    plugin.uid,
+                    None,
+                );
             }
         } else if open {
             browser.category = category;

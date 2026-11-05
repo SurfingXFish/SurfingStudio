@@ -460,7 +460,7 @@ impl SurfingApp {
         if self.export.busy {
             return;
         }
-        if self.engine_sync_rx.is_some() || self.instrument_load_pending {
+        if self.instrument_load_pending {
             self.export.status = "正在加载插件，请稍候…".into();
             return;
         }
@@ -473,7 +473,7 @@ impl SurfingApp {
         let layout = self.export.channels.resolve(self.project.output_layout);
         let sample_rate = self.export.sample_rate.max(8_000) as f64;
         self.pause_transport();
-        if !self.engine_stale {
+        {
             let engine = self.engine.clone();
             if let Ok(engine) = engine.lock() {
                 engine.capture_plugin_states(&mut self.project);

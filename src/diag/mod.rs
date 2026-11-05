@@ -258,6 +258,45 @@ static EXITING: AtomicBool = AtomicBool::new(false);
 /// Current UI phase, used by stall/slow-frame records.
 static ACTIVITY: Mutex<&'static str> = Mutex::new("boot");
 
+// ----- 实时音频回调遥测 -----
+// 这些静态量只做原子读写：音频回调里不加锁、不分配，由 UI 线程定期格式化成一条记录。
+// ----- realtime audio callback telemetry -----
+// These statics are atomic only: the audio callback never locks or allocates; the UI thread
+// periodically formats them into one record.
+/// 回调次数。
+/// Number of callbacks.
+static AUDIO_CALLBACKS: AtomicU64 = AtomicU64::new(0);
+/// 最近一次回调的帧数。
+/// Frames in the latest callback.
+static AUDIO_FRAMES: AtomicU64 = AtomicU64::new(0);
+/// 设备采样率（Hz）。
+/// Device sample rate in Hz.
+static AUDIO_SAMPLE_RATE: AtomicU64 = AtomicU64::new(0);
+/// 引擎渲染耗时累计（微秒）。
+/// Accumulated engine render time (microseconds).
+static AUDIO_RENDER_SUM_US: AtomicU64 = AtomicU64::new(0);
+/// 引擎渲染耗时峰值（微秒）。
+/// Peak engine render time (microseconds).
+static AUDIO_RENDER_MAX_US: AtomicU64 = AtomicU64::new(0);
+/// 渲染耗时超过回调预算的次数（即欠载）。
+/// Callbacks whose render time exceeded the callback budget (underruns).
+static AUDIO_OVER_BUDGET: AtomicU64 = AtomicU64::new(0);
+/// 引擎锁超时次数：回调拿不到锁，本块只能淡出。
+/// Engine lock timeouts: the callback could not take the lock and had to fade out.
+static AUDIO_ENGINE_LOCK_MISS: AtomicU64 = AtomicU64::new(0);
+/// 插件锁被占用次数：本块该插件没有参与处理。
+/// Plugin lock misses: that plugin did not process this block.
+static AUDIO_PLUGIN_LOCK_MISS: AtomicU64 = AtomicU64::new(0);
+/// 最近一次回调报告的输出延迟（微秒）。
+/// Output latency reported by the latest callback (microseconds).
+static AUDIO_LATENCY_US: AtomicU64 = AtomicU64::new(0);
+/// 输出延迟峰值（微秒）。
+/// Peak output latency (microseconds).
+static AUDIO_LATENCY_MAX_US: AtomicU64 = AtomicU64::new(0);
+/// 上一次写出音频统计的时间（微秒）。
+/// Time the audio stats were last written (microseconds).
+static LAST_AUDIO_STATS_US: AtomicU64 = AtomicU64::new(0);
+
 /// 所属模块：diag / 初始化
 /// 功能：创建日志文件并写入二进制头，安装 panic 钩子与看门狗线程。
 /// 输入：`app_version`：写入头部的软件版本号。
@@ -570,6 +609,10 @@ pub fn note_frame_duration(duration: Duration) {
             ],
         );
     }
+    // 音频回调统计：与帧统计分开按时间节流（每 5 秒一条），播放卡顿与延迟都有据可查。
+    // Audio callback stats: throttled by time (one record per 5 s) apart from frame stats, so
+    // playback stalls and latency are visible in the log.
+    flush_audio_stats();
     let millis = micros / 1_000;
     if millis < UI_SLOW_FRAME_MS {
         return;
@@ -589,6 +632,137 @@ pub fn note_frame_duration(duration: Duration) {
             ("dur_ms", &millis_text),
             ("phase", activity()),
             ("frames", &frames_text),
+        ],
+    );
+}
+
+/// 所属模块：diag / 音频遥测
+/// 功能：在音频回调里登记一次回调：帧数、渲染耗时、设备报告的输出延迟与引擎锁是否拿到。
+/// 输入：
+/// - `sample_rate`：设备采样率（Hz）。
+/// - `frames`：本回调帧数。
+/// - `render`：引擎处理本块的耗时。
+/// - `latency`：驱动报告的输出延迟（`playback - callback`），不可用时为 `None`。
+/// - `engine_ok`：是否拿到引擎锁；`false` 表示本块只能淡出。
+/// 输出/副作用：只做原子累加；不加锁、不分配，可在实时线程调用。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: diag / audio telemetry
+/// Purpose: Record one audio callback from the realtime thread: frames, render time, the output
+/// latency reported by the driver and whether the engine lock was taken.
+/// Inputs:
+/// - `sample_rate`: device sample rate in Hz.
+/// - `frames`: frames in this callback.
+/// - `render`: engine processing time for this block.
+/// - `latency`: driver-reported output latency (`playback - callback`), `None` when unavailable.
+/// - `engine_ok`: whether the engine lock was taken; `false` means this block only faded out.
+/// Outputs / side effects: atomic accumulation only; no locks, no allocation, realtime-safe.
+/// Complexity: O(1) time and space.
+pub fn note_audio_callback(
+    sample_rate: f64,
+    frames: usize,
+    render: Duration,
+    latency: Option<Duration>,
+    engine_ok: bool,
+) {
+    AUDIO_CALLBACKS.fetch_add(1, Ordering::Relaxed);
+    AUDIO_FRAMES.store(frames as u64, Ordering::Relaxed);
+    AUDIO_SAMPLE_RATE.store(sample_rate as u64, Ordering::Relaxed);
+    if engine_ok {
+        let micros = render.as_micros().min(u64::MAX as u128) as u64;
+        AUDIO_RENDER_SUM_US.fetch_add(micros, Ordering::Relaxed);
+        AUDIO_RENDER_MAX_US.fetch_max(micros, Ordering::Relaxed);
+        let budget_us = if sample_rate > 0.0 {
+            frames as f64 / sample_rate * 1_000_000.0
+        } else {
+            0.0
+        };
+        if budget_us > 0.0 && micros as f64 > budget_us {
+            AUDIO_OVER_BUDGET.fetch_add(1, Ordering::Relaxed);
+        }
+    } else {
+        AUDIO_ENGINE_LOCK_MISS.fetch_add(1, Ordering::Relaxed);
+    }
+    if let Some(latency) = latency {
+        let micros = latency.as_micros().min(u64::MAX as u128) as u64;
+        AUDIO_LATENCY_US.store(micros, Ordering::Relaxed);
+        AUDIO_LATENCY_MAX_US.fetch_max(micros, Ordering::Relaxed);
+    }
+}
+
+/// 所属模块：diag / 音频遥测
+/// 功能：登记一次插件锁被占用（本块该插件没有参与处理）。
+/// 输入：无。
+/// 输出/副作用：原子累加；可在实时线程调用。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: diag / audio telemetry
+/// Purpose: Record one plugin-lock miss (that plugin did not process this block).
+/// Inputs: none.
+/// Outputs / side effects: atomic increment; realtime-safe.
+/// Complexity: O(1) time and space.
+pub fn note_plugin_lock_miss() {
+    AUDIO_PLUGIN_LOCK_MISS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// 所属模块：diag / 音频遥测
+/// 功能：每 5 秒把音频回调统计写成一条 `audio.stats` 记录（仅 UI 线程调用）。
+/// 输入：无。
+/// 输出/副作用：清零本轮计数；窗口内没有回调时不写记录。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: diag / audio telemetry
+/// Purpose: Write one aggregated `audio.stats` record every 5 seconds (UI thread only).
+/// Inputs: none.
+/// Outputs / side effects: resets this window's counters; writes nothing when no callback ran.
+/// Complexity: O(1) time and space.
+pub fn flush_audio_stats() {
+    let now = now_us();
+    let last = LAST_AUDIO_STATS_US.load(Ordering::Relaxed);
+    if last != 0 && now.saturating_sub(last) < 5_000_000 {
+        return;
+    }
+    LAST_AUDIO_STATS_US.store(now, Ordering::Relaxed);
+    let callbacks = AUDIO_CALLBACKS.swap(0, Ordering::Relaxed);
+    let render_sum = AUDIO_RENDER_SUM_US.swap(0, Ordering::Relaxed);
+    let render_max = AUDIO_RENDER_MAX_US.swap(0, Ordering::Relaxed);
+    let over = AUDIO_OVER_BUDGET.swap(0, Ordering::Relaxed);
+    let lock_miss = AUDIO_ENGINE_LOCK_MISS.swap(0, Ordering::Relaxed);
+    let plugin_lock_miss = AUDIO_PLUGIN_LOCK_MISS.swap(0, Ordering::Relaxed);
+    let latency = AUDIO_LATENCY_US.load(Ordering::Relaxed);
+    let latency_max = AUDIO_LATENCY_MAX_US.swap(0, Ordering::Relaxed);
+    if callbacks == 0 {
+        return;
+    }
+    let rate = AUDIO_SAMPLE_RATE.load(Ordering::Relaxed).max(1);
+    let frames = AUDIO_FRAMES.load(Ordering::Relaxed);
+    let rendered = callbacks.saturating_sub(lock_miss);
+    let callbacks_text = callbacks.to_string();
+    let rate_text = rate.to_string();
+    let frames_text = frames.to_string();
+    let buffer_ms = (frames * 1_000 / rate).to_string();
+    let average_us = (render_sum / rendered.max(1)).to_string();
+    let peak_us = render_max.to_string();
+    let over_text = over.to_string();
+    let lock_miss_text = lock_miss.to_string();
+    let plugin_lock_miss_text = plugin_lock_miss.to_string();
+    let latency_ms = (latency / 1_000).to_string();
+    let latency_max_ms = (latency_max / 1_000).to_string();
+    info(
+        "app.audio",
+        "audio.stats",
+        &[
+            ("callbacks", &callbacks_text),
+            ("rate", &rate_text),
+            ("cb_frames", &frames_text),
+            ("cb_ms", &buffer_ms),
+            ("render_avg_us", &average_us),
+            ("render_max_us", &peak_us),
+            ("over_budget", &over_text),
+            ("engine_lock_miss", &lock_miss_text),
+            ("plugin_lock_miss", &plugin_lock_miss_text),
+            ("out_latency_ms", &latency_ms),
+            ("out_latency_max_ms", &latency_max_ms),
         ],
     );
 }

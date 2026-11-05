@@ -1,0 +1,9150 @@
+{
+ "source": "SurfingStudio Sound Bank (SoundBug SoundSampler3)",
+ "vendor": "SurfingStudio",
+ "instruments": [
+  {
+   "id": "GrandPiano",
+   "name": "大钢琴",
+   "category": "Pop",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "GrandPiano/zone_000.ogg",
+     "root": 29,
+     "lo": 21,
+     "hi": 35,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "GrandPiano/zone_001.ogg",
+     "root": 29,
+     "lo": 21,
+     "hi": 35,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "GrandPiano/zone_002.ogg",
+     "root": 41,
+     "lo": 36,
+     "hi": 47,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "GrandPiano/zone_003.ogg",
+     "root": 41,
+     "lo": 36,
+     "hi": 47,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "GrandPiano/zone_004.ogg",
+     "root": 53,
+     "lo": 48,
+     "hi": 59,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "GrandPiano/zone_005.ogg",
+     "root": 53,
+     "lo": 48,
+     "hi": 59,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "GrandPiano/zone_006.ogg",
+     "root": 65,
+     "lo": 60,
+     "hi": 71,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "GrandPiano/zone_007.ogg",
+     "root": 65,
+     "lo": 60,
+     "hi": 71,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "GrandPiano/zone_008.ogg",
+     "root": 77,
+     "lo": 72,
+     "hi": 83,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "GrandPiano/zone_009.ogg",
+     "root": 77,
+     "lo": 72,
+     "hi": 83,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "GrandPiano/zone_010.ogg",
+     "root": 89,
+     "lo": 84,
+     "hi": 92,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "GrandPiano/zone_011.ogg",
+     "root": 89,
+     "lo": 84,
+     "hi": 92,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "GrandPiano/zone_012.ogg",
+     "root": 95,
+     "lo": 93,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "GrandPiano/zone_013.ogg",
+     "root": 95,
+     "lo": 93,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "ElectricPiano",
+   "name": "电钢琴",
+   "category": "Pop",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "ElectricPiano/zone_000.ogg",
+     "root": 35,
+     "lo": 21,
+     "hi": 41,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "ElectricPiano/zone_001.ogg",
+     "root": 35,
+     "lo": 21,
+     "hi": 41,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "ElectricPiano/zone_002.ogg",
+     "root": 47,
+     "lo": 42,
+     "hi": 53,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "ElectricPiano/zone_003.ogg",
+     "root": 47,
+     "lo": 42,
+     "hi": 53,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "ElectricPiano/zone_004.ogg",
+     "root": 59,
+     "lo": 54,
+     "hi": 65,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "ElectricPiano/zone_005.ogg",
+     "root": 59,
+     "lo": 54,
+     "hi": 65,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "ElectricPiano/zone_006.ogg",
+     "root": 72,
+     "lo": 66,
+     "hi": 78,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "ElectricPiano/zone_007.ogg",
+     "root": 72,
+     "lo": 66,
+     "hi": 78,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "ElectricPiano/zone_008.ogg",
+     "root": 84,
+     "lo": 79,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "ElectricPiano/zone_009.ogg",
+     "root": 84,
+     "lo": 79,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "AcousticGuitar",
+   "name": "原声吉他",
+   "category": "Pop",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "AcousticGuitar/zone_000.ogg",
+     "root": 40,
+     "lo": 21,
+     "hi": 46,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "AcousticGuitar/zone_001.ogg",
+     "root": 53,
+     "lo": 47,
+     "hi": 59,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "AcousticGuitar/zone_002.ogg",
+     "root": 53,
+     "lo": 47,
+     "hi": 59,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "AcousticGuitar/zone_003.ogg",
+     "root": 65,
+     "lo": 60,
+     "hi": 71,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "AcousticGuitar/zone_004.ogg",
+     "root": 65,
+     "lo": 60,
+     "hi": 71,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "AcousticGuitar/zone_005.ogg",
+     "root": 78,
+     "lo": 72,
+     "hi": 80,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "AcousticGuitar/zone_006.ogg",
+     "root": 78,
+     "lo": 72,
+     "hi": 80,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "AcousticGuitar/zone_007.ogg",
+     "root": 82,
+     "lo": 81,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "AcousticGuitar/zone_008.ogg",
+     "root": 82,
+     "lo": 81,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "ElectricGuitar1",
+   "name": "电吉他 1",
+   "category": "Pop",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "ElectricGuitar1/zone_000.ogg",
+     "root": 42,
+     "lo": 21,
+     "hi": 48,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "ElectricGuitar1/zone_001.ogg",
+     "root": 42,
+     "lo": 21,
+     "hi": 48,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "ElectricGuitar1/zone_002.ogg",
+     "root": 54,
+     "lo": 49,
+     "hi": 60,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "ElectricGuitar1/zone_003.ogg",
+     "root": 54,
+     "lo": 49,
+     "hi": 60,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "ElectricGuitar1/zone_004.ogg",
+     "root": 66,
+     "lo": 61,
+     "hi": 72,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "ElectricGuitar1/zone_005.ogg",
+     "root": 66,
+     "lo": 61,
+     "hi": 72,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "ElectricGuitar1/zone_006.ogg",
+     "root": 78,
+     "lo": 73,
+     "hi": 80,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "ElectricGuitar1/zone_007.ogg",
+     "root": 78,
+     "lo": 73,
+     "hi": 80,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "ElectricGuitar1/zone_008.ogg",
+     "root": 82,
+     "lo": 81,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "ElectricGuitar1/zone_009.ogg",
+     "root": 82,
+     "lo": 81,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "ElectricGuitar2",
+   "name": "电吉他 2",
+   "category": "Pop",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "ElectricGuitar2/zone_000.ogg",
+     "root": 36,
+     "lo": 21,
+     "hi": 42,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "ElectricGuitar2/zone_001.ogg",
+     "root": 36,
+     "lo": 21,
+     "hi": 42,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "ElectricGuitar2/zone_002.ogg",
+     "root": 48,
+     "lo": 43,
+     "hi": 54,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "ElectricGuitar2/zone_003.ogg",
+     "root": 48,
+     "lo": 43,
+     "hi": 54,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "ElectricGuitar2/zone_004.ogg",
+     "root": 60,
+     "lo": 55,
+     "hi": 66,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "ElectricGuitar2/zone_005.ogg",
+     "root": 60,
+     "lo": 55,
+     "hi": 66,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "ElectricGuitar2/zone_006.ogg",
+     "root": 72,
+     "lo": 67,
+     "hi": 78,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "ElectricGuitar2/zone_007.ogg",
+     "root": 72,
+     "lo": 67,
+     "hi": 78,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "ElectricGuitar2/zone_008.ogg",
+     "root": 84,
+     "lo": 79,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "ElectricGuitar2/zone_009.ogg",
+     "root": 84,
+     "lo": 79,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "ElectricGuitar3",
+   "name": "电吉他 3",
+   "category": "Pop",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "ElectricGuitar3/zone_000.ogg",
+     "root": 40,
+     "lo": 21,
+     "hi": 46,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "ElectricGuitar3/zone_001.ogg",
+     "root": 52,
+     "lo": 47,
+     "hi": 58,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "ElectricGuitar3/zone_002.ogg",
+     "root": 52,
+     "lo": 47,
+     "hi": 58,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "ElectricGuitar3/zone_003.ogg",
+     "root": 64,
+     "lo": 59,
+     "hi": 67,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "ElectricGuitar3/zone_004.ogg",
+     "root": 71,
+     "lo": 68,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "ElectricGuitar3/zone_005.ogg",
+     "root": 71,
+     "lo": 68,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "ElectricGuitar4",
+   "name": "电吉他 4",
+   "category": "Pop",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "ElectricGuitar4/zone_000.ogg",
+     "root": 26,
+     "lo": 21,
+     "hi": 32,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "ElectricGuitar4/zone_001.ogg",
+     "root": 26,
+     "lo": 21,
+     "hi": 32,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "ElectricGuitar4/zone_002.ogg",
+     "root": 38,
+     "lo": 33,
+     "hi": 44,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "ElectricGuitar4/zone_003.ogg",
+     "root": 38,
+     "lo": 33,
+     "hi": 44,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "ElectricGuitar4/zone_004.ogg",
+     "root": 50,
+     "lo": 45,
+     "hi": 56,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "ElectricGuitar4/zone_005.ogg",
+     "root": 50,
+     "lo": 45,
+     "hi": 56,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "ElectricGuitar4/zone_006.ogg",
+     "root": 62,
+     "lo": 57,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "AcousticBass",
+   "name": "原声贝斯",
+   "category": "Pop",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "AcousticBass/zone_000.ogg",
+     "root": 46,
+     "lo": 21,
+     "hi": 52,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "AcousticBass/zone_001.ogg",
+     "root": 46,
+     "lo": 21,
+     "hi": 52,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "AcousticBass/zone_002.ogg",
+     "root": 58,
+     "lo": 53,
+     "hi": 59,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "AcousticBass/zone_003.ogg",
+     "root": 58,
+     "lo": 53,
+     "hi": 59,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "AcousticBass/zone_004.ogg",
+     "root": 60,
+     "lo": 60,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "AcousticBass/zone_005.ogg",
+     "root": 60,
+     "lo": 60,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "ElectricBass1",
+   "name": "电贝斯 1",
+   "category": "Pop",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "ElectricBass1/zone_000.ogg",
+     "root": 40,
+     "lo": 21,
+     "hi": 46,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "ElectricBass1/zone_001.ogg",
+     "root": 52,
+     "lo": 47,
+     "hi": 57,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "ElectricBass1/zone_002.ogg",
+     "root": 52,
+     "lo": 47,
+     "hi": 57,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "ElectricBass1/zone_003.ogg",
+     "root": 62,
+     "lo": 58,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "ElectricBass1/zone_004.ogg",
+     "root": 62,
+     "lo": 58,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "ElectricBass2",
+   "name": "电贝斯 2",
+   "category": "Pop",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "ElectricBass2/zone_000.ogg",
+     "root": 38,
+     "lo": 21,
+     "hi": 44,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "ElectricBass2/zone_001.ogg",
+     "root": 38,
+     "lo": 21,
+     "hi": 44,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "ElectricBass2/zone_002.ogg",
+     "root": 50,
+     "lo": 45,
+     "hi": 55,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "ElectricBass2/zone_003.ogg",
+     "root": 50,
+     "lo": 45,
+     "hi": 55,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "ElectricBass2/zone_004.ogg",
+     "root": 60,
+     "lo": 56,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "ElectricBass2/zone_005.ogg",
+     "root": 60,
+     "lo": 56,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "SynthBass",
+   "name": "合成贝斯",
+   "category": "Pop",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "SynthBass/zone_000.ogg",
+     "root": 44,
+     "lo": 21,
+     "hi": 50,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "SynthBass/zone_001.ogg",
+     "root": 56,
+     "lo": 51,
+     "hi": 62,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "SynthBass/zone_002.ogg",
+     "root": 68,
+     "lo": 63,
+     "hi": 74,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "SynthBass/zone_003.ogg",
+     "root": 80,
+     "lo": 75,
+     "hi": 82,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "SynthBass/zone_004.ogg",
+     "root": 84,
+     "lo": 83,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "AcousticDrum",
+   "name": "架子鼓",
+   "category": "Pop",
+   "range": [
+    36,
+    84
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "AcousticDrum/zone_000.ogg",
+     "root": 36,
+     "lo": 36,
+     "hi": 39,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "AcousticDrum/zone_001.ogg",
+     "root": 43,
+     "lo": 40,
+     "hi": 46,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "AcousticDrum/zone_002.ogg",
+     "root": 50,
+     "lo": 47,
+     "hi": 53,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "AcousticDrum/zone_003.ogg",
+     "root": 57,
+     "lo": 54,
+     "hi": 60,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "AcousticDrum/zone_004.ogg",
+     "root": 63,
+     "lo": 61,
+     "hi": 66,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "AcousticDrum/zone_005.ogg",
+     "root": 70,
+     "lo": 67,
+     "hi": 73,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "AcousticDrum/zone_006.ogg",
+     "root": 77,
+     "lo": 74,
+     "hi": 80,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "AcousticDrum/zone_007.ogg",
+     "root": 84,
+     "lo": 81,
+     "hi": 84,
+     "lo_vel": 1,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "ElectricDrum",
+   "name": "电鼓",
+   "category": "Pop",
+   "range": [
+    36,
+    84
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "ElectricDrum/zone_000.ogg",
+     "root": 36,
+     "lo": 36,
+     "hi": 39,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "ElectricDrum/zone_001.ogg",
+     "root": 43,
+     "lo": 40,
+     "hi": 46,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "ElectricDrum/zone_002.ogg",
+     "root": 50,
+     "lo": 47,
+     "hi": 53,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "ElectricDrum/zone_003.ogg",
+     "root": 57,
+     "lo": 54,
+     "hi": 60,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "ElectricDrum/zone_004.ogg",
+     "root": 63,
+     "lo": 61,
+     "hi": 66,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "ElectricDrum/zone_005.ogg",
+     "root": 70,
+     "lo": 67,
+     "hi": 73,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "ElectricDrum/zone_006.ogg",
+     "root": 77,
+     "lo": 74,
+     "hi": 80,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "ElectricDrum/zone_007.ogg",
+     "root": 84,
+     "lo": 81,
+     "hi": 84,
+     "lo_vel": 1,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "SynthStrings",
+   "name": "合成弦乐",
+   "category": "Pop",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "SynthStrings/zone_000.ogg",
+     "root": 36,
+     "lo": 21,
+     "hi": 42,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "SynthStrings/zone_001.ogg",
+     "root": 36,
+     "lo": 21,
+     "hi": 42,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "SynthStrings/zone_002.ogg",
+     "root": 48,
+     "lo": 43,
+     "hi": 54,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "SynthStrings/zone_003.ogg",
+     "root": 60,
+     "lo": 55,
+     "hi": 66,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "SynthStrings/zone_004.ogg",
+     "root": 72,
+     "lo": 67,
+     "hi": 78,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "SynthStrings/zone_005.ogg",
+     "root": 84,
+     "lo": 79,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "SynthBrass",
+   "name": "合成铜管",
+   "category": "Pop",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "SynthBrass/zone_000.ogg",
+     "root": 40,
+     "lo": 21,
+     "hi": 46,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "SynthBrass/zone_001.ogg",
+     "root": 40,
+     "lo": 21,
+     "hi": 46,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "SynthBrass/zone_002.ogg",
+     "root": 52,
+     "lo": 47,
+     "hi": 58,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "SynthBrass/zone_003.ogg",
+     "root": 64,
+     "lo": 59,
+     "hi": 70,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "SynthBrass/zone_004.ogg",
+     "root": 76,
+     "lo": 71,
+     "hi": 82,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "SynthBrass/zone_005.ogg",
+     "root": 88,
+     "lo": 83,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "SynthBrass/zone_006.ogg",
+     "root": 88,
+     "lo": 83,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "SynthVoice",
+   "name": "合成人声",
+   "category": "Pop",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "SynthVoice/zone_000.ogg",
+     "root": 46,
+     "lo": 21,
+     "hi": 52,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "SynthVoice/zone_001.ogg",
+     "root": 58,
+     "lo": 53,
+     "hi": 64,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "SynthVoice/zone_002.ogg",
+     "root": 70,
+     "lo": 65,
+     "hi": 76,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "SynthVoice/zone_003.ogg",
+     "root": 82,
+     "lo": 77,
+     "hi": 83,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "SynthVoice/zone_004.ogg",
+     "root": 84,
+     "lo": 84,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "RockOrgan",
+   "name": "摇滚风琴",
+   "category": "Pop",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "RockOrgan/zone_000.ogg",
+     "root": 36,
+     "lo": 21,
+     "hi": 42,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "RockOrgan/zone_001.ogg",
+     "root": 36,
+     "lo": 21,
+     "hi": 42,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "RockOrgan/zone_002.ogg",
+     "root": 48,
+     "lo": 43,
+     "hi": 55,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "RockOrgan/zone_003.ogg",
+     "root": 62,
+     "lo": 56,
+     "hi": 67,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "RockOrgan/zone_004.ogg",
+     "root": 72,
+     "lo": 68,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "SopranoSaxophone",
+   "name": "高音萨克斯",
+   "category": "Pop",
+   "range": [
+    36,
+    96
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "SopranoSaxophone/zone_000.ogg",
+     "root": 56,
+     "lo": 36,
+     "hi": 62,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "SopranoSaxophone/zone_001.ogg",
+     "root": 56,
+     "lo": 36,
+     "hi": 62,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "SopranoSaxophone/zone_002.ogg",
+     "root": 68,
+     "lo": 63,
+     "hi": 74,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "SopranoSaxophone/zone_003.ogg",
+     "root": 68,
+     "lo": 63,
+     "hi": 74,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "SopranoSaxophone/zone_004.ogg",
+     "root": 80,
+     "lo": 75,
+     "hi": 84,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "SopranoSaxophone/zone_005.ogg",
+     "root": 88,
+     "lo": 85,
+     "hi": 96,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "SopranoSaxophone/zone_006.ogg",
+     "root": 88,
+     "lo": 85,
+     "hi": 96,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "TenorSaxophone",
+   "name": "次中音萨克斯",
+   "category": "Pop",
+   "range": [
+    36,
+    96
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "TenorSaxophone/zone_000.ogg",
+     "root": 44,
+     "lo": 36,
+     "hi": 50,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "TenorSaxophone/zone_001.ogg",
+     "root": 44,
+     "lo": 36,
+     "hi": 50,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "TenorSaxophone/zone_002.ogg",
+     "root": 56,
+     "lo": 51,
+     "hi": 62,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "TenorSaxophone/zone_003.ogg",
+     "root": 56,
+     "lo": 51,
+     "hi": 62,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "TenorSaxophone/zone_004.ogg",
+     "root": 68,
+     "lo": 63,
+     "hi": 72,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "TenorSaxophone/zone_005.ogg",
+     "root": 68,
+     "lo": 63,
+     "hi": 72,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "TenorSaxophone/zone_006.ogg",
+     "root": 76,
+     "lo": 73,
+     "hi": 96,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "TenorSaxophone/zone_007.ogg",
+     "root": 76,
+     "lo": 73,
+     "hi": 96,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "JazzTrumpet",
+   "name": "爵士小号",
+   "category": "Pop",
+   "range": [
+    36,
+    96
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "JazzTrumpet/zone_000.ogg",
+     "root": 52,
+     "lo": 36,
+     "hi": 58,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "JazzTrumpet/zone_001.ogg",
+     "root": 64,
+     "lo": 59,
+     "hi": 70,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "JazzTrumpet/zone_002.ogg",
+     "root": 64,
+     "lo": 59,
+     "hi": 70,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "JazzTrumpet/zone_003.ogg",
+     "root": 76,
+     "lo": 71,
+     "hi": 80,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "JazzTrumpet/zone_004.ogg",
+     "root": 76,
+     "lo": 71,
+     "hi": 80,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "JazzTrumpet/zone_005.ogg",
+     "root": 84,
+     "lo": 81,
+     "hi": 96,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "JazzTrumpet/zone_006.ogg",
+     "root": 84,
+     "lo": 81,
+     "hi": 96,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Violin",
+   "name": "小提琴",
+   "category": "Orchestral",
+   "range": [
+    36,
+    100
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "Violin/zone_000.ogg",
+     "root": 55,
+     "lo": 36,
+     "hi": 61,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Violin/zone_001.ogg",
+     "root": 68,
+     "lo": 62,
+     "hi": 74,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Violin/zone_002.ogg",
+     "root": 80,
+     "lo": 75,
+     "hi": 86,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Violin/zone_003.ogg",
+     "root": 80,
+     "lo": 75,
+     "hi": 86,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Violin/zone_004.ogg",
+     "root": 92,
+     "lo": 87,
+     "hi": 93,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Violin/zone_005.ogg",
+     "root": 92,
+     "lo": 87,
+     "hi": 93,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Violin/zone_006.ogg",
+     "root": 94,
+     "lo": 94,
+     "hi": 100,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Violin/zone_007.ogg",
+     "root": 94,
+     "lo": 94,
+     "hi": 100,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Viola",
+   "name": "中提琴",
+   "category": "Orchestral",
+   "range": [
+    36,
+    100
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "Viola/zone_000.ogg",
+     "root": 48,
+     "lo": 36,
+     "hi": 54,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Viola/zone_001.ogg",
+     "root": 48,
+     "lo": 36,
+     "hi": 54,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Viola/zone_002.ogg",
+     "root": 60,
+     "lo": 55,
+     "hi": 66,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Viola/zone_003.ogg",
+     "root": 72,
+     "lo": 67,
+     "hi": 78,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Viola/zone_004.ogg",
+     "root": 72,
+     "lo": 67,
+     "hi": 78,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Viola/zone_005.ogg",
+     "root": 84,
+     "lo": 79,
+     "hi": 87,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Viola/zone_006.ogg",
+     "root": 84,
+     "lo": 79,
+     "hi": 87,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Viola/zone_007.ogg",
+     "root": 90,
+     "lo": 88,
+     "hi": 100,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Viola/zone_008.ogg",
+     "root": 90,
+     "lo": 88,
+     "hi": 100,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Cello",
+   "name": "大提琴",
+   "category": "Orchestral",
+   "range": [
+    36,
+    100
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "Cello/zone_000.ogg",
+     "root": 36,
+     "lo": 36,
+     "hi": 42,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Cello/zone_001.ogg",
+     "root": 36,
+     "lo": 36,
+     "hi": 42,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Cello/zone_002.ogg",
+     "root": 48,
+     "lo": 43,
+     "hi": 54,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Cello/zone_003.ogg",
+     "root": 48,
+     "lo": 43,
+     "hi": 54,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Cello/zone_004.ogg",
+     "root": 60,
+     "lo": 55,
+     "hi": 66,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Cello/zone_005.ogg",
+     "root": 60,
+     "lo": 55,
+     "hi": 66,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Cello/zone_006.ogg",
+     "root": 72,
+     "lo": 67,
+     "hi": 78,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Cello/zone_007.ogg",
+     "root": 72,
+     "lo": 67,
+     "hi": 78,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Cello/zone_008.ogg",
+     "root": 84,
+     "lo": 79,
+     "hi": 86,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Cello/zone_009.ogg",
+     "root": 84,
+     "lo": 79,
+     "hi": 86,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Cello/zone_010.ogg",
+     "root": 88,
+     "lo": 87,
+     "hi": 100,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Cello/zone_011.ogg",
+     "root": 88,
+     "lo": 87,
+     "hi": 100,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Contrabass",
+   "name": "倍大提琴",
+   "category": "Orchestral",
+   "range": [
+    36,
+    100
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "Contrabass/zone_000.ogg",
+     "root": 40,
+     "lo": 36,
+     "hi": 46,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Contrabass/zone_001.ogg",
+     "root": 40,
+     "lo": 36,
+     "hi": 46,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Contrabass/zone_002.ogg",
+     "root": 52,
+     "lo": 47,
+     "hi": 58,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Contrabass/zone_003.ogg",
+     "root": 52,
+     "lo": 47,
+     "hi": 58,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Contrabass/zone_004.ogg",
+     "root": 64,
+     "lo": 59,
+     "hi": 100,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Contrabass/zone_005.ogg",
+     "root": 64,
+     "lo": 59,
+     "hi": 100,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Harp",
+   "name": "竖琴",
+   "category": "Orchestral",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "Harp/zone_000.ogg",
+     "root": 36,
+     "lo": 21,
+     "hi": 42,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Harp/zone_001.ogg",
+     "root": 49,
+     "lo": 43,
+     "hi": 55,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Harp/zone_002.ogg",
+     "root": 49,
+     "lo": 43,
+     "hi": 55,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Harp/zone_003.ogg",
+     "root": 61,
+     "lo": 56,
+     "hi": 67,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Harp/zone_004.ogg",
+     "root": 61,
+     "lo": 56,
+     "hi": 67,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Harp/zone_005.ogg",
+     "root": 73,
+     "lo": 68,
+     "hi": 79,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Harp/zone_006.ogg",
+     "root": 73,
+     "lo": 68,
+     "hi": 79,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Harp/zone_007.ogg",
+     "root": 85,
+     "lo": 80,
+     "hi": 90,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Harp/zone_008.ogg",
+     "root": 85,
+     "lo": 80,
+     "hi": 90,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Harp/zone_009.ogg",
+     "root": 95,
+     "lo": 91,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Harp/zone_010.ogg",
+     "root": 95,
+     "lo": 91,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "StringLeg",
+   "name": "弦乐连奏",
+   "category": "Orchestral",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "StringLeg/zone_000.ogg",
+     "root": 36,
+     "lo": 21,
+     "hi": 42,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "StringLeg/zone_001.ogg",
+     "root": 48,
+     "lo": 43,
+     "hi": 54,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "StringLeg/zone_002.ogg",
+     "root": 48,
+     "lo": 43,
+     "hi": 54,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "StringLeg/zone_003.ogg",
+     "root": 60,
+     "lo": 55,
+     "hi": 66,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "StringLeg/zone_004.ogg",
+     "root": 72,
+     "lo": 67,
+     "hi": 78,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "StringLeg/zone_005.ogg",
+     "root": 84,
+     "lo": 79,
+     "hi": 89,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "StringLeg/zone_006.ogg",
+     "root": 94,
+     "lo": 90,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "StringLeg/zone_007.ogg",
+     "root": 94,
+     "lo": 90,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "StringStacc",
+   "name": "弦乐断奏",
+   "category": "Orchestral",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "StringStacc/zone_000.ogg",
+     "root": 44,
+     "lo": 21,
+     "hi": 50,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "StringStacc/zone_001.ogg",
+     "root": 44,
+     "lo": 21,
+     "hi": 50,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "StringStacc/zone_002.ogg",
+     "root": 56,
+     "lo": 51,
+     "hi": 62,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "StringStacc/zone_003.ogg",
+     "root": 56,
+     "lo": 51,
+     "hi": 62,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "StringStacc/zone_004.ogg",
+     "root": 68,
+     "lo": 63,
+     "hi": 74,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "StringStacc/zone_005.ogg",
+     "root": 68,
+     "lo": 63,
+     "hi": 74,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "StringStacc/zone_006.ogg",
+     "root": 80,
+     "lo": 75,
+     "hi": 86,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "StringStacc/zone_007.ogg",
+     "root": 80,
+     "lo": 75,
+     "hi": 86,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "StringStacc/zone_008.ogg",
+     "root": 92,
+     "lo": 87,
+     "hi": 93,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "StringStacc/zone_009.ogg",
+     "root": 94,
+     "lo": 94,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "StringPizz",
+   "name": "弦乐拨弦",
+   "category": "Orchestral",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "StringPizz/zone_000.ogg",
+     "root": 40,
+     "lo": 21,
+     "hi": 46,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "StringPizz/zone_001.ogg",
+     "root": 52,
+     "lo": 47,
+     "hi": 58,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "StringPizz/zone_002.ogg",
+     "root": 52,
+     "lo": 47,
+     "hi": 58,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "StringPizz/zone_003.ogg",
+     "root": 64,
+     "lo": 59,
+     "hi": 73,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "StringPizz/zone_004.ogg",
+     "root": 64,
+     "lo": 59,
+     "hi": 73,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "StringPizz/zone_005.ogg",
+     "root": 82,
+     "lo": 74,
+     "hi": 88,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "StringPizz/zone_006.ogg",
+     "root": 94,
+     "lo": 89,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Piccolo",
+   "name": "短笛",
+   "category": "Orchestral",
+   "range": [
+    48,
+    100
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "Piccolo/zone_000.ogg",
+     "root": 72,
+     "lo": 48,
+     "hi": 78,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Piccolo/zone_001.ogg",
+     "root": 72,
+     "lo": 48,
+     "hi": 78,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Piccolo/zone_002.ogg",
+     "root": 84,
+     "lo": 79,
+     "hi": 88,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Piccolo/zone_003.ogg",
+     "root": 93,
+     "lo": 89,
+     "hi": 100,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Piccolo/zone_004.ogg",
+     "root": 93,
+     "lo": 89,
+     "hi": 100,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Flute",
+   "name": "长笛",
+   "category": "Orchestral",
+   "range": [
+    48,
+    100
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "Flute/zone_000.ogg",
+     "root": 60,
+     "lo": 48,
+     "hi": 66,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Flute/zone_001.ogg",
+     "root": 60,
+     "lo": 48,
+     "hi": 66,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Flute/zone_002.ogg",
+     "root": 73,
+     "lo": 67,
+     "hi": 79,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Flute/zone_003.ogg",
+     "root": 73,
+     "lo": 67,
+     "hi": 79,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Flute/zone_004.ogg",
+     "root": 85,
+     "lo": 80,
+     "hi": 89,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Flute/zone_005.ogg",
+     "root": 85,
+     "lo": 80,
+     "hi": 89,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Flute/zone_006.ogg",
+     "root": 93,
+     "lo": 90,
+     "hi": 100,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Flute/zone_007.ogg",
+     "root": 93,
+     "lo": 90,
+     "hi": 100,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Oboe",
+   "name": "双簧管",
+   "category": "Orchestral",
+   "range": [
+    48,
+    100
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "Oboe/zone_000.ogg",
+     "root": 58,
+     "lo": 48,
+     "hi": 64,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Oboe/zone_001.ogg",
+     "root": 71,
+     "lo": 65,
+     "hi": 77,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Oboe/zone_002.ogg",
+     "root": 71,
+     "lo": 65,
+     "hi": 77,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Oboe/zone_003.ogg",
+     "root": 83,
+     "lo": 78,
+     "hi": 87,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Oboe/zone_004.ogg",
+     "root": 83,
+     "lo": 78,
+     "hi": 87,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Oboe/zone_005.ogg",
+     "root": 91,
+     "lo": 88,
+     "hi": 100,
+     "lo_vel": 1,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Clarinet",
+   "name": "单簧管",
+   "category": "Orchestral",
+   "range": [
+    48,
+    100
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "Clarinet/zone_000.ogg",
+     "root": 52,
+     "lo": 48,
+     "hi": 58,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Clarinet/zone_001.ogg",
+     "root": 52,
+     "lo": 48,
+     "hi": 58,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Clarinet/zone_002.ogg",
+     "root": 65,
+     "lo": 59,
+     "hi": 71,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Clarinet/zone_003.ogg",
+     "root": 65,
+     "lo": 59,
+     "hi": 71,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Clarinet/zone_004.ogg",
+     "root": 77,
+     "lo": 72,
+     "hi": 83,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Clarinet/zone_005.ogg",
+     "root": 77,
+     "lo": 72,
+     "hi": 83,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Clarinet/zone_006.ogg",
+     "root": 90,
+     "lo": 84,
+     "hi": 90,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Clarinet/zone_007.ogg",
+     "root": 91,
+     "lo": 91,
+     "hi": 100,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Clarinet/zone_008.ogg",
+     "root": 91,
+     "lo": 91,
+     "hi": 100,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Bassoon",
+   "name": "大管",
+   "category": "Orchestral",
+   "range": [
+    48,
+    100
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "Bassoon/zone_000.ogg",
+     "root": 47,
+     "lo": 48,
+     "hi": 53,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Bassoon/zone_001.ogg",
+     "root": 59,
+     "lo": 54,
+     "hi": 65,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Bassoon/zone_002.ogg",
+     "root": 59,
+     "lo": 54,
+     "hi": 65,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Bassoon/zone_003.ogg",
+     "root": 71,
+     "lo": 66,
+     "hi": 72,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Bassoon/zone_004.ogg",
+     "root": 71,
+     "lo": 66,
+     "hi": 72,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Bassoon/zone_005.ogg",
+     "root": 74,
+     "lo": 73,
+     "hi": 100,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Bassoon/zone_006.ogg",
+     "root": 74,
+     "lo": 73,
+     "hi": 100,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "WoodwindLeg",
+   "name": "木管连奏",
+   "category": "Orchestral",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "WoodwindLeg/zone_000.ogg",
+     "root": 36,
+     "lo": 21,
+     "hi": 42,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "WoodwindLeg/zone_001.ogg",
+     "root": 36,
+     "lo": 21,
+     "hi": 42,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "WoodwindLeg/zone_002.ogg",
+     "root": 48,
+     "lo": 43,
+     "hi": 54,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "WoodwindLeg/zone_003.ogg",
+     "root": 60,
+     "lo": 55,
+     "hi": 66,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "WoodwindLeg/zone_004.ogg",
+     "root": 60,
+     "lo": 55,
+     "hi": 66,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "WoodwindLeg/zone_005.ogg",
+     "root": 72,
+     "lo": 67,
+     "hi": 78,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "WoodwindLeg/zone_006.ogg",
+     "root": 72,
+     "lo": 67,
+     "hi": 78,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "WoodwindLeg/zone_007.ogg",
+     "root": 84,
+     "lo": 79,
+     "hi": 89,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "WoodwindLeg/zone_008.ogg",
+     "root": 84,
+     "lo": 79,
+     "hi": 89,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "WoodwindLeg/zone_009.ogg",
+     "root": 94,
+     "lo": 90,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "WoodwindLeg/zone_010.ogg",
+     "root": 94,
+     "lo": 90,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "WoodwindStacc",
+   "name": "木管断奏",
+   "category": "Orchestral",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "WoodwindStacc/zone_000.ogg",
+     "root": 34,
+     "lo": 21,
+     "hi": 40,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "WoodwindStacc/zone_001.ogg",
+     "root": 46,
+     "lo": 41,
+     "hi": 52,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "WoodwindStacc/zone_002.ogg",
+     "root": 46,
+     "lo": 41,
+     "hi": 52,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "WoodwindStacc/zone_003.ogg",
+     "root": 58,
+     "lo": 53,
+     "hi": 64,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "WoodwindStacc/zone_004.ogg",
+     "root": 58,
+     "lo": 53,
+     "hi": 64,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "WoodwindStacc/zone_005.ogg",
+     "root": 70,
+     "lo": 65,
+     "hi": 76,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "WoodwindStacc/zone_006.ogg",
+     "root": 70,
+     "lo": 65,
+     "hi": 76,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "WoodwindStacc/zone_007.ogg",
+     "root": 82,
+     "lo": 77,
+     "hi": 85,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "WoodwindStacc/zone_008.ogg",
+     "root": 82,
+     "lo": 77,
+     "hi": 85,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "WoodwindStacc/zone_009.ogg",
+     "root": 88,
+     "lo": 86,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "WoodwindStacc/zone_010.ogg",
+     "root": 88,
+     "lo": 86,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Trumpet",
+   "name": "小号",
+   "category": "Orchestral",
+   "range": [
+    36,
+    96
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "Trumpet/zone_000.ogg",
+     "root": 54,
+     "lo": 36,
+     "hi": 60,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Trumpet/zone_001.ogg",
+     "root": 54,
+     "lo": 36,
+     "hi": 60,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Trumpet/zone_002.ogg",
+     "root": 67,
+     "lo": 61,
+     "hi": 73,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Trumpet/zone_003.ogg",
+     "root": 79,
+     "lo": 74,
+     "hi": 81,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Trumpet/zone_004.ogg",
+     "root": 79,
+     "lo": 74,
+     "hi": 81,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Trumpet/zone_005.ogg",
+     "root": 84,
+     "lo": 82,
+     "hi": 96,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Trumpet/zone_006.ogg",
+     "root": 84,
+     "lo": 82,
+     "hi": 96,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Horn",
+   "name": "圆号",
+   "category": "Orchestral",
+   "range": [
+    36,
+    96
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "Horn/zone_000.ogg",
+     "root": 47,
+     "lo": 36,
+     "hi": 53,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Horn/zone_001.ogg",
+     "root": 47,
+     "lo": 36,
+     "hi": 53,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Horn/zone_002.ogg",
+     "root": 59,
+     "lo": 54,
+     "hi": 65,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Horn/zone_003.ogg",
+     "root": 71,
+     "lo": 66,
+     "hi": 72,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Horn/zone_004.ogg",
+     "root": 74,
+     "lo": 73,
+     "hi": 96,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Horn/zone_005.ogg",
+     "root": 74,
+     "lo": 73,
+     "hi": 96,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Trombone",
+   "name": "长号",
+   "category": "Orchestral",
+   "range": [
+    36,
+    96
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "Trombone/zone_000.ogg",
+     "root": 40,
+     "lo": 36,
+     "hi": 46,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Trombone/zone_001.ogg",
+     "root": 40,
+     "lo": 36,
+     "hi": 46,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Trombone/zone_002.ogg",
+     "root": 53,
+     "lo": 47,
+     "hi": 59,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Trombone/zone_003.ogg",
+     "root": 53,
+     "lo": 47,
+     "hi": 59,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Trombone/zone_004.ogg",
+     "root": 65,
+     "lo": 60,
+     "hi": 66,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Trombone/zone_005.ogg",
+     "root": 65,
+     "lo": 60,
+     "hi": 66,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Trombone/zone_006.ogg",
+     "root": 67,
+     "lo": 67,
+     "hi": 96,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Trombone/zone_007.ogg",
+     "root": 67,
+     "lo": 67,
+     "hi": 96,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Tuba",
+   "name": "大号",
+   "category": "Orchestral",
+   "range": [
+    36,
+    96
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "Tuba/zone_000.ogg",
+     "root": 36,
+     "lo": 36,
+     "hi": 42,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Tuba/zone_001.ogg",
+     "root": 36,
+     "lo": 36,
+     "hi": 42,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Tuba/zone_002.ogg",
+     "root": 49,
+     "lo": 43,
+     "hi": 55,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Tuba/zone_003.ogg",
+     "root": 49,
+     "lo": 43,
+     "hi": 55,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Tuba/zone_004.ogg",
+     "root": 61,
+     "lo": 56,
+     "hi": 63,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Tuba/zone_005.ogg",
+     "root": 61,
+     "lo": 56,
+     "hi": 63,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Tuba/zone_006.ogg",
+     "root": 65,
+     "lo": 64,
+     "hi": 96,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Tuba/zone_007.ogg",
+     "root": 65,
+     "lo": 64,
+     "hi": 96,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "BrassLeg",
+   "name": "铜管连奏",
+   "category": "Orchestral",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "BrassLeg/zone_000.ogg",
+     "root": 28,
+     "lo": 21,
+     "hi": 34,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "BrassLeg/zone_001.ogg",
+     "root": 28,
+     "lo": 21,
+     "hi": 34,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "BrassLeg/zone_002.ogg",
+     "root": 40,
+     "lo": 35,
+     "hi": 46,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "BrassLeg/zone_003.ogg",
+     "root": 40,
+     "lo": 35,
+     "hi": 46,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "BrassLeg/zone_004.ogg",
+     "root": 52,
+     "lo": 47,
+     "hi": 58,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "BrassLeg/zone_005.ogg",
+     "root": 52,
+     "lo": 47,
+     "hi": 58,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "BrassLeg/zone_006.ogg",
+     "root": 64,
+     "lo": 59,
+     "hi": 70,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "BrassLeg/zone_007.ogg",
+     "root": 64,
+     "lo": 59,
+     "hi": 70,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "BrassLeg/zone_008.ogg",
+     "root": 76,
+     "lo": 71,
+     "hi": 81,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "BrassLeg/zone_009.ogg",
+     "root": 76,
+     "lo": 71,
+     "hi": 81,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "BrassLeg/zone_010.ogg",
+     "root": 86,
+     "lo": 82,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "BrassLeg/zone_011.ogg",
+     "root": 86,
+     "lo": 82,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "BrassStacc",
+   "name": "铜管断奏",
+   "category": "Orchestral",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "BrassStacc/zone_000.ogg",
+     "root": 34,
+     "lo": 21,
+     "hi": 40,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "BrassStacc/zone_001.ogg",
+     "root": 46,
+     "lo": 41,
+     "hi": 52,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "BrassStacc/zone_002.ogg",
+     "root": 46,
+     "lo": 41,
+     "hi": 52,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "BrassStacc/zone_003.ogg",
+     "root": 58,
+     "lo": 53,
+     "hi": 64,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "BrassStacc/zone_004.ogg",
+     "root": 58,
+     "lo": 53,
+     "hi": 64,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "BrassStacc/zone_005.ogg",
+     "root": 70,
+     "lo": 65,
+     "hi": 76,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "BrassStacc/zone_006.ogg",
+     "root": 70,
+     "lo": 65,
+     "hi": 76,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "BrassStacc/zone_007.ogg",
+     "root": 82,
+     "lo": 77,
+     "hi": 83,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "BrassStacc/zone_008.ogg",
+     "root": 82,
+     "lo": 77,
+     "hi": 83,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "BrassStacc/zone_009.ogg",
+     "root": 84,
+     "lo": 84,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "BrassStacc/zone_010.ogg",
+     "root": 84,
+     "lo": 84,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Celesta",
+   "name": "钢片琴",
+   "category": "Orchestral",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "Celesta/zone_000.ogg",
+     "root": 48,
+     "lo": 21,
+     "hi": 54,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Celesta/zone_001.ogg",
+     "root": 48,
+     "lo": 21,
+     "hi": 54,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Celesta/zone_002.ogg",
+     "root": 61,
+     "lo": 55,
+     "hi": 67,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Celesta/zone_003.ogg",
+     "root": 61,
+     "lo": 55,
+     "hi": 67,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Celesta/zone_004.ogg",
+     "root": 73,
+     "lo": 68,
+     "hi": 79,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Celesta/zone_005.ogg",
+     "root": 73,
+     "lo": 68,
+     "hi": 79,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Celesta/zone_006.ogg",
+     "root": 85,
+     "lo": 80,
+     "hi": 89,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Celesta/zone_007.ogg",
+     "root": 85,
+     "lo": 80,
+     "hi": 89,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Celesta/zone_008.ogg",
+     "root": 93,
+     "lo": 90,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Celesta/zone_009.ogg",
+     "root": 93,
+     "lo": 90,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Glokenspiel",
+   "name": "钟琴",
+   "category": "Orchestral",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "Glokenspiel/zone_000.ogg",
+     "root": 48,
+     "lo": 21,
+     "hi": 54,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Glokenspiel/zone_001.ogg",
+     "root": 60,
+     "lo": 55,
+     "hi": 67,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Glokenspiel/zone_002.ogg",
+     "root": 74,
+     "lo": 68,
+     "hi": 81,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Glokenspiel/zone_003.ogg",
+     "root": 74,
+     "lo": 68,
+     "hi": 81,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Glokenspiel/zone_004.ogg",
+     "root": 88,
+     "lo": 82,
+     "hi": 90,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Glokenspiel/zone_005.ogg",
+     "root": 93,
+     "lo": 91,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Glokenspiel/zone_006.ogg",
+     "root": 93,
+     "lo": 91,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Timpani",
+   "name": "定音鼓",
+   "category": "Orchestral",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "Timpani/zone_000.ogg",
+     "root": 37,
+     "lo": 21,
+     "hi": 43,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Timpani/zone_001.ogg",
+     "root": 37,
+     "lo": 21,
+     "hi": 43,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Timpani/zone_002.ogg",
+     "root": 50,
+     "lo": 44,
+     "hi": 54,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Timpani/zone_003.ogg",
+     "root": 50,
+     "lo": 44,
+     "hi": 54,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Timpani/zone_004.ogg",
+     "root": 58,
+     "lo": 55,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Timpani/zone_005.ogg",
+     "root": 58,
+     "lo": 55,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "TubularBells",
+   "name": "管钟",
+   "category": "Orchestral",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "TubularBells/zone_000.ogg",
+     "root": 44,
+     "lo": 21,
+     "hi": 50,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "TubularBells/zone_001.ogg",
+     "root": 44,
+     "lo": 21,
+     "hi": 50,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "TubularBells/zone_002.ogg",
+     "root": 56,
+     "lo": 51,
+     "hi": 62,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "TubularBells/zone_003.ogg",
+     "root": 56,
+     "lo": 51,
+     "hi": 62,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "TubularBells/zone_004.ogg",
+     "root": 68,
+     "lo": 63,
+     "hi": 75,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "TubularBells/zone_005.ogg",
+     "root": 68,
+     "lo": 63,
+     "hi": 75,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "TubularBells/zone_006.ogg",
+     "root": 82,
+     "lo": 76,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "TubularBells/zone_007.ogg",
+     "root": 82,
+     "lo": 76,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Vibraphone",
+   "name": "颤音琴",
+   "category": "Orchestral",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "Vibraphone/zone_000.ogg",
+     "root": 52,
+     "lo": 21,
+     "hi": 58,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Vibraphone/zone_001.ogg",
+     "root": 64,
+     "lo": 59,
+     "hi": 70,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Vibraphone/zone_002.ogg",
+     "root": 64,
+     "lo": 59,
+     "hi": 70,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Vibraphone/zone_003.ogg",
+     "root": 76,
+     "lo": 71,
+     "hi": 80,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Vibraphone/zone_004.ogg",
+     "root": 76,
+     "lo": 71,
+     "hi": 80,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Vibraphone/zone_005.ogg",
+     "root": 84,
+     "lo": 81,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Vibraphone/zone_006.ogg",
+     "root": 84,
+     "lo": 81,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Xylophone",
+   "name": "木琴",
+   "category": "Orchestral",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "Xylophone/zone_000.ogg",
+     "root": 70,
+     "lo": 21,
+     "hi": 76,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Xylophone/zone_001.ogg",
+     "root": 70,
+     "lo": 21,
+     "hi": 76,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Xylophone/zone_002.ogg",
+     "root": 82,
+     "lo": 77,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Xylophone/zone_003.ogg",
+     "root": 82,
+     "lo": 77,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "OrchestralPercussion",
+   "name": "打击乐",
+   "category": "Orchestral",
+   "range": [
+    36,
+    84
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "OrchestralPercussion/zone_000.ogg",
+     "root": 36,
+     "lo": 36,
+     "hi": 39,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "OrchestralPercussion/zone_001.ogg",
+     "root": 43,
+     "lo": 40,
+     "hi": 46,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "OrchestralPercussion/zone_002.ogg",
+     "root": 50,
+     "lo": 47,
+     "hi": 53,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "OrchestralPercussion/zone_003.ogg",
+     "root": 57,
+     "lo": 54,
+     "hi": 60,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "OrchestralPercussion/zone_004.ogg",
+     "root": 63,
+     "lo": 61,
+     "hi": 66,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "OrchestralPercussion/zone_005.ogg",
+     "root": 70,
+     "lo": 67,
+     "hi": 73,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "OrchestralPercussion/zone_006.ogg",
+     "root": 77,
+     "lo": 74,
+     "hi": 80,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "OrchestralPercussion/zone_007.ogg",
+     "root": 84,
+     "lo": 81,
+     "hi": 84,
+     "lo_vel": 1,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Qudi",
+   "name": "曲笛",
+   "category": "Chinese",
+   "range": [
+    48,
+    100
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "Qudi/zone_000.ogg",
+     "root": 60,
+     "lo": 48,
+     "hi": 66,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Qudi/zone_001.ogg",
+     "root": 60,
+     "lo": 48,
+     "hi": 66,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Qudi/zone_002.ogg",
+     "root": 72,
+     "lo": 67,
+     "hi": 78,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Qudi/zone_003.ogg",
+     "root": 72,
+     "lo": 67,
+     "hi": 78,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Qudi/zone_004.ogg",
+     "root": 84,
+     "lo": 79,
+     "hi": 86,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Qudi/zone_005.ogg",
+     "root": 84,
+     "lo": 79,
+     "hi": 86,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Qudi/zone_006.ogg",
+     "root": 88,
+     "lo": 87,
+     "hi": 100,
+     "lo_vel": 1,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Bangdi",
+   "name": "梆笛",
+   "category": "Chinese",
+   "range": [
+    48,
+    100
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "Bangdi/zone_000.ogg",
+     "root": 70,
+     "lo": 48,
+     "hi": 76,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Bangdi/zone_001.ogg",
+     "root": 82,
+     "lo": 77,
+     "hi": 86,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Bangdi/zone_002.ogg",
+     "root": 82,
+     "lo": 77,
+     "hi": 86,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Bangdi/zone_003.ogg",
+     "root": 91,
+     "lo": 87,
+     "hi": 100,
+     "lo_vel": 1,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Xiao",
+   "name": "萧",
+   "category": "Chinese",
+   "range": [
+    48,
+    100
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "Xiao/zone_000.ogg",
+     "root": 62,
+     "lo": 48,
+     "hi": 68,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Xiao/zone_001.ogg",
+     "root": 62,
+     "lo": 48,
+     "hi": 68,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Xiao/zone_002.ogg",
+     "root": 74,
+     "lo": 69,
+     "hi": 79,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Xiao/zone_003.ogg",
+     "root": 74,
+     "lo": 69,
+     "hi": 79,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Xiao/zone_004.ogg",
+     "root": 85,
+     "lo": 80,
+     "hi": 100,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Xiao/zone_005.ogg",
+     "root": 85,
+     "lo": 80,
+     "hi": 100,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Sheng",
+   "name": "笙",
+   "category": "Chinese",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "Sheng/zone_000.ogg",
+     "root": 60,
+     "lo": 21,
+     "hi": 66,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Sheng/zone_001.ogg",
+     "root": 60,
+     "lo": 21,
+     "hi": 66,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Sheng/zone_002.ogg",
+     "root": 72,
+     "lo": 67,
+     "hi": 78,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Sheng/zone_003.ogg",
+     "root": 72,
+     "lo": 67,
+     "hi": 78,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Sheng/zone_004.ogg",
+     "root": 84,
+     "lo": 79,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Sheng/zone_005.ogg",
+     "root": 84,
+     "lo": 79,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Suona",
+   "name": "唢呐",
+   "category": "Chinese",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "Suona/zone_000.ogg",
+     "root": 59,
+     "lo": 21,
+     "hi": 65,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Suona/zone_001.ogg",
+     "root": 71,
+     "lo": 66,
+     "hi": 77,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Suona/zone_002.ogg",
+     "root": 71,
+     "lo": 66,
+     "hi": 77,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Suona/zone_003.ogg",
+     "root": 83,
+     "lo": 78,
+     "hi": 88,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Suona/zone_004.ogg",
+     "root": 93,
+     "lo": 89,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Suona/zone_005.ogg",
+     "root": 93,
+     "lo": 89,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Hulusi",
+   "name": "葫芦丝",
+   "category": "Chinese",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "Hulusi/zone_000.ogg",
+     "root": 59,
+     "lo": 21,
+     "hi": 65,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Hulusi/zone_001.ogg",
+     "root": 59,
+     "lo": 21,
+     "hi": 65,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Hulusi/zone_002.ogg",
+     "root": 71,
+     "lo": 66,
+     "hi": 76,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Hulusi/zone_003.ogg",
+     "root": 71,
+     "lo": 66,
+     "hi": 76,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Hulusi/zone_004.ogg",
+     "root": 81,
+     "lo": 77,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Hulusi/zone_005.ogg",
+     "root": 81,
+     "lo": 77,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Bawu",
+   "name": "巴乌",
+   "category": "Chinese",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "Bawu/zone_000.ogg",
+     "root": 62,
+     "lo": 21,
+     "hi": 68,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Bawu/zone_001.ogg",
+     "root": 62,
+     "lo": 21,
+     "hi": 68,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Bawu/zone_002.ogg",
+     "root": 74,
+     "lo": 69,
+     "hi": 75,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Bawu/zone_003.ogg",
+     "root": 74,
+     "lo": 69,
+     "hi": 75,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Bawu/zone_004.ogg",
+     "root": 76,
+     "lo": 76,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Bawu/zone_005.ogg",
+     "root": 76,
+     "lo": 76,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Guanzi",
+   "name": "管子",
+   "category": "Chinese",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "Guanzi/zone_000.ogg",
+     "root": 55,
+     "lo": 21,
+     "hi": 61,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Guanzi/zone_001.ogg",
+     "root": 55,
+     "lo": 21,
+     "hi": 61,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Guanzi/zone_002.ogg",
+     "root": 67,
+     "lo": 62,
+     "hi": 73,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Guanzi/zone_003.ogg",
+     "root": 67,
+     "lo": 62,
+     "hi": 73,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Guanzi/zone_004.ogg",
+     "root": 79,
+     "lo": 74,
+     "hi": 81,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Guanzi/zone_005.ogg",
+     "root": 79,
+     "lo": 74,
+     "hi": 81,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Guanzi/zone_006.ogg",
+     "root": 84,
+     "lo": 82,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Guanzi/zone_007.ogg",
+     "root": 84,
+     "lo": 82,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Xun",
+   "name": "埙",
+   "category": "Chinese",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "Xun/zone_000.ogg",
+     "root": 60,
+     "lo": 21,
+     "hi": 66,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Xun/zone_001.ogg",
+     "root": 72,
+     "lo": 67,
+     "hi": 74,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Xun/zone_002.ogg",
+     "root": 77,
+     "lo": 75,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Nanxiao",
+   "name": "南箫",
+   "category": "Chinese",
+   "range": [
+    48,
+    100
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "Nanxiao/zone_000.ogg",
+     "root": 57,
+     "lo": 48,
+     "hi": 63,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Nanxiao/zone_001.ogg",
+     "root": 69,
+     "lo": 64,
+     "hi": 75,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Nanxiao/zone_002.ogg",
+     "root": 81,
+     "lo": 76,
+     "hi": 86,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Nanxiao/zone_003.ogg",
+     "root": 91,
+     "lo": 87,
+     "hi": 100,
+     "lo_vel": 1,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Erhu",
+   "name": "二胡",
+   "category": "Chinese",
+   "range": [
+    36,
+    100
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "Erhu/zone_000.ogg",
+     "root": 62,
+     "lo": 36,
+     "hi": 68,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Erhu/zone_001.ogg",
+     "root": 62,
+     "lo": 36,
+     "hi": 68,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Erhu/zone_002.ogg",
+     "root": 74,
+     "lo": 69,
+     "hi": 79,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Erhu/zone_003.ogg",
+     "root": 74,
+     "lo": 69,
+     "hi": 79,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Erhu/zone_004.ogg",
+     "root": 84,
+     "lo": 80,
+     "hi": 100,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Erhu/zone_005.ogg",
+     "root": 84,
+     "lo": 80,
+     "hi": 100,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Gaohu",
+   "name": "高胡",
+   "category": "Chinese",
+   "range": [
+    36,
+    100
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "Gaohu/zone_000.ogg",
+     "root": 67,
+     "lo": 36,
+     "hi": 73,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Gaohu/zone_001.ogg",
+     "root": 67,
+     "lo": 36,
+     "hi": 73,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Gaohu/zone_002.ogg",
+     "root": 80,
+     "lo": 74,
+     "hi": 83,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Gaohu/zone_003.ogg",
+     "root": 80,
+     "lo": 74,
+     "hi": 83,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Gaohu/zone_004.ogg",
+     "root": 86,
+     "lo": 84,
+     "hi": 100,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Gaohu/zone_005.ogg",
+     "root": 86,
+     "lo": 84,
+     "hi": 100,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Zhonghu",
+   "name": "中胡",
+   "category": "Chinese",
+   "range": [
+    36,
+    100
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "Zhonghu/zone_000.ogg",
+     "root": 52,
+     "lo": 36,
+     "hi": 58,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Zhonghu/zone_001.ogg",
+     "root": 52,
+     "lo": 36,
+     "hi": 58,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Zhonghu/zone_002.ogg",
+     "root": 64,
+     "lo": 59,
+     "hi": 70,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Zhonghu/zone_003.ogg",
+     "root": 64,
+     "lo": 59,
+     "hi": 70,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Zhonghu/zone_004.ogg",
+     "root": 76,
+     "lo": 71,
+     "hi": 77,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Zhonghu/zone_005.ogg",
+     "root": 76,
+     "lo": 71,
+     "hi": 77,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Zhonghu/zone_006.ogg",
+     "root": 78,
+     "lo": 78,
+     "hi": 100,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Zhonghu/zone_007.ogg",
+     "root": 78,
+     "lo": 78,
+     "hi": 100,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Jinghu",
+   "name": "京胡",
+   "category": "Chinese",
+   "range": [
+    36,
+    100
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "Jinghu/zone_000.ogg",
+     "root": 58,
+     "lo": 36,
+     "hi": 64,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Jinghu/zone_001.ogg",
+     "root": 70,
+     "lo": 65,
+     "hi": 76,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Jinghu/zone_002.ogg",
+     "root": 70,
+     "lo": 65,
+     "hi": 76,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Jinghu/zone_003.ogg",
+     "root": 82,
+     "lo": 77,
+     "hi": 88,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Jinghu/zone_004.ogg",
+     "root": 82,
+     "lo": 77,
+     "hi": 88,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Jinghu/zone_005.ogg",
+     "root": 94,
+     "lo": 89,
+     "hi": 95,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Jinghu/zone_006.ogg",
+     "root": 94,
+     "lo": 89,
+     "hi": 95,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Jinghu/zone_007.ogg",
+     "root": 96,
+     "lo": 96,
+     "hi": 100,
+     "lo_vel": 1,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Banhu",
+   "name": "板胡",
+   "category": "Chinese",
+   "range": [
+    36,
+    100
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "Banhu/zone_000.ogg",
+     "root": 66,
+     "lo": 36,
+     "hi": 72,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Banhu/zone_001.ogg",
+     "root": 78,
+     "lo": 73,
+     "hi": 84,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Banhu/zone_002.ogg",
+     "root": 78,
+     "lo": 73,
+     "hi": 84,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Banhu/zone_003.ogg",
+     "root": 90,
+     "lo": 85,
+     "hi": 100,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Banhu/zone_004.ogg",
+     "root": 90,
+     "lo": 85,
+     "hi": 100,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "MorinKhuur",
+   "name": "马头琴",
+   "category": "Chinese",
+   "range": [
+    36,
+    100
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "MorinKhuur/zone_000.ogg",
+     "root": 50,
+     "lo": 36,
+     "hi": 56,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "MorinKhuur/zone_001.ogg",
+     "root": 50,
+     "lo": 36,
+     "hi": 56,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "MorinKhuur/zone_002.ogg",
+     "root": 62,
+     "lo": 57,
+     "hi": 68,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "MorinKhuur/zone_003.ogg",
+     "root": 62,
+     "lo": 57,
+     "hi": 68,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "MorinKhuur/zone_004.ogg",
+     "root": 74,
+     "lo": 69,
+     "hi": 79,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "MorinKhuur/zone_005.ogg",
+     "root": 74,
+     "lo": 69,
+     "hi": 79,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "MorinKhuur/zone_006.ogg",
+     "root": 84,
+     "lo": 80,
+     "hi": 100,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "MorinKhuur/zone_007.ogg",
+     "root": 84,
+     "lo": 80,
+     "hi": 100,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Guzheng",
+   "name": "古筝",
+   "category": "Chinese",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "Guzheng/zone_000.ogg",
+     "root": 38,
+     "lo": 21,
+     "hi": 44,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Guzheng/zone_001.ogg",
+     "root": 38,
+     "lo": 21,
+     "hi": 44,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Guzheng/zone_002.ogg",
+     "root": 50,
+     "lo": 45,
+     "hi": 56,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Guzheng/zone_003.ogg",
+     "root": 50,
+     "lo": 45,
+     "hi": 56,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Guzheng/zone_004.ogg",
+     "root": 62,
+     "lo": 57,
+     "hi": 68,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Guzheng/zone_005.ogg",
+     "root": 62,
+     "lo": 57,
+     "hi": 68,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Guzheng/zone_006.ogg",
+     "root": 74,
+     "lo": 69,
+     "hi": 80,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Guzheng/zone_007.ogg",
+     "root": 74,
+     "lo": 69,
+     "hi": 80,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Guzheng/zone_008.ogg",
+     "root": 86,
+     "lo": 81,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Pipa",
+   "name": "琵琶",
+   "category": "Chinese",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "Pipa/zone_000.ogg",
+     "root": 45,
+     "lo": 21,
+     "hi": 51,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Pipa/zone_001.ogg",
+     "root": 45,
+     "lo": 21,
+     "hi": 51,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Pipa/zone_002.ogg",
+     "root": 58,
+     "lo": 52,
+     "hi": 64,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Pipa/zone_003.ogg",
+     "root": 58,
+     "lo": 52,
+     "hi": 64,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Pipa/zone_004.ogg",
+     "root": 70,
+     "lo": 65,
+     "hi": 76,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Pipa/zone_005.ogg",
+     "root": 70,
+     "lo": 65,
+     "hi": 76,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Pipa/zone_006.ogg",
+     "root": 82,
+     "lo": 77,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Pipa/zone_007.ogg",
+     "root": 82,
+     "lo": 77,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Yangqin",
+   "name": "扬琴",
+   "category": "Chinese",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "Yangqin/zone_000.ogg",
+     "root": 40,
+     "lo": 21,
+     "hi": 46,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Yangqin/zone_001.ogg",
+     "root": 40,
+     "lo": 21,
+     "hi": 46,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Yangqin/zone_002.ogg",
+     "root": 52,
+     "lo": 47,
+     "hi": 58,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Yangqin/zone_003.ogg",
+     "root": 52,
+     "lo": 47,
+     "hi": 58,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Yangqin/zone_004.ogg",
+     "root": 64,
+     "lo": 59,
+     "hi": 70,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Yangqin/zone_005.ogg",
+     "root": 64,
+     "lo": 59,
+     "hi": 70,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Yangqin/zone_006.ogg",
+     "root": 76,
+     "lo": 71,
+     "hi": 82,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Yangqin/zone_007.ogg",
+     "root": 76,
+     "lo": 71,
+     "hi": 82,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Yangqin/zone_008.ogg",
+     "root": 88,
+     "lo": 83,
+     "hi": 89,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Yangqin/zone_009.ogg",
+     "root": 88,
+     "lo": 83,
+     "hi": 89,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Yangqin/zone_010.ogg",
+     "root": 91,
+     "lo": 90,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Guqin",
+   "name": "古琴",
+   "category": "Chinese",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "Guqin/zone_000.ogg",
+     "root": 36,
+     "lo": 21,
+     "hi": 42,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Guqin/zone_001.ogg",
+     "root": 36,
+     "lo": 21,
+     "hi": 42,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Guqin/zone_002.ogg",
+     "root": 48,
+     "lo": 43,
+     "hi": 54,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Guqin/zone_003.ogg",
+     "root": 48,
+     "lo": 43,
+     "hi": 54,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Guqin/zone_004.ogg",
+     "root": 60,
+     "lo": 55,
+     "hi": 66,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Guqin/zone_005.ogg",
+     "root": 60,
+     "lo": 55,
+     "hi": 66,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Guqin/zone_006.ogg",
+     "root": 72,
+     "lo": 67,
+     "hi": 75,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Guqin/zone_007.ogg",
+     "root": 72,
+     "lo": 67,
+     "hi": 75,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Guqin/zone_008.ogg",
+     "root": 79,
+     "lo": 76,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Guqin/zone_009.ogg",
+     "root": 79,
+     "lo": 76,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Zhongruan",
+   "name": "中阮",
+   "category": "Chinese",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "Zhongruan/zone_000.ogg",
+     "root": 43,
+     "lo": 21,
+     "hi": 49,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Zhongruan/zone_001.ogg",
+     "root": 43,
+     "lo": 21,
+     "hi": 49,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Zhongruan/zone_002.ogg",
+     "root": 55,
+     "lo": 50,
+     "hi": 61,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Zhongruan/zone_003.ogg",
+     "root": 55,
+     "lo": 50,
+     "hi": 61,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Zhongruan/zone_004.ogg",
+     "root": 67,
+     "lo": 62,
+     "hi": 73,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Zhongruan/zone_005.ogg",
+     "root": 67,
+     "lo": 62,
+     "hi": 73,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Zhongruan/zone_006.ogg",
+     "root": 79,
+     "lo": 74,
+     "hi": 81,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Zhongruan/zone_007.ogg",
+     "root": 79,
+     "lo": 74,
+     "hi": 81,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Zhongruan/zone_008.ogg",
+     "root": 84,
+     "lo": 82,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Zhongruan/zone_009.ogg",
+     "root": 84,
+     "lo": 82,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Daruan",
+   "name": "大阮",
+   "category": "Chinese",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "Daruan/zone_000.ogg",
+     "root": 36,
+     "lo": 21,
+     "hi": 42,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Daruan/zone_001.ogg",
+     "root": 36,
+     "lo": 21,
+     "hi": 42,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Daruan/zone_002.ogg",
+     "root": 48,
+     "lo": 43,
+     "hi": 54,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Daruan/zone_003.ogg",
+     "root": 48,
+     "lo": 43,
+     "hi": 54,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Daruan/zone_004.ogg",
+     "root": 60,
+     "lo": 55,
+     "hi": 66,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Daruan/zone_005.ogg",
+     "root": 60,
+     "lo": 55,
+     "hi": 66,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Daruan/zone_006.ogg",
+     "root": 72,
+     "lo": 67,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Daruan/zone_007.ogg",
+     "root": 72,
+     "lo": 67,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Liuqin",
+   "name": "柳琴",
+   "category": "Chinese",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "Liuqin/zone_000.ogg",
+     "root": 55,
+     "lo": 21,
+     "hi": 61,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Liuqin/zone_001.ogg",
+     "root": 55,
+     "lo": 21,
+     "hi": 61,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Liuqin/zone_002.ogg",
+     "root": 67,
+     "lo": 62,
+     "hi": 73,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Liuqin/zone_003.ogg",
+     "root": 67,
+     "lo": 62,
+     "hi": 73,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Liuqin/zone_004.ogg",
+     "root": 79,
+     "lo": 74,
+     "hi": 85,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Liuqin/zone_005.ogg",
+     "root": 79,
+     "lo": 74,
+     "hi": 85,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Liuqin/zone_006.ogg",
+     "root": 91,
+     "lo": 86,
+     "hi": 92,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Liuqin/zone_007.ogg",
+     "root": 93,
+     "lo": 93,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Sanxian",
+   "name": "三弦",
+   "category": "Chinese",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "Sanxian/zone_000.ogg",
+     "root": 42,
+     "lo": 21,
+     "hi": 48,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Sanxian/zone_001.ogg",
+     "root": 42,
+     "lo": 21,
+     "hi": 48,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Sanxian/zone_002.ogg",
+     "root": 54,
+     "lo": 49,
+     "hi": 60,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Sanxian/zone_003.ogg",
+     "root": 54,
+     "lo": 49,
+     "hi": 60,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Sanxian/zone_004.ogg",
+     "root": 66,
+     "lo": 61,
+     "hi": 71,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Sanxian/zone_005.ogg",
+     "root": 66,
+     "lo": 61,
+     "hi": 71,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Sanxian/zone_006.ogg",
+     "root": 76,
+     "lo": 72,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Sanxian/zone_007.ogg",
+     "root": 76,
+     "lo": 72,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Dombra",
+   "name": "冬不拉",
+   "category": "Chinese",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "Dombra/zone_000.ogg",
+     "root": 48,
+     "lo": 21,
+     "hi": 54,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Dombra/zone_001.ogg",
+     "root": 48,
+     "lo": 21,
+     "hi": 54,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Dombra/zone_002.ogg",
+     "root": 60,
+     "lo": 55,
+     "hi": 66,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Dombra/zone_003.ogg",
+     "root": 60,
+     "lo": 55,
+     "hi": 66,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Dombra/zone_004.ogg",
+     "root": 72,
+     "lo": 67,
+     "hi": 78,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Dombra/zone_005.ogg",
+     "root": 72,
+     "lo": 67,
+     "hi": 78,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Dombra/zone_006.ogg",
+     "root": 84,
+     "lo": 79,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Dombra/zone_007.ogg",
+     "root": 84,
+     "lo": 79,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Tanbur",
+   "name": "弹布尔",
+   "category": "Chinese",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "Tanbur/zone_000.ogg",
+     "root": 32,
+     "lo": 21,
+     "hi": 38,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Tanbur/zone_001.ogg",
+     "root": 32,
+     "lo": 21,
+     "hi": 38,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Tanbur/zone_002.ogg",
+     "root": 44,
+     "lo": 39,
+     "hi": 50,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Tanbur/zone_003.ogg",
+     "root": 44,
+     "lo": 39,
+     "hi": 50,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Tanbur/zone_004.ogg",
+     "root": 56,
+     "lo": 51,
+     "hi": 63,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Tanbur/zone_005.ogg",
+     "root": 56,
+     "lo": 51,
+     "hi": 63,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Tanbur/zone_006.ogg",
+     "root": 70,
+     "lo": 64,
+     "hi": 71,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Tanbur/zone_007.ogg",
+     "root": 72,
+     "lo": 72,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "ChimeBells",
+   "name": "编钟",
+   "category": "Chinese",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "ChimeBells/zone_000.ogg",
+     "root": 42,
+     "lo": 21,
+     "hi": 48,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "ChimeBells/zone_001.ogg",
+     "root": 42,
+     "lo": 21,
+     "hi": 48,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "ChimeBells/zone_002.ogg",
+     "root": 54,
+     "lo": 49,
+     "hi": 62,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "ChimeBells/zone_003.ogg",
+     "root": 54,
+     "lo": 49,
+     "hi": 62,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "ChimeBells/zone_004.ogg",
+     "root": 70,
+     "lo": 63,
+     "hi": 76,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "ChimeBells/zone_005.ogg",
+     "root": 70,
+     "lo": 63,
+     "hi": 76,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "ChimeBells/zone_006.ogg",
+     "root": 83,
+     "lo": 77,
+     "hi": 89,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "ChimeBells/zone_007.ogg",
+     "root": 83,
+     "lo": 77,
+     "hi": 89,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "ChimeBells/zone_008.ogg",
+     "root": 95,
+     "lo": 90,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "ChimeBells/zone_009.ogg",
+     "root": 95,
+     "lo": 90,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Bianqing",
+   "name": "编磬",
+   "category": "Chinese",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "Bianqing/zone_000.ogg",
+     "root": 44,
+     "lo": 21,
+     "hi": 51,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Bianqing/zone_001.ogg",
+     "root": 44,
+     "lo": 21,
+     "hi": 51,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Bianqing/zone_002.ogg",
+     "root": 59,
+     "lo": 52,
+     "hi": 72,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Bianqing/zone_003.ogg",
+     "root": 85,
+     "lo": 73,
+     "hi": 87,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Bianqing/zone_004.ogg",
+     "root": 89,
+     "lo": 88,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Bianqing/zone_005.ogg",
+     "root": 89,
+     "lo": 88,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "ChinesePercussion",
+   "name": "中国打击乐",
+   "category": "Chinese",
+   "range": [
+    36,
+    84
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "ChinesePercussion/zone_000.ogg",
+     "root": 36,
+     "lo": 36,
+     "hi": 39,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "ChinesePercussion/zone_001.ogg",
+     "root": 43,
+     "lo": 40,
+     "hi": 46,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "ChinesePercussion/zone_002.ogg",
+     "root": 50,
+     "lo": 47,
+     "hi": 53,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "ChinesePercussion/zone_003.ogg",
+     "root": 57,
+     "lo": 54,
+     "hi": 60,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "ChinesePercussion/zone_004.ogg",
+     "root": 63,
+     "lo": 61,
+     "hi": 66,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "ChinesePercussion/zone_005.ogg",
+     "root": 70,
+     "lo": 67,
+     "hi": 73,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "ChinesePercussion/zone_006.ogg",
+     "root": 77,
+     "lo": 74,
+     "hi": 80,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "ChinesePercussion/zone_007.ogg",
+     "root": 84,
+     "lo": 81,
+     "hi": 84,
+     "lo_vel": 1,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "BagPipe",
+   "name": "风笛",
+   "category": "World",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "BagPipe/zone_000.ogg",
+     "root": 60,
+     "lo": 21,
+     "hi": 66,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "BagPipe/zone_001.ogg",
+     "root": 72,
+     "lo": 67,
+     "hi": 78,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "BagPipe/zone_002.ogg",
+     "root": 84,
+     "lo": 79,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Didjeridoo",
+   "name": "迪吉里杜",
+   "category": "World",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "Didjeridoo/zone_000.ogg",
+     "root": 36,
+     "lo": 21,
+     "hi": 65,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Didjeridoo/zone_001.ogg",
+     "root": 36,
+     "lo": 21,
+     "hi": 65,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Didjeridoo/zone_002.ogg",
+     "root": 95,
+     "lo": 66,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Duduk",
+   "name": "都都克",
+   "category": "World",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "Duduk/zone_000.ogg",
+     "root": 48,
+     "lo": 21,
+     "hi": 54,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Duduk/zone_001.ogg",
+     "root": 48,
+     "lo": 21,
+     "hi": 54,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Duduk/zone_002.ogg",
+     "root": 60,
+     "lo": 55,
+     "hi": 66,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Duduk/zone_003.ogg",
+     "root": 60,
+     "lo": 55,
+     "hi": 66,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Duduk/zone_004.ogg",
+     "root": 72,
+     "lo": 67,
+     "hi": 74,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Duduk/zone_005.ogg",
+     "root": 72,
+     "lo": 67,
+     "hi": 74,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Duduk/zone_006.ogg",
+     "root": 77,
+     "lo": 75,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Duduk/zone_007.ogg",
+     "root": 77,
+     "lo": 75,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Pinkillo",
+   "name": "平基洛笛",
+   "category": "World",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "Pinkillo/zone_000.ogg",
+     "root": 72,
+     "lo": 21,
+     "hi": 78,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Pinkillo/zone_001.ogg",
+     "root": 84,
+     "lo": 79,
+     "hi": 87,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Pinkillo/zone_002.ogg",
+     "root": 90,
+     "lo": 88,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Pinkillo/zone_003.ogg",
+     "root": 90,
+     "lo": 88,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Shakuhachi",
+   "name": "尺八",
+   "category": "World",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "Shakuhachi/zone_000.ogg",
+     "root": 57,
+     "lo": 21,
+     "hi": 63,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Shakuhachi/zone_001.ogg",
+     "root": 57,
+     "lo": 21,
+     "hi": 63,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Shakuhachi/zone_002.ogg",
+     "root": 70,
+     "lo": 64,
+     "hi": 76,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Shakuhachi/zone_003.ogg",
+     "root": 70,
+     "lo": 64,
+     "hi": 76,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Shakuhachi/zone_004.ogg",
+     "root": 82,
+     "lo": 77,
+     "hi": 84,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Shakuhachi/zone_005.ogg",
+     "root": 82,
+     "lo": 77,
+     "hi": 84,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Shakuhachi/zone_006.ogg",
+     "root": 86,
+     "lo": 85,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Shehnai",
+   "name": "山奈",
+   "category": "World",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "Shehnai/zone_000.ogg",
+     "root": 60,
+     "lo": 21,
+     "hi": 66,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Shehnai/zone_001.ogg",
+     "root": 60,
+     "lo": 21,
+     "hi": 66,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Shehnai/zone_002.ogg",
+     "root": 72,
+     "lo": 67,
+     "hi": 76,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Shehnai/zone_003.ogg",
+     "root": 72,
+     "lo": 67,
+     "hi": 76,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Shehnai/zone_004.ogg",
+     "root": 80,
+     "lo": 77,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Shehnai/zone_005.ogg",
+     "root": 80,
+     "lo": 77,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Gadulka",
+   "name": "嘎杜尔卡",
+   "category": "World",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "Gadulka/zone_000.ogg",
+     "root": 57,
+     "lo": 21,
+     "hi": 63,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Gadulka/zone_001.ogg",
+     "root": 57,
+     "lo": 21,
+     "hi": 63,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Gadulka/zone_002.ogg",
+     "root": 70,
+     "lo": 64,
+     "hi": 73,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Gadulka/zone_003.ogg",
+     "root": 70,
+     "lo": 64,
+     "hi": 73,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Gadulka/zone_004.ogg",
+     "root": 76,
+     "lo": 74,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Gadulka/zone_005.ogg",
+     "root": 76,
+     "lo": 74,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Kemence",
+   "name": "科门斯",
+   "category": "World",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "Kemence/zone_000.ogg",
+     "root": 57,
+     "lo": 21,
+     "hi": 63,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Kemence/zone_001.ogg",
+     "root": 57,
+     "lo": 21,
+     "hi": 63,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Kemence/zone_002.ogg",
+     "root": 70,
+     "lo": 64,
+     "hi": 75,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Kemence/zone_003.ogg",
+     "root": 70,
+     "lo": 64,
+     "hi": 75,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Kemence/zone_004.ogg",
+     "root": 80,
+     "lo": 76,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Kemence/zone_005.ogg",
+     "root": 80,
+     "lo": 76,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Concertina",
+   "name": "六角手风琴",
+   "category": "World",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "Concertina/zone_000.ogg",
+     "root": 48,
+     "lo": 21,
+     "hi": 54,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Concertina/zone_001.ogg",
+     "root": 48,
+     "lo": 21,
+     "hi": 54,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Concertina/zone_002.ogg",
+     "root": 60,
+     "lo": 55,
+     "hi": 66,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Concertina/zone_003.ogg",
+     "root": 60,
+     "lo": 55,
+     "hi": 66,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Concertina/zone_004.ogg",
+     "root": 72,
+     "lo": 67,
+     "hi": 78,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Concertina/zone_005.ogg",
+     "root": 72,
+     "lo": 67,
+     "hi": 78,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Concertina/zone_006.ogg",
+     "root": 84,
+     "lo": 79,
+     "hi": 89,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Concertina/zone_007.ogg",
+     "root": 84,
+     "lo": 79,
+     "hi": 89,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Concertina/zone_008.ogg",
+     "root": 94,
+     "lo": 90,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "HurdyGurdy",
+   "name": "手摇风琴",
+   "category": "World",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "HurdyGurdy/zone_000.ogg",
+     "root": 32,
+     "lo": 21,
+     "hi": 38,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "HurdyGurdy/zone_001.ogg",
+     "root": 32,
+     "lo": 21,
+     "hi": 38,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "HurdyGurdy/zone_002.ogg",
+     "root": 44,
+     "lo": 39,
+     "hi": 50,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "HurdyGurdy/zone_003.ogg",
+     "root": 44,
+     "lo": 39,
+     "hi": 50,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "HurdyGurdy/zone_004.ogg",
+     "root": 56,
+     "lo": 51,
+     "hi": 62,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "HurdyGurdy/zone_005.ogg",
+     "root": 56,
+     "lo": 51,
+     "hi": 62,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "HurdyGurdy/zone_006.ogg",
+     "root": 68,
+     "lo": 63,
+     "hi": 74,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "HurdyGurdy/zone_007.ogg",
+     "root": 68,
+     "lo": 63,
+     "hi": 74,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "HurdyGurdy/zone_008.ogg",
+     "root": 80,
+     "lo": 75,
+     "hi": 80,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "HurdyGurdy/zone_009.ogg",
+     "root": 80,
+     "lo": 75,
+     "hi": 80,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "HurdyGurdy/zone_010.ogg",
+     "root": 81,
+     "lo": 81,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "HurdyGurdy/zone_011.ogg",
+     "root": 81,
+     "lo": 81,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Balalaika",
+   "name": "俄式三弦琴",
+   "category": "World",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "Balalaika/zone_000.ogg",
+     "root": 38,
+     "lo": 21,
+     "hi": 44,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Balalaika/zone_001.ogg",
+     "root": 38,
+     "lo": 21,
+     "hi": 44,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Balalaika/zone_002.ogg",
+     "root": 50,
+     "lo": 45,
+     "hi": 53,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Balalaika/zone_003.ogg",
+     "root": 50,
+     "lo": 45,
+     "hi": 53,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Balalaika/zone_004.ogg",
+     "root": 57,
+     "lo": 54,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Balalaika/zone_005.ogg",
+     "root": 57,
+     "lo": 54,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Bandura",
+   "name": "班杜拉琴",
+   "category": "World",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "Bandura/zone_000.ogg",
+     "root": 64,
+     "lo": 21,
+     "hi": 70,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Bandura/zone_001.ogg",
+     "root": 64,
+     "lo": 21,
+     "hi": 70,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Bandura/zone_002.ogg",
+     "root": 76,
+     "lo": 71,
+     "hi": 83,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Bandura/zone_003.ogg",
+     "root": 76,
+     "lo": 71,
+     "hi": 83,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Bandura/zone_004.ogg",
+     "root": 90,
+     "lo": 84,
+     "hi": 90,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Bandura/zone_005.ogg",
+     "root": 90,
+     "lo": 84,
+     "hi": 90,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Bandura/zone_006.ogg",
+     "root": 91,
+     "lo": 91,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Bandura/zone_007.ogg",
+     "root": 91,
+     "lo": 91,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Banjo",
+   "name": "班卓琴",
+   "category": "World",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "Banjo/zone_000.ogg",
+     "root": 48,
+     "lo": 21,
+     "hi": 54,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Banjo/zone_001.ogg",
+     "root": 48,
+     "lo": 21,
+     "hi": 54,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Banjo/zone_002.ogg",
+     "root": 60,
+     "lo": 55,
+     "hi": 66,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Banjo/zone_003.ogg",
+     "root": 60,
+     "lo": 55,
+     "hi": 66,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Banjo/zone_004.ogg",
+     "root": 72,
+     "lo": 67,
+     "hi": 75,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Banjo/zone_005.ogg",
+     "root": 78,
+     "lo": 76,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Banjo/zone_006.ogg",
+     "root": 78,
+     "lo": 76,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Charango",
+   "name": "恰朗哥",
+   "category": "World",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "Charango/zone_000.ogg",
+     "root": 60,
+     "lo": 21,
+     "hi": 66,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Charango/zone_001.ogg",
+     "root": 60,
+     "lo": 21,
+     "hi": 66,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Charango/zone_002.ogg",
+     "root": 72,
+     "lo": 67,
+     "hi": 78,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Charango/zone_003.ogg",
+     "root": 72,
+     "lo": 67,
+     "hi": 78,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Charango/zone_004.ogg",
+     "root": 84,
+     "lo": 79,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Charango/zone_005.ogg",
+     "root": 84,
+     "lo": 79,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Domra",
+   "name": "多姆拉",
+   "category": "World",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "Domra/zone_000.ogg",
+     "root": 48,
+     "lo": 21,
+     "hi": 54,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Domra/zone_001.ogg",
+     "root": 48,
+     "lo": 21,
+     "hi": 54,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Domra/zone_002.ogg",
+     "root": 60,
+     "lo": 55,
+     "hi": 66,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Domra/zone_003.ogg",
+     "root": 60,
+     "lo": 55,
+     "hi": 66,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Domra/zone_004.ogg",
+     "root": 72,
+     "lo": 67,
+     "hi": 77,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Domra/zone_005.ogg",
+     "root": 72,
+     "lo": 67,
+     "hi": 77,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Domra/zone_006.ogg",
+     "root": 83,
+     "lo": 78,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Gayageum",
+   "name": "伽倻琴",
+   "category": "World",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "Gayageum/zone_000.ogg",
+     "root": 40,
+     "lo": 21,
+     "hi": 46,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Gayageum/zone_001.ogg",
+     "root": 52,
+     "lo": 47,
+     "hi": 58,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Gayageum/zone_002.ogg",
+     "root": 52,
+     "lo": 47,
+     "hi": 58,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Gayageum/zone_003.ogg",
+     "root": 64,
+     "lo": 59,
+     "hi": 70,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Gayageum/zone_004.ogg",
+     "root": 64,
+     "lo": 59,
+     "hi": 70,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Gayageum/zone_005.ogg",
+     "root": 76,
+     "lo": 71,
+     "hi": 78,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Gayageum/zone_006.ogg",
+     "root": 76,
+     "lo": 71,
+     "hi": 78,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Gayageum/zone_007.ogg",
+     "root": 81,
+     "lo": 79,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Gayageum/zone_008.ogg",
+     "root": 81,
+     "lo": 79,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Koto",
+   "name": "十三弦古筝",
+   "category": "World",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "Koto/zone_000.ogg",
+     "root": 36,
+     "lo": 21,
+     "hi": 42,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Koto/zone_001.ogg",
+     "root": 36,
+     "lo": 21,
+     "hi": 42,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Koto/zone_002.ogg",
+     "root": 48,
+     "lo": 43,
+     "hi": 54,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Koto/zone_003.ogg",
+     "root": 48,
+     "lo": 43,
+     "hi": 54,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Koto/zone_004.ogg",
+     "root": 60,
+     "lo": 55,
+     "hi": 66,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Koto/zone_005.ogg",
+     "root": 60,
+     "lo": 55,
+     "hi": 66,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Koto/zone_006.ogg",
+     "root": 72,
+     "lo": 67,
+     "hi": 76,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Koto/zone_007.ogg",
+     "root": 72,
+     "lo": 67,
+     "hi": 76,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Koto/zone_008.ogg",
+     "root": 81,
+     "lo": 77,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Mandolin",
+   "name": "曼陀林",
+   "category": "World",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "Mandolin/zone_000.ogg",
+     "root": 55,
+     "lo": 21,
+     "hi": 61,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Mandolin/zone_001.ogg",
+     "root": 55,
+     "lo": 21,
+     "hi": 61,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Mandolin/zone_002.ogg",
+     "root": 68,
+     "lo": 62,
+     "hi": 74,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Mandolin/zone_003.ogg",
+     "root": 68,
+     "lo": 62,
+     "hi": 74,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Mandolin/zone_004.ogg",
+     "root": 80,
+     "lo": 75,
+     "hi": 87,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Mandolin/zone_005.ogg",
+     "root": 80,
+     "lo": 75,
+     "hi": 87,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Mandolin/zone_006.ogg",
+     "root": 95,
+     "lo": 88,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Mandolin/zone_007.ogg",
+     "root": 95,
+     "lo": 88,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Oud",
+   "name": "乌德琴",
+   "category": "World",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "Oud/zone_000.ogg",
+     "root": 38,
+     "lo": 21,
+     "hi": 44,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Oud/zone_001.ogg",
+     "root": 38,
+     "lo": 21,
+     "hi": 44,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Oud/zone_002.ogg",
+     "root": 50,
+     "lo": 45,
+     "hi": 56,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Oud/zone_003.ogg",
+     "root": 50,
+     "lo": 45,
+     "hi": 56,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Oud/zone_004.ogg",
+     "root": 62,
+     "lo": 57,
+     "hi": 67,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Oud/zone_005.ogg",
+     "root": 62,
+     "lo": 57,
+     "hi": 67,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Oud/zone_006.ogg",
+     "root": 72,
+     "lo": 68,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Oud/zone_007.ogg",
+     "root": 72,
+     "lo": 68,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Psaltery",
+   "name": "索尔特里琴",
+   "category": "World",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "Psaltery/zone_000.ogg",
+     "root": 53,
+     "lo": 21,
+     "hi": 59,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Psaltery/zone_001.ogg",
+     "root": 53,
+     "lo": 21,
+     "hi": 59,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Psaltery/zone_002.ogg",
+     "root": 66,
+     "lo": 60,
+     "hi": 72,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Psaltery/zone_003.ogg",
+     "root": 66,
+     "lo": 60,
+     "hi": 72,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Psaltery/zone_004.ogg",
+     "root": 78,
+     "lo": 73,
+     "hi": 84,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Psaltery/zone_005.ogg",
+     "root": 78,
+     "lo": 73,
+     "hi": 84,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Psaltery/zone_006.ogg",
+     "root": 90,
+     "lo": 85,
+     "hi": 91,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Psaltery/zone_007.ogg",
+     "root": 93,
+     "lo": 92,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Psaltery/zone_008.ogg",
+     "root": 93,
+     "lo": 92,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Shamisen",
+   "name": "三味线",
+   "category": "World",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "Shamisen/zone_000.ogg",
+     "root": 48,
+     "lo": 21,
+     "hi": 54,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Shamisen/zone_001.ogg",
+     "root": 48,
+     "lo": 21,
+     "hi": 54,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Shamisen/zone_002.ogg",
+     "root": 60,
+     "lo": 55,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Sitar",
+   "name": "西塔尔",
+   "category": "World",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "Sitar/zone_000.ogg",
+     "root": 48,
+     "lo": 21,
+     "hi": 54,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Sitar/zone_001.ogg",
+     "root": 48,
+     "lo": 21,
+     "hi": 54,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Sitar/zone_002.ogg",
+     "root": 60,
+     "lo": 55,
+     "hi": 66,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Sitar/zone_003.ogg",
+     "root": 60,
+     "lo": 55,
+     "hi": 66,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Sitar/zone_004.ogg",
+     "root": 72,
+     "lo": 67,
+     "hi": 76,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Sitar/zone_005.ogg",
+     "root": 72,
+     "lo": 67,
+     "hi": 76,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Sitar/zone_006.ogg",
+     "root": 80,
+     "lo": 77,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Sitar/zone_007.ogg",
+     "root": 80,
+     "lo": 77,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Ukulele",
+   "name": "尤克里里",
+   "category": "World",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "Ukulele/zone_000.ogg",
+     "root": 60,
+     "lo": 21,
+     "hi": 66,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Ukulele/zone_001.ogg",
+     "root": 60,
+     "lo": 21,
+     "hi": 66,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Ukulele/zone_002.ogg",
+     "root": 72,
+     "lo": 67,
+     "hi": 76,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Ukulele/zone_003.ogg",
+     "root": 72,
+     "lo": 67,
+     "hi": 76,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Ukulele/zone_004.ogg",
+     "root": 81,
+     "lo": 77,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Ukulele/zone_005.ogg",
+     "root": 81,
+     "lo": 77,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Zither",
+   "name": "齐特琴",
+   "category": "World",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "Zither/zone_000.ogg",
+     "root": 67,
+     "lo": 21,
+     "hi": 73,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Zither/zone_001.ogg",
+     "root": 79,
+     "lo": 74,
+     "hi": 85,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Zither/zone_002.ogg",
+     "root": 79,
+     "lo": 74,
+     "hi": 85,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Zither/zone_003.ogg",
+     "root": 91,
+     "lo": 86,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Zither/zone_004.ogg",
+     "root": 91,
+     "lo": 86,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Gamelan",
+   "name": "加美兰",
+   "category": "World",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "Gamelan/zone_000.ogg",
+     "root": 50,
+     "lo": 21,
+     "hi": 56,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Gamelan/zone_001.ogg",
+     "root": 62,
+     "lo": 57,
+     "hi": 68,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Gamelan/zone_002.ogg",
+     "root": 74,
+     "lo": 69,
+     "hi": 82,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Gamelan/zone_003.ogg",
+     "root": 90,
+     "lo": 83,
+     "hi": 92,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Gamelan/zone_004.ogg",
+     "root": 90,
+     "lo": 83,
+     "hi": 92,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Gamelan/zone_005.ogg",
+     "root": 94,
+     "lo": 93,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "WorldPercussion",
+   "name": "打击乐",
+   "category": "World",
+   "range": [
+    36,
+    84
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "WorldPercussion/zone_000.ogg",
+     "root": 36,
+     "lo": 36,
+     "hi": 39,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "WorldPercussion/zone_001.ogg",
+     "root": 43,
+     "lo": 40,
+     "hi": 46,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "WorldPercussion/zone_002.ogg",
+     "root": 50,
+     "lo": 47,
+     "hi": 53,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "WorldPercussion/zone_003.ogg",
+     "root": 57,
+     "lo": 54,
+     "hi": 60,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "WorldPercussion/zone_004.ogg",
+     "root": 63,
+     "lo": 61,
+     "hi": 66,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "WorldPercussion/zone_005.ogg",
+     "root": 70,
+     "lo": 67,
+     "hi": 73,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "WorldPercussion/zone_006.ogg",
+     "root": 77,
+     "lo": 74,
+     "hi": 80,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "WorldPercussion/zone_007.ogg",
+     "root": 84,
+     "lo": 81,
+     "hi": 84,
+     "lo_vel": 1,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "MaleChorus",
+   "name": "男声合唱",
+   "category": "Other",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "MaleChorus/zone_000.ogg",
+     "root": 42,
+     "lo": 21,
+     "hi": 48,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "MaleChorus/zone_001.ogg",
+     "root": 42,
+     "lo": 21,
+     "hi": 48,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "MaleChorus/zone_002.ogg",
+     "root": 54,
+     "lo": 49,
+     "hi": 60,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "MaleChorus/zone_003.ogg",
+     "root": 54,
+     "lo": 49,
+     "hi": 60,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "MaleChorus/zone_004.ogg",
+     "root": 66,
+     "lo": 61,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "MaleChorus/zone_005.ogg",
+     "root": 66,
+     "lo": 61,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "FemaleChorus",
+   "name": "女声合唱",
+   "category": "Other",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "FemaleChorus/zone_000.ogg",
+     "root": 56,
+     "lo": 21,
+     "hi": 62,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "FemaleChorus/zone_001.ogg",
+     "root": 56,
+     "lo": 21,
+     "hi": 62,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "FemaleChorus/zone_002.ogg",
+     "root": 68,
+     "lo": 63,
+     "hi": 74,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "FemaleChorus/zone_003.ogg",
+     "root": 68,
+     "lo": 63,
+     "hi": 74,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "FemaleChorus/zone_004.ogg",
+     "root": 80,
+     "lo": 75,
+     "hi": 81,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "FemaleChorus/zone_005.ogg",
+     "root": 80,
+     "lo": 75,
+     "hi": 81,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "FemaleChorus/zone_006.ogg",
+     "root": 82,
+     "lo": 82,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "FemaleChorus/zone_007.ogg",
+     "root": 82,
+     "lo": 82,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "ChildrenChorus",
+   "name": "童声合唱",
+   "category": "Other",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "ChildrenChorus/zone_000.ogg",
+     "root": 60,
+     "lo": 21,
+     "hi": 66,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "ChildrenChorus/zone_001.ogg",
+     "root": 60,
+     "lo": 21,
+     "hi": 66,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "ChildrenChorus/zone_002.ogg",
+     "root": 72,
+     "lo": 67,
+     "hi": 76,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "ChildrenChorus/zone_003.ogg",
+     "root": 72,
+     "lo": 67,
+     "hi": 76,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "ChildrenChorus/zone_004.ogg",
+     "root": 80,
+     "lo": 77,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "ChildrenChorus/zone_005.ogg",
+     "root": 80,
+     "lo": 77,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Khoomii",
+   "name": "呼麦",
+   "category": "Other",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "Khoomii/zone_000.ogg",
+     "root": 33,
+     "lo": 21,
+     "hi": 39,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Khoomii/zone_001.ogg",
+     "root": 33,
+     "lo": 21,
+     "hi": 39,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Khoomii/zone_002.ogg",
+     "root": 46,
+     "lo": 40,
+     "hi": 68,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Khoomii/zone_003.ogg",
+     "root": 46,
+     "lo": 40,
+     "hi": 68,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Khoomii/zone_004.ogg",
+     "root": 90,
+     "lo": 69,
+     "hi": 91,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Khoomii/zone_005.ogg",
+     "root": 92,
+     "lo": 92,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Khoomii/zone_006.ogg",
+     "root": 92,
+     "lo": 92,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "HumanWhistle",
+   "name": "口哨",
+   "category": "Other",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "HumanWhistle/zone_000.ogg",
+     "root": 66,
+     "lo": 21,
+     "hi": 72,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "HumanWhistle/zone_001.ogg",
+     "root": 66,
+     "lo": 21,
+     "hi": 72,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "HumanWhistle/zone_002.ogg",
+     "root": 78,
+     "lo": 73,
+     "hi": 84,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "HumanWhistle/zone_003.ogg",
+     "root": 78,
+     "lo": 73,
+     "hi": 84,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "HumanWhistle/zone_004.ogg",
+     "root": 90,
+     "lo": 85,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "HumanWhistle/zone_005.ogg",
+     "root": 90,
+     "lo": 85,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Accordion",
+   "name": "手风琴",
+   "category": "Other",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "Accordion/zone_000.ogg",
+     "root": 43,
+     "lo": 21,
+     "hi": 49,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Accordion/zone_001.ogg",
+     "root": 55,
+     "lo": 50,
+     "hi": 61,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Accordion/zone_002.ogg",
+     "root": 67,
+     "lo": 62,
+     "hi": 71,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Accordion/zone_003.ogg",
+     "root": 76,
+     "lo": 72,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Harmonica",
+   "name": "口琴",
+   "category": "Other",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "Harmonica/zone_000.ogg",
+     "root": 48,
+     "lo": 21,
+     "hi": 54,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Harmonica/zone_001.ogg",
+     "root": 48,
+     "lo": 21,
+     "hi": 54,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Harmonica/zone_002.ogg",
+     "root": 60,
+     "lo": 55,
+     "hi": 66,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Harmonica/zone_003.ogg",
+     "root": 60,
+     "lo": 55,
+     "hi": 66,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Harmonica/zone_004.ogg",
+     "root": 72,
+     "lo": 67,
+     "hi": 78,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Harmonica/zone_005.ogg",
+     "root": 72,
+     "lo": 67,
+     "hi": 78,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Harmonica/zone_006.ogg",
+     "root": 84,
+     "lo": 79,
+     "hi": 87,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Harmonica/zone_007.ogg",
+     "root": 84,
+     "lo": 79,
+     "hi": 87,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Harmonica/zone_008.ogg",
+     "root": 90,
+     "lo": 88,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Harmonica/zone_009.ogg",
+     "root": 90,
+     "lo": 88,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Melodica",
+   "name": "口风琴",
+   "category": "Other",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "Melodica/zone_000.ogg",
+     "root": 43,
+     "lo": 21,
+     "hi": 49,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Melodica/zone_001.ogg",
+     "root": 43,
+     "lo": 21,
+     "hi": 49,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Melodica/zone_002.ogg",
+     "root": 56,
+     "lo": 50,
+     "hi": 62,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Melodica/zone_003.ogg",
+     "root": 56,
+     "lo": 50,
+     "hi": 62,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Melodica/zone_004.ogg",
+     "root": 68,
+     "lo": 63,
+     "hi": 74,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Melodica/zone_005.ogg",
+     "root": 80,
+     "lo": 75,
+     "hi": 85,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Melodica/zone_006.ogg",
+     "root": 80,
+     "lo": 75,
+     "hi": 85,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Melodica/zone_007.ogg",
+     "root": 90,
+     "lo": 86,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Organ",
+   "name": "管风琴",
+   "category": "Other",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "Organ/zone_000.ogg",
+     "root": 38,
+     "lo": 21,
+     "hi": 44,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Organ/zone_001.ogg",
+     "root": 50,
+     "lo": 45,
+     "hi": 56,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Organ/zone_002.ogg",
+     "root": 50,
+     "lo": 45,
+     "hi": 56,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Organ/zone_003.ogg",
+     "root": 62,
+     "lo": 57,
+     "hi": 68,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Organ/zone_004.ogg",
+     "root": 74,
+     "lo": 69,
+     "hi": 78,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Organ/zone_005.ogg",
+     "root": 83,
+     "lo": 79,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Harpsichord",
+   "name": "羽管键琴",
+   "category": "Other",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "Harpsichord/zone_000.ogg",
+     "root": 29,
+     "lo": 21,
+     "hi": 35,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Harpsichord/zone_001.ogg",
+     "root": 42,
+     "lo": 36,
+     "hi": 48,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Harpsichord/zone_002.ogg",
+     "root": 54,
+     "lo": 49,
+     "hi": 60,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Harpsichord/zone_003.ogg",
+     "root": 66,
+     "lo": 61,
+     "hi": 72,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Harpsichord/zone_004.ogg",
+     "root": 78,
+     "lo": 73,
+     "hi": 81,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Harpsichord/zone_005.ogg",
+     "root": 84,
+     "lo": 82,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Marimba",
+   "name": "马林巴",
+   "category": "Other",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "Marimba/zone_000.ogg",
+     "root": 46,
+     "lo": 21,
+     "hi": 52,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Marimba/zone_001.ogg",
+     "root": 46,
+     "lo": 21,
+     "hi": 52,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Marimba/zone_002.ogg",
+     "root": 58,
+     "lo": 53,
+     "hi": 64,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Marimba/zone_003.ogg",
+     "root": 58,
+     "lo": 53,
+     "hi": 64,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Marimba/zone_004.ogg",
+     "root": 70,
+     "lo": 65,
+     "hi": 76,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Marimba/zone_005.ogg",
+     "root": 70,
+     "lo": 65,
+     "hi": 76,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Marimba/zone_006.ogg",
+     "root": 82,
+     "lo": 77,
+     "hi": 87,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Marimba/zone_007.ogg",
+     "root": 82,
+     "lo": 77,
+     "hi": 87,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Marimba/zone_008.ogg",
+     "root": 92,
+     "lo": 88,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Lithophone",
+   "name": "石板琴",
+   "category": "Other",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "Lithophone/zone_000.ogg",
+     "root": 21,
+     "lo": 21,
+     "hi": 29,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Lithophone/zone_001.ogg",
+     "root": 38,
+     "lo": 30,
+     "hi": 47,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Lithophone/zone_002.ogg",
+     "root": 56,
+     "lo": 48,
+     "hi": 64,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Lithophone/zone_003.ogg",
+     "root": 73,
+     "lo": 65,
+     "hi": 82,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Lithophone/zone_004.ogg",
+     "root": 91,
+     "lo": 83,
+     "hi": 99,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Lithophone/zone_005.ogg",
+     "root": 108,
+     "lo": 100,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "MusicBox",
+   "name": "音乐盒",
+   "category": "Other",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "MusicBox/zone_000.ogg",
+     "root": 60,
+     "lo": 21,
+     "hi": 66,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "MusicBox/zone_001.ogg",
+     "root": 72,
+     "lo": 67,
+     "hi": 78,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "MusicBox/zone_002.ogg",
+     "root": 84,
+     "lo": 79,
+     "hi": 88,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "MusicBox/zone_003.ogg",
+     "root": 92,
+     "lo": 89,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "BottleBlow",
+   "name": "吹瓶",
+   "category": "Other",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "BottleBlow/zone_000.ogg",
+     "root": 46,
+     "lo": 21,
+     "hi": 52,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "BottleBlow/zone_001.ogg",
+     "root": 46,
+     "lo": 21,
+     "hi": 52,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "BottleBlow/zone_002.ogg",
+     "root": 58,
+     "lo": 53,
+     "hi": 60,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "BottleBlow/zone_003.ogg",
+     "root": 58,
+     "lo": 53,
+     "hi": 60,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "BottleBlow/zone_004.ogg",
+     "root": 62,
+     "lo": 61,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "BottleBlow/zone_005.ogg",
+     "root": 62,
+     "lo": 61,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Ocarina",
+   "name": "陶笛",
+   "category": "Other",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "Ocarina/zone_000.ogg",
+     "root": 69,
+     "lo": 21,
+     "hi": 75,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Ocarina/zone_001.ogg",
+     "root": 69,
+     "lo": 21,
+     "hi": 75,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Ocarina/zone_002.ogg",
+     "root": 82,
+     "lo": 76,
+     "hi": 86,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Ocarina/zone_003.ogg",
+     "root": 82,
+     "lo": 76,
+     "hi": 86,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Ocarina/zone_004.ogg",
+     "root": 90,
+     "lo": 87,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Ocarina/zone_005.ogg",
+     "root": 90,
+     "lo": 87,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "PanFlute",
+   "name": "排箫",
+   "category": "Other",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "PanFlute/zone_000.ogg",
+     "root": 64,
+     "lo": 21,
+     "hi": 70,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "PanFlute/zone_001.ogg",
+     "root": 64,
+     "lo": 21,
+     "hi": 70,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "PanFlute/zone_002.ogg",
+     "root": 76,
+     "lo": 71,
+     "hi": 82,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "PanFlute/zone_003.ogg",
+     "root": 76,
+     "lo": 71,
+     "hi": 82,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "PanFlute/zone_004.ogg",
+     "root": 88,
+     "lo": 83,
+     "hi": 89,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "PanFlute/zone_005.ogg",
+     "root": 90,
+     "lo": 90,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "PanFlute/zone_006.ogg",
+     "root": 90,
+     "lo": 90,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Recorder",
+   "name": "竖笛",
+   "category": "Other",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": true,
+   "zones": [
+    {
+     "file": "Recorder/zone_000.ogg",
+     "root": 48,
+     "lo": 21,
+     "hi": 54,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Recorder/zone_001.ogg",
+     "root": 48,
+     "lo": 21,
+     "hi": 54,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Recorder/zone_002.ogg",
+     "root": 60,
+     "lo": 55,
+     "hi": 66,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Recorder/zone_003.ogg",
+     "root": 60,
+     "lo": 55,
+     "hi": 66,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Recorder/zone_004.ogg",
+     "root": 72,
+     "lo": 67,
+     "hi": 78,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Recorder/zone_005.ogg",
+     "root": 84,
+     "lo": 79,
+     "hi": 86,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Recorder/zone_006.ogg",
+     "root": 84,
+     "lo": 79,
+     "hi": 86,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Recorder/zone_007.ogg",
+     "root": 88,
+     "lo": 87,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Recorder/zone_008.ogg",
+     "root": 88,
+     "lo": 87,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "HangDrum",
+   "name": "手碟",
+   "category": "Other",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "HangDrum/zone_000.ogg",
+     "root": 48,
+     "lo": 21,
+     "hi": 54,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "HangDrum/zone_001.ogg",
+     "root": 60,
+     "lo": 55,
+     "hi": 66,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "HangDrum/zone_002.ogg",
+     "root": 72,
+     "lo": 67,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "SteelDrum",
+   "name": "钢鼓",
+   "category": "Other",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "SteelDrum/zone_000.ogg",
+     "root": 39,
+     "lo": 21,
+     "hi": 45,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "SteelDrum/zone_001.ogg",
+     "root": 52,
+     "lo": 46,
+     "hi": 58,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "SteelDrum/zone_002.ogg",
+     "root": 52,
+     "lo": 46,
+     "hi": 58,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "SteelDrum/zone_003.ogg",
+     "root": 64,
+     "lo": 59,
+     "hi": 67,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "SteelDrum/zone_004.ogg",
+     "root": 64,
+     "lo": 59,
+     "hi": 67,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "SteelDrum/zone_005.ogg",
+     "root": 70,
+     "lo": 68,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "SteelDrum/zone_006.ogg",
+     "root": 70,
+     "lo": 68,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "SteelTongueDrum",
+   "name": "钢舌鼓",
+   "category": "Other",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "SteelTongueDrum/zone_000.ogg",
+     "root": 45,
+     "lo": 21,
+     "hi": 51,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "SteelTongueDrum/zone_001.ogg",
+     "root": 45,
+     "lo": 21,
+     "hi": 51,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "SteelTongueDrum/zone_002.ogg",
+     "root": 57,
+     "lo": 52,
+     "hi": 63,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "SteelTongueDrum/zone_003.ogg",
+     "root": 57,
+     "lo": 52,
+     "hi": 63,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "SteelTongueDrum/zone_004.ogg",
+     "root": 69,
+     "lo": 64,
+     "hi": 71,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "SteelTongueDrum/zone_005.ogg",
+     "root": 69,
+     "lo": 64,
+     "hi": 71,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "SteelTongueDrum/zone_006.ogg",
+     "root": 74,
+     "lo": 72,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "SteelTongueDrum/zone_007.ogg",
+     "root": 74,
+     "lo": 72,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Kalimba",
+   "name": "拇指琴",
+   "category": "Other",
+   "range": [
+    21,
+    108
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "Kalimba/zone_000.ogg",
+     "root": 57,
+     "lo": 21,
+     "hi": 63,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Kalimba/zone_001.ogg",
+     "root": 57,
+     "lo": 21,
+     "hi": 63,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Kalimba/zone_002.ogg",
+     "root": 69,
+     "lo": 64,
+     "hi": 73,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Kalimba/zone_003.ogg",
+     "root": 69,
+     "lo": 64,
+     "hi": 73,
+     "lo_vel": 64,
+     "hi_vel": 127
+    },
+    {
+     "file": "Kalimba/zone_004.ogg",
+     "root": 78,
+     "lo": 74,
+     "hi": 108,
+     "lo_vel": 1,
+     "hi_vel": 63
+    },
+    {
+     "file": "Kalimba/zone_005.ogg",
+     "root": 78,
+     "lo": 74,
+     "hi": 108,
+     "lo_vel": 64,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "OrffPercussion",
+   "name": "奥尔夫打击乐",
+   "category": "Other",
+   "range": [
+    36,
+    84
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "OrffPercussion/zone_000.ogg",
+     "root": 36,
+     "lo": 36,
+     "hi": 39,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "OrffPercussion/zone_001.ogg",
+     "root": 43,
+     "lo": 40,
+     "hi": 46,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "OrffPercussion/zone_002.ogg",
+     "root": 50,
+     "lo": 47,
+     "hi": 53,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "OrffPercussion/zone_003.ogg",
+     "root": 57,
+     "lo": 54,
+     "hi": 60,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "OrffPercussion/zone_004.ogg",
+     "root": 63,
+     "lo": 61,
+     "hi": 66,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "OrffPercussion/zone_005.ogg",
+     "root": 70,
+     "lo": 67,
+     "hi": 73,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "OrffPercussion/zone_006.ogg",
+     "root": 77,
+     "lo": 74,
+     "hi": 80,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "OrffPercussion/zone_007.ogg",
+     "root": 84,
+     "lo": 81,
+     "hi": 84,
+     "lo_vel": 1,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "Click",
+   "name": "报号",
+   "category": "Other",
+   "range": [
+    36,
+    84
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "Click/zone_000.ogg",
+     "root": 36,
+     "lo": 36,
+     "hi": 39,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Click/zone_001.ogg",
+     "root": 43,
+     "lo": 40,
+     "hi": 46,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Click/zone_002.ogg",
+     "root": 50,
+     "lo": 47,
+     "hi": 53,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Click/zone_003.ogg",
+     "root": 57,
+     "lo": 54,
+     "hi": 60,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Click/zone_004.ogg",
+     "root": 63,
+     "lo": 61,
+     "hi": 66,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Click/zone_005.ogg",
+     "root": 70,
+     "lo": 67,
+     "hi": 73,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Click/zone_006.ogg",
+     "root": 77,
+     "lo": 74,
+     "hi": 80,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "Click/zone_007.ogg",
+     "root": 84,
+     "lo": 81,
+     "hi": 84,
+     "lo_vel": 1,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "SoundEffect1",
+   "name": "音效 1",
+   "category": "Other",
+   "range": [
+    36,
+    84
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "SoundEffect1/zone_000.ogg",
+     "root": 36,
+     "lo": 36,
+     "hi": 39,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "SoundEffect1/zone_001.ogg",
+     "root": 43,
+     "lo": 40,
+     "hi": 46,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "SoundEffect1/zone_002.ogg",
+     "root": 50,
+     "lo": 47,
+     "hi": 53,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "SoundEffect1/zone_003.ogg",
+     "root": 57,
+     "lo": 54,
+     "hi": 60,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "SoundEffect1/zone_004.ogg",
+     "root": 63,
+     "lo": 61,
+     "hi": 66,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "SoundEffect1/zone_005.ogg",
+     "root": 70,
+     "lo": 67,
+     "hi": 73,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "SoundEffect1/zone_006.ogg",
+     "root": 77,
+     "lo": 74,
+     "hi": 80,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "SoundEffect1/zone_007.ogg",
+     "root": 84,
+     "lo": 81,
+     "hi": 84,
+     "lo_vel": 1,
+     "hi_vel": 127
+    }
+   ]
+  },
+  {
+   "id": "SoundEffect2",
+   "name": "音效 2",
+   "category": "Other",
+   "range": [
+    36,
+    84
+   ],
+   "sample_rate": 44100,
+   "loop": false,
+   "zones": [
+    {
+     "file": "SoundEffect2/zone_000.ogg",
+     "root": 36,
+     "lo": 36,
+     "hi": 39,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "SoundEffect2/zone_001.ogg",
+     "root": 43,
+     "lo": 40,
+     "hi": 46,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "SoundEffect2/zone_002.ogg",
+     "root": 50,
+     "lo": 47,
+     "hi": 53,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "SoundEffect2/zone_003.ogg",
+     "root": 57,
+     "lo": 54,
+     "hi": 60,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "SoundEffect2/zone_004.ogg",
+     "root": 63,
+     "lo": 61,
+     "hi": 66,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "SoundEffect2/zone_005.ogg",
+     "root": 70,
+     "lo": 67,
+     "hi": 73,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "SoundEffect2/zone_006.ogg",
+     "root": 77,
+     "lo": 74,
+     "hi": 80,
+     "lo_vel": 1,
+     "hi_vel": 127
+    },
+    {
+     "file": "SoundEffect2/zone_007.ogg",
+     "root": 84,
+     "lo": 81,
+     "hi": 84,
+     "lo_vel": 1,
+     "hi_vel": 127
+    }
+   ]
+  }
+ ]
+}

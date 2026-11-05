@@ -6,10 +6,10 @@
 //! - `EditorWindow::service` / `closed_by_user` / `destroy_for_exit` / `is_standalone` / `is_visible` / `bring_to_front` / `hide_inline` / `place_inline`：编辑器窗口维护。
 //! - `plugin_cache_path` / `load_plugin_cache` / `save_plugin_cache` / `plugin_fingerprint` / `cache_key`：插件缓存文件与指纹。
 //! - `cached_plugin_params` / `invalidate_plugin_params` / `invalidate_plugin_param_slot`：参数缓存。
-//! - `capture_live_plugin_state` / `begin_engine_load` / `prepare_playback_plugins` / `service_editors`：
+//! - `capture_live_plugin_state` / `service_editors` / `open_editor` / `open_inline_editor`：
 //!   编辑器与运行时服务。
 //! - `open_editor` / `close_editor` / `close_all_editors` / `open_inline_editor` / `place_inline_editor` / `finish_inline_layout` / `has_inline_editor`：编辑器窗口生命周期。
-//! - `apply_plugin` / `finish_plugin_apply` / `ensure_ui_thread_instance`：插件写入槽位与收尾。
+//! - `apply_plugin` / `finish_plugin_apply`：插件写入槽位与收尾。
 //! - `open_browser` / `start_scan` / `scan_vst3_only` / `scan_legacy_only` / `start_startup_scan` / `start_scan_with` / `poll_scan`：完整与增量扫描。
 //! - `scan_full` / `scan_incremental`：完整与增量扫描的后台实现。
 //! - `start_plugin_probes` / `cancel_plugin_probes` / `poll_plugin_probes`：未知 VST3 的后台类型识别。
@@ -22,10 +22,10 @@
 //! - `EditorWindow::service` / `closed_by_user` / `destroy_for_exit` / `is_standalone` / `is_visible` / `bring_to_front` / `hide_inline` / `place_inline`: editor window maintenance.
 //! - `plugin_cache_path` / `load_plugin_cache` / `save_plugin_cache` / `plugin_fingerprint` / `cache_key`: cache file and fingerprints.
 //! - `cached_plugin_params` / `invalidate_plugin_params` / `invalidate_plugin_param_slot`: parameter cache.
-//! - `capture_live_plugin_state` / `begin_engine_load` / `prepare_playback_plugins` / `service_editors`:
+//! - `capture_live_plugin_state` / `service_editors` / `open_editor` / `open_inline_editor`:
 //!   editor and runtime services.
 //! - `open_editor` / `close_editor` / `close_all_editors` / `open_inline_editor` / `place_inline_editor` / `finish_inline_layout` / `has_inline_editor`: editor window lifecycle.
-//! - `apply_plugin` / `finish_plugin_apply` / `ensure_ui_thread_instance`: writing a plugin into a slot and finishing up.
+//! - `apply_plugin` / `finish_plugin_apply`: writing a plugin into a slot and finishing up.
 //! - `open_browser` / `start_scan` / `scan_vst3_only` / `scan_legacy_only` / `start_startup_scan` / `start_scan_with` / `poll_scan`: full and incremental scans.
 //! - `scan_full` / `scan_incremental`: background implementations of both scan modes.
 //! - `start_plugin_probes` / `cancel_plugin_probes` / `poll_plugin_probes`: deferred classification of unknown VST3 plugins.
@@ -37,7 +37,7 @@ use std::path::Path;
 
 /// 插件缓存文件版本；结构不兼容时递增并丢弃旧缓存。
 /// Plugin cache file version; bump when the layout changes incompatibly and drop old caches.
-const PLUGIN_CACHE_VERSION: u32 = 1;
+const PLUGIN_CACHE_VERSION: u32 = 2;
 
 /// 内嵌编辑器超出卡片的容差（物理像素）：超过该值即认为插件无法缩进卡片，改用独立窗口。
 /// Tolerance (physical pixels) for an inline editor exceeding its card; beyond it the plugin is
@@ -483,95 +483,43 @@ impl SurfingApp {
         engine.capture_track_plugin_states(track_id, &mut self.project);
     }
 
-    /// Load the postponed plugin runtimes with a visible progress prompt.
-    pub(super) fn begin_engine_load(&mut self) {
-        self.engine_stale = false;
-        self.needs_sync = true;
-        self.defer_sync = true;
-        // 接下来的同步在 UI 线程完成，不再需要“后台实例”标记。
-        // The upcoming sync runs on the UI thread, so worker-instance markers are obsolete.
-        self.background_synced.clear();
-        self.loading_message = Some("正在加载插件…".into());
-        self.loading_until = None;
-        self.status = "正在加载插件…".into();
-    }
-
-    /// 所属模块：app / 插件运行时
-    /// 功能：开始播放前，把后台同步线程创建的效果器实例重建到 UI 线程。
-    /// 输入：`self`。
-    /// 输出/副作用：把实时插件状态写回工程、标记恢复状态、按槽位失效运行时并同步；
-    /// 不修改工程内容（状态除外）。
-    /// 复杂度：时间 O(轨道数 + 重建插件加载)，空间 O(1)。
-    ///
-    /// Module: app / plugin runtime
-    /// Purpose: Rebuild effect instances created by the background sync thread on the UI thread
-    /// before playback starts.
-    /// Inputs: `self`.
-    /// Outputs / side effects: captures live plugin state, marks slots for restore, invalidates the
-    /// affected runtimes and syncs; project content is unchanged apart from stored state.
-    /// Complexity: O(tracks + plugin reload) time and O(1) space.
-    pub(super) fn prepare_playback_plugins(&mut self) {
-        if self.background_synced.is_empty() || self.engine_sync_rx.is_some() {
-            return;
-        }
-        let slots: Vec<(TrackId, crate::audio::SlotKind)> =
-            self.background_synced.drain().collect();
-        let mut tracks: HashSet<TrackId> = HashSet::new();
-        for (track_id, _) in &slots {
-            tracks.insert(*track_id);
-        }
-        {
-            let engine = self.engine.clone();
-            if let Ok(guard) = engine.lock() {
-                guard.capture_plugin_states(&mut self.project);
-            };
-        }
-        // 只有这些槽位会重建，状态恢复也只标记它们，减少重建时的等待。
-        // Only these slots are rebuilt, so mark only them for state restore to shorten the reload.
-        for track in &mut self.project.tracks {
-            if !tracks.contains(&track.id) {
-                continue;
-            }
-            if let InstrumentRef::Plugin(pref) = &mut track.instrument {
-                pref.restore_state = true;
-            }
-            for effect in &mut track.effects {
-                if let Some(pref) = effect.plugin_mut() {
-                    pref.restore_state = true;
-                }
-            }
-        }
-        if tracks.contains(&crate::core::model::MASTER_TRACK_ID) {
-            if let Some(pref) = self
-                .project
-                .master_effect
-                .as_mut()
-                .and_then(crate::core::model::EffectRef::plugin_mut)
-            {
-                pref.restore_state = true;
-            }
-        }
-        {
-            let engine = self.engine.clone();
-            if let Ok(mut guard) = engine.lock() {
-                for (track_id, slot) in &slots {
-                    guard.invalidate_plugin_slot(*track_id, *slot);
-                }
-            };
-        }
-        self.status = "正在准备插件…".into();
-        self.sync_engine();
-    }
     // ----- editor windows -------------------------------------------------
 
     pub fn service_editors(&mut self) {
         diag::set_activity("plugin.editors");
         // 先派发本线程到期的 WM_TIMER：Win32 的低优先级定时器不会唤醒空闲等待，
         // 插件的悬停计时（二级菜单延迟）会一直不触发，直到有输入把消息循环叫醒。
+        // **无条件派发**：插件自建的窗口（VOCALOID6 Editor 等）不在 `self.editors` 里，
+        // 但它们同样依赖本线程的定时器；漏掉这一步会表现为“不点击就完全不刷新、不跟随播放”。
         // Dispatch due WM_TIMER first: Win32's low-priority timers do not wake an idle wait, so
         // plugin hover timers (submenu delays) never fire until input wakes the loop.
-        if !self.editors.is_empty() {
-            crate::plugin::pump_editor_timers();
+        // Do this **unconditionally**: windows created by plugins themselves (VOCALOID6 Editor and
+        // friends) are not in `self.editors` but rely on this thread's timers too; skipping them is
+        // observed as "nothing refreshes and the playhead never follows unless clicked".
+        crate::plugin::pump_editor_timers();
+        // WPF 的 Dispatcher 只在自己的窗口收到消息时才执行排队工作项；winit 只处理它自己的窗口，
+        // VOCALOID6 Editor 这类插件在本线程创建的 WPF 窗口因此从不被执行——
+        // 现象就是“不点击完全不动、播放头不跟随”。这里只派发 WPF 类名窗口的消息，不影响输入。
+        // WPF's Dispatcher only runs queued work when its own windows receive messages; winit only
+        // handles its own windows, so WPF windows created on this thread by plugins (VOCALOID6
+        // Editor) never run — observed as "nothing moves unless clicked, playhead never follows".
+        // Only WPF-class windows are drained here, so input handling is untouched.
+        crate::plugin::pump_plugin_thread_windows();
+        // 插件自建的窗口在后台不会自行重绘：每 200 ms 强制失效一次并记录其线程 id。
+        // Plugin-created windows never repaint in the background: invalidate them every 200 ms and
+        // record their thread ids.
+        if crate::plugin::nudge_external_windows() {
+            // 这类窗口不在 `self.editors` 的槽位表里，按槽位转发反馈会让它停在上一帧；
+            // 只要存在插件自建窗口，就给所有带编辑器的插件转发一次输出参数反馈。
+            // Such windows are not in `self.editors` by slot; forwarding by slot leaves them stuck on
+            // their previous frame, so feed every plugin that has an editor once a frame.
+            if let Ok(mut engine) = self.engine.try_lock() {
+                engine.service_all_editor_feedback();
+                // VOCALOID 6 在编辑器就绪前会拒绝 setState；窗口出现后重试一次，让歌曲/歌手真正载入。
+                // VOCALOID 6 declines setState until its editor is ready; retry once the window is up
+                // so its song and singer are actually loaded.
+                engine.retry_all_state_restores();
+            }
         }
         let now = Instant::now();
         for (key, window) in &mut self.editors {
@@ -670,86 +618,28 @@ impl SurfingApp {
     }
 
     /// 所属模块：app / 插件编辑器
-    /// 功能：如果槽位的实例由后台同步线程创建，先在 UI 线程重建该轨道（或主输出）的插件。
+    /// 功能：判断槽位是否是 ARA 走带同步桥（VOCALOID Bridge）。
     /// 输入：`track_id` / `slot`。
-    /// 输出/副作用：把实时状态写回工程，丢弃旧运行时，再同步重建；不改工程内容。
-    /// 返回 `false` 表示重建被推迟（已有后台同步在跑或正在导出），调用方应下一帧再试，
-    /// 不能拿后台线程创建的实例去开 GUI，否则插件的悬停菜单/二级菜单不会响应。
-    /// 复杂度：时间 O(该轨道插件加载)，空间 O(1)。
+    /// 输出/副作用：返回布尔值；不修改状态。
+    /// 复杂度：时间 O(轨道数 + 效果器数)，空间 O(1)。
     ///
     /// Module: app / plugin editor
-    /// Purpose: When the slot's instance was created by the background sync thread, rebuild
-    /// that track's (or the master chain's) plugins on the UI thread first.
+    /// Purpose: Whether the slot is the ARA transport-sync bridge (VOCALOID Bridge).
     /// Inputs: `track_id` / `slot`.
-    /// Outputs / side effects: captures live state into the project, drops the old runtimes and
-    /// syncs again; the project content is unchanged. Returns `false` when the rebuild had to be
-    /// deferred (another background sync or an export is running): callers must retry next frame
-    /// instead of opening a GUI on a worker-thread instance, whose hover/submenus never respond.
-    /// Complexity: O(plugin load of that track) time and O(1) space.
-    fn ensure_ui_thread_instance(&mut self, track_id: TrackId, slot: SlotKind) -> bool {
-        if !self.background_synced.contains(&(track_id, slot)) {
-            return true;
-        }
-        // VST3 的编辑器视图必须与插件实例在同一线程创建；后台同步线程创建的实例
-        // 在 UI 线程打开 GUI 会让 Auto-Tune 这类插件死锁。
-        // A VST3 view must be created on the instance's thread; opening the GUI on the UI
-        // thread for a worker-created instance deadlocks plugins such as Auto-Tune.
-        {
-            let engine = self.engine.clone();
-            if let Ok(guard) = engine.lock() {
-                guard.capture_plugin_states(&mut self.project);
-            };
-        }
-        // 只标记并重建被打开的槽位，避免为了打开一个 GUI 重建整条轨道的插件链
-        // （重建多个插件会在播放中造成长时间的引擎锁占用）。
-        // Mark and rebuild only the opened slot instead of the whole track's plugin chain: reloading
-        // several plugins would hold the engine lock long enough to starve the audio callback.
-        match slot {
-            SlotKind::Master => {
-                if let Some(pref) = self
-                    .project
-                    .master_effect
-                    .as_mut()
-                    .and_then(crate::core::model::EffectRef::plugin_mut)
-                {
-                    pref.restore_state = true;
-                }
-            }
-            SlotKind::Instrument => {
-                if let Some(track) = self.project.tracks.iter_mut().find(|t| t.id == track_id) {
-                    if let InstrumentRef::Plugin(pref) = &mut track.instrument {
-                        pref.restore_state = true;
-                    }
-                }
-            }
-            SlotKind::Effect(index) => {
-                if let Some(track) = self.project.tracks.iter_mut().find(|t| t.id == track_id) {
-                    if let Some(pref) = track
-                        .effects
-                        .get_mut(index)
-                        .and_then(crate::core::model::EffectRef::plugin_mut)
-                    {
-                        pref.restore_state = true;
-                    }
-                }
-            }
-        }
-        {
-            let engine = self.engine.clone();
-            if let Ok(mut guard) = engine.lock() {
-                guard.invalidate_plugin_slot(track_id, slot);
-            };
-        }
-        self.status = "正在重建插件实例…".into();
-        self.sync_engine();
-        // 同步被推迟时保留标记：下一帧再重建，绝不用后台线程实例开 GUI。
-        // Keep the marker when the sync was deferred: retry next frame instead of opening a GUI on
-        // a worker-thread instance.
-        if self.engine_sync_rx.is_some() || self.needs_sync {
-            return false;
-        }
-        self.background_synced.remove(&(track_id, slot));
-        true
+    /// Outputs / side effects: the boolean; no state change.
+    /// Complexity: O(tracks + effects) time and O(1) space.
+    fn slot_is_ara_sync_only(&self, track_id: TrackId, slot: SlotKind) -> bool {
+        let effect = match slot {
+            SlotKind::Instrument => return false,
+            SlotKind::Master => self.project.master_effect.as_ref(),
+            SlotKind::Effect(index) => self
+                .project
+                .tracks
+                .iter()
+                .find(|track| track.id == track_id)
+                .and_then(|track| track.effects.get(index)),
+        };
+        effect.is_some_and(|effect| crate::plugin::ara::sync_only_passthrough(&effect.label()))
     }
 
     /// 所属模块：app / 插件编辑器
@@ -775,10 +665,11 @@ impl SurfingApp {
         if self.engine_sync_pending() {
             return false;
         }
-        if !self.ensure_ui_thread_instance(track_id, slot) {
-            // 实例重建被推迟：下一帧再试，避免在后台线程实例上创建视图。
-            // The rebuild was deferred: retry next frame instead of creating a view on a
-            // worker-thread instance.
+        // 走带同步桥没有界面；记入失败表，避免每帧重试。
+        // The sync bridge has no UI; record it as failed so it is not retried every frame.
+        if self.slot_is_ara_sync_only(track_id, slot) {
+            self.inline_failed
+                .insert((track_id, slot), "走带同步桥没有界面".into());
             return false;
         }
         // 主窗口句柄要到第一帧之后才可用；拿不到时下一帧再试，不记为失败。
@@ -898,6 +789,12 @@ impl SurfingApp {
             self.status = "正在加载插件，请稍候…".into();
             return;
         }
+        // 走带同步桥没有可交互的界面；不要跨线程创建它的视图。
+        // The sync bridge has no interactive UI; never create its view across threads.
+        if self.slot_is_ara_sync_only(track_id, slot) {
+            self.status = "VOCALOID Bridge 是走带同步桥，没有可打开的界面".into();
+            return;
+        }
         // 独立窗口与内嵌窗口互斥。
         // Standalone and inline editors are mutually exclusive.
         self.editors.retain(|(key, window)| {
@@ -916,12 +813,7 @@ impl SurfingApp {
             }
             return;
         }
-        if !self.ensure_ui_thread_instance(track_id, slot) {
-            // 重建被推迟：状态栏已提示，用户可再次打开。
-            // The rebuild was deferred; the status bar already explains it and the user can retry.
-            return;
-        }
-        // 绝不在 UI 线程阻塞等待引擎锁：同步线程加载插件时可能持有数秒。
+        // 绝不在 UI 线程阻塞等待引擎锁：插件加载时可能持有数秒。
         // Never block the UI thread on the engine lock: a sync worker may hold it for seconds.
         let plugin = {
             let engine = self.engine.clone();
@@ -1077,8 +969,9 @@ impl SurfingApp {
         path: PathBuf,
         name: String,
         uid: String,
+        program: Option<i32>,
     ) {
-        if self.engine_sync_rx.is_some() {
+        if self.instrument_load_pending {
             self.status = "正在加载插件，请稍候…".into();
             return;
         }
@@ -1094,6 +987,12 @@ impl SurfingApp {
         self.inline_failed.clear();
         let mut pref = PluginRef::new(format, path, name);
         pref.uid = uid;
+        pref.program = program;
+        // 工厂预设以程序号恢复；空状态不应覆盖插件的预设选择。
+        // Factory presets restore through the program index; the empty state must not override it.
+        if program.is_some() {
+            pref.restore_state = false;
+        }
         let format_label = match pref.format {
             PluginFormat::Vst3 => "vst3",
             PluginFormat::Vst2 => "vst2",
@@ -1244,7 +1143,12 @@ impl SurfingApp {
                             crate::ui::PluginTarget::Instrument => {
                                 if let Some(track) = self.project.tracks.get_mut(track_index) {
                                     if let InstrumentRef::Plugin(pref) = &mut track.instrument {
-                                        pref.name = name.clone();
+                                        // 工厂预设保留“插件 · 预设名”，避免被插件显示名覆盖。
+                                        // Factory presets keep "plug-in · preset" instead of being
+                                        // overwritten by the plug-in display name.
+                                        if pref.program.is_none() {
+                                            pref.name = name.clone();
+                                        }
                                     }
                                 }
                             }

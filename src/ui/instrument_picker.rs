@@ -7,8 +7,8 @@
 //! 函数清单：
 //! - `SurfingApp::open_instrument_picker`：打开指定轨道的乐器窗口。
 //! - `SurfingApp::ui_instrument_picker`：绘制窗口并应用选择结果。
-//! - `collect_instrument_options`：合并内置乐器与 VST 乐器插件。
-//! - `plugin_category` / `native_category`：把插件/原生乐器归入左侧种类。
+//! - `collect_instrument_options`：合并内置采样乐器、合成器/鼓机与 VST 乐器插件。
+//! - `plugin_category` / `sample_category`：把插件/采样乐器归入左侧种类。
 //! - `instrument_subtitle` / `category_item` / `favorite_button`：行与侧栏辅助。
 //!
 //! Module: ui / instrument window
@@ -22,13 +22,14 @@
 //! Functions:
 //! - `SurfingApp::open_instrument_picker`: open the window for one track.
 //! - `SurfingApp::ui_instrument_picker`: draw the window and apply the choice.
-//! - `collect_instrument_options`: merge built-in instruments and VST instrument plugins.
-//! - `plugin_category` / `native_category`: map plugins/native instruments to left categories.
+//! - `collect_instrument_options`: merge built-in sampled instruments, synth/drums and VST
+//!   instrument plugins.
+//! - `plugin_category` / `sample_category`: map plugins/sampled instruments to left categories.
 //! - `instrument_subtitle` / `category_item` / `favorite_button`: row and sidebar helpers.
 
 use crate::app::{InstrumentCategory, InstrumentPicker, SurfingApp};
 use crate::core::model::{
-    DrumSettings, InstrumentRef, NativeInstrument, NativeInstrumentKind, SynthSettings,
+    BankInstrument, DrumSettings, InstrumentRef, SampleInstrument, SynthSettings, bank_instruments,
 };
 use crate::plugin::{PluginKind, ScannedPlugin};
 use crate::ui::theme;
@@ -268,9 +269,8 @@ impl SurfingApp {
                                         last_vendor = Some(option.vendor.as_str());
                                     }
                                     let favorite = favorites.contains(&option.key);
-                                    // 插件的运行时身份键包含格式与 UID，这里按路径判断“当前”。
-                                    // A plugin's runtime key includes format and UID, so compare
-                                    // the path to detect the current instrument.
+                                    // 插件按路径判断“当前”。
+                                    // Plugins are matched by path.
                                     let is_current = match &option.plugin {
                                         Some(plugin) => {
                                             current_plugin_path.as_ref() == Some(&plugin.path)
@@ -332,12 +332,14 @@ impl SurfingApp {
             // 插件加载必须走现有的 apply_plugin 流程（UI 线程创建实例）。
             // Plugin loading must go through the existing apply_plugin flow (UI-thread instance).
             self.selected_track = track_index;
+            let name = plugin.name.clone();
             self.apply_plugin(
                 crate::ui::PluginTarget::Instrument,
                 plugin.format,
                 plugin.path,
-                plugin.name,
+                name,
                 plugin.uid,
+                None,
             );
             self.instrument_picker = None;
         }
@@ -588,14 +590,18 @@ fn collect_instrument_options(plugins: &[ScannedPlugin]) -> Vec<InstrumentOption
         builtin: Some(InstrumentRef::Drums(DrumSettings::default())),
         plugin: None,
     });
-    for kind in NativeInstrumentKind::ALL {
-        let instrument = InstrumentRef::Native(NativeInstrument::new(kind));
+    // 原生建模乐器（钢琴/吉他/贝斯/小提琴/弦乐）与采样音色库重复，列表只保留采样版本；
+    // 旧工程中的原生乐器仍可正常加载与编辑。
+    // Native modelled instruments duplicate the sampled bank, so only the sampled versions are
+    // listed; projects that already use a native instrument still load and edit normally.
+    for entry in bank_instruments() {
+        let instrument = InstrumentRef::Sample(SampleInstrument::new(&entry.id));
         options.push(InstrumentOption {
             key: instrument.key(),
-            name: kind.label().into(),
+            name: entry.name.clone(),
             vendor: "SurfingStudio".into(),
-            subtitle: format!("Instrument / {}", native_category(kind).label()),
-            category: native_category(kind),
+            subtitle: format!("Instrument / {}", entry.category),
+            category: sample_category(entry),
             format_label: "内置",
             has_midi: true,
             has_gui: false,
@@ -632,27 +638,43 @@ fn collect_instrument_options(plugins: &[ScannedPlugin]) -> Vec<InstrumentOption
 }
 
 /// 所属模块：ui / 乐器窗口 / 分类
-/// 功能：把原生乐器映射到左侧种类。
-/// 输入：`kind` 原生乐器类型。
+/// 功能：把采样库乐器映射到左侧种类。
+/// 输入：`entry` 采样库清单条目。
 /// 输出/副作用：返回种类；不修改状态。
 /// 复杂度：时间 O(1)，空间 O(1)。
 ///
 /// Module: ui / instrument window / classification
-/// Purpose: Map a native instrument kind to a left-hand category.
-/// Inputs: `kind` — native instrument kind.
+/// Purpose: Map a sample-bank instrument to a left-hand category.
+/// Inputs: `entry` sample-bank manifest entry.
 /// Outputs / side effects: category; no state change.
 /// Complexity: O(1) time and space.
-fn native_category(kind: NativeInstrumentKind) -> InstrumentCategory {
-    match kind {
-        NativeInstrumentKind::Piano => InstrumentCategory::Piano,
-        NativeInstrumentKind::AcousticGuitar => InstrumentCategory::AcousticGuitar,
-        NativeInstrumentKind::ElectricGuitar
-        | NativeInstrumentKind::DistortedGuitar
-        | NativeInstrumentKind::BassGuitar => InstrumentCategory::ElectricGuitar,
-        NativeInstrumentKind::Violin
-        | NativeInstrumentKind::StringStaccato
-        | NativeInstrumentKind::StringPizzicato
-        | NativeInstrumentKind::StringLegato => InstrumentCategory::Strings,
+fn sample_category(entry: &BankInstrument) -> InstrumentCategory {
+    let id = entry.id.as_str();
+    let strings = id.contains("String")
+        || matches!(
+            id,
+            "Violin" | "Viola" | "Cello" | "Contrabass" | "Harp" | "Erhu"
+        );
+    match entry.category.as_str() {
+        "Piano" => InstrumentCategory::Piano,
+        "Strings" => InstrumentCategory::Strings,
+        "AcousticGuitar" => InstrumentCategory::AcousticGuitar,
+        "ElectricGuitar" | "Bass" => InstrumentCategory::ElectricGuitar,
+        "Pop" => {
+            if id.contains("Piano") {
+                InstrumentCategory::Piano
+            } else if id == "AcousticGuitar" {
+                InstrumentCategory::AcousticGuitar
+            } else if id.contains("Guitar") || id.contains("Bass") {
+                InstrumentCategory::ElectricGuitar
+            } else if strings {
+                InstrumentCategory::Strings
+            } else {
+                InstrumentCategory::Other
+            }
+        }
+        "Orchestral" if strings => InstrumentCategory::Strings,
+        _ => InstrumentCategory::Other,
     }
 }
 
@@ -738,6 +760,53 @@ mod tests {
             has_midi_input: true,
             has_gui: true,
         }
+    }
+
+    /// 覆盖：128 件内置采样乐器全部出现在 SurfingStudio 分组。
+    /// Covers: all 128 embedded sampled instruments appear under SurfingStudio.
+    #[test]
+    fn sampled_bank_is_listed_as_builtin_instruments() {
+        let options = collect_instrument_options(&[]);
+        let sampled: Vec<_> = options
+            .iter()
+            .filter(|option| option.key.starts_with("builtin:bank:"))
+            .collect();
+        assert_eq!(sampled.len(), bank_instruments().len());
+        assert!(sampled.len() >= 128, "采样乐器数量不足：{}", sampled.len());
+        let piano = sampled
+            .iter()
+            .find(|option| option.key == "builtin:bank:GrandPiano")
+            .expect("GrandPiano option");
+        assert_eq!(piano.vendor, "SurfingStudio");
+        assert_eq!(piano.category, InstrumentCategory::Piano);
+        assert!(matches!(piano.builtin, Some(InstrumentRef::Sample(_))));
+    }
+
+    /// 覆盖：采样库分类映射到乐器窗口左侧分类。
+    /// Covers: sample-bank categories map to the left-hand filter.
+    #[test]
+    fn sample_categories_map_to_filters() {
+        let entry = |id: &str, category: &str| BankInstrument {
+            id: id.into(),
+            name: id.into(),
+            category: category.into(),
+            range: [21, 108],
+            sample_rate: 44100,
+            looped: false,
+            zones: Vec::new(),
+        };
+        assert_eq!(
+            sample_category(&entry("GrandPiano", "Pop")),
+            InstrumentCategory::Piano
+        );
+        assert_eq!(
+            sample_category(&entry("Violin", "Orchestral")),
+            InstrumentCategory::Strings
+        );
+        assert_eq!(
+            sample_category(&entry("Guzheng", "Chinese")),
+            InstrumentCategory::Other
+        );
     }
 
     /// 覆盖：Ample Sound 木吉他型号归入木吉他，LP/SC 等电吉他型号归入电吉他。

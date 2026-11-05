@@ -111,10 +111,10 @@ pub use playback::{
     RtAudioHandle,
 };
 pub use plugin::{
-    AutomationState, ContextMenuItem, DataExchangeBlock, HostNotification, OutputMidiConsumer,
-    ParameterEdit, ParameterEditKind, Plugin, PluginInfo, PluginPreset, PluginUnit, ProcessMode,
-    ProgramPitchName, ProgressKind, ProgressValue, RestartFlags, StateContext, TransportPosition,
-    WindowHandle,
+    AutomationState, ComponentReadyHook, ContextMenuItem, DataExchangeBlock, HostNotification,
+    OutputMidiConsumer, ParameterEdit, ParameterEditKind, Plugin, PluginInfo, PluginPreset,
+    PluginUnit, ProcessMode, ProgramPitchName, ProgressKind, ProgressValue, RawPluginHandles,
+    RestartFlags, StateContext, TransportPosition, WindowHandle,
 };
 pub use realtime::{RealtimePluginRunner, RtControl};
 pub use transport::{AutomationLane, BlockEvents, MidiClip, Timeline};

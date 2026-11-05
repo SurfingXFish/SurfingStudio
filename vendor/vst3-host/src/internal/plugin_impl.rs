@@ -1248,15 +1248,44 @@ impl PluginImpl {
 
     /// Load a VST3 plugin from the given path
     pub fn load(path: &std::path::Path) -> Result<Self> {
-        Self::load_with_class(path, None)
+        Self::load_with_class(path, None, false, None)
+    }
+
+    /// Load a VST3 plugin without activating it yet (ARA binding needs this).
+    pub fn load_deferred(path: &std::path::Path, defer_activation: bool) -> Result<Self> {
+        Self::load_with_class(path, None, defer_activation, None)
     }
 
     /// Load a specific current or moduleinfo-retired audio class from a VST3 bundle.
     pub fn load_class(path: &std::path::Path, requested_class_id: &str) -> Result<Self> {
-        Self::load_with_class(path, Some(requested_class_id))
+        Self::load_with_class(path, Some(requested_class_id), false, None)
     }
 
-    fn load_with_class(path: &std::path::Path, requested_class_id: Option<&str>) -> Result<Self> {
+    /// Load a specific class without activating it yet (ARA binding needs this).
+    pub fn load_class_deferred(
+        path: &std::path::Path,
+        requested_class_id: &str,
+        defer_activation: bool,
+    ) -> Result<Self> {
+        Self::load_with_class(path, Some(requested_class_id), defer_activation, None)
+    }
+
+    /// Load with a component-ready hook, which runs before any activation/state work.
+    pub fn load_with_hook(
+        path: &std::path::Path,
+        requested_class_id: Option<&str>,
+        defer_activation: bool,
+        hook: Option<std::sync::Arc<crate::plugin::ComponentReadyHook>>,
+    ) -> Result<Self> {
+        Self::load_with_class(path, requested_class_id, defer_activation, hook)
+    }
+
+    fn load_with_class(
+        path: &std::path::Path,
+        requested_class_id: Option<&str>,
+        defer_activation: bool,
+        hook: Option<std::sync::Arc<crate::plugin::ComponentReadyHook>>,
+    ) -> Result<Self> {
         let requested_class_id = requested_class_id
             .map(|requested| -> Result<String> {
                 crate::internal::utils::parse_class_uid(requested).ok_or_else(|| {
@@ -1385,13 +1414,6 @@ impl PluginImpl {
             // module unloads. The guard does that until the finished `PluginImpl` takes over.
             let mut initialized = InitializedComponent::new(component.clone());
 
-            // VST3 3.7 requires hosts to query this after initialize and before activation.
-            // Older processors do not expose it; `None` selects the safe legacy context.
-            let process_context_requirements = component
-                .cast::<IProcessContextRequirements>()
-                .map(|requirements| requirements.getProcessContextRequirements());
-            let prefetchable_support = Self::query_prefetchable_support(&component);
-
             // Establish the component's declared default bus state while it is inactive.
             log::debug!("Step 6: Activating default buses...");
             let bus_activation = Self::activate_default_buses(&component)?;
@@ -1402,8 +1424,28 @@ impl PluginImpl {
             let processor = component.cast::<IAudioProcessor>().ok_or_else(|| {
                 Error::InterfaceError("Component does not implement IAudioProcessor".to_string())
             })?;
-            let sample_size = Self::select_sample_size(&processor)?;
             log::debug!("IAudioProcessor interface obtained");
+
+            // 外围协议（ARA）必须在任何 setState / setActive / getProcessContextRequirements /
+            // 编辑器创建之前完成绑定，因此钩子放在这里。
+            // Companion protocols (ARA) must bind before any setState / setActive /
+            // getProcessContextRequirements / editor creation, so the hook runs here.
+            if let Some(hook) = hook.as_ref() {
+                hook(
+                    factory.as_ptr() as *mut std::ffi::c_void,
+                    component.as_ptr() as *mut std::ffi::c_void,
+                    processor.as_ptr() as *mut std::ffi::c_void,
+                )
+                .map_err(Error::PluginLoadFailed)?;
+            }
+
+            // VST3 3.7 requires hosts to query this after initialize and before activation.
+            // Older processors do not expose it; `None` selects the safe legacy context.
+            let process_context_requirements = component
+                .cast::<IProcessContextRequirements>()
+                .map(|requirements| requirements.getProcessContextRequirements());
+            let prefetchable_support = Self::query_prefetchable_support(&component);
+            let sample_size = Self::select_sample_size(&processor)?;
 
             // Create component handler for parameter change notifications
             log::debug!("Step 8: Creating component handler...");
@@ -1625,6 +1667,11 @@ impl PluginImpl {
             // failure there.
             if let Err(e) = plugin.setup_processing() {
                 log::warn!("setupProcessing failed at load ({e}); deferring to start_processing");
+            } else if defer_activation {
+                // 宿主（例如 ARA）需要在首次 setActive 之前完成绑定；激活留给 start_processing。
+                // The host (ARA, for example) must finish binding before the first setActive, so
+                // activation is left to start_processing.
+                log::info!("Component activation deferred to start_processing");
             } else if let Err(e) = plugin.activate() {
                 log::warn!(
                     "Component activation failed at load ({e}); deferring to start_processing"
@@ -1942,6 +1989,7 @@ impl PluginImpl {
             data.process_context.sampleRate = self.sample_rate;
             data.process_context.projectTimeSamples = self.position.samples;
             data.process_context.projectTimeMusic = self.position.quarter_notes;
+            data.process_context.barPositionMusic = self.position.quarter_notes;
             data.process_context.continousTimeSamples = self.continuous_samples;
             if process_context_needs(
                 self.process_context_requirements,
@@ -2464,6 +2512,15 @@ impl PluginImpl {
 }
 
 impl PluginInternal for PluginImpl {
+    fn raw_handles(&self) -> Option<crate::plugin::RawPluginHandles> {
+        let factory = self._module.get_factory().ok()?;
+        Some(crate::plugin::RawPluginHandles {
+            factory: factory as *mut std::ffi::c_void,
+            component: self.component.as_ptr() as *mut std::ffi::c_void,
+            processor: self.processor.as_ptr() as *mut std::ffi::c_void,
+        })
+    }
+
     fn shutdown_component(&mut self) -> Result<()> {
         if self.terminated {
             return Ok(());
@@ -2583,6 +2640,7 @@ impl PluginInternal for PluginImpl {
         if let Some(data) = self.process_data.as_mut() {
             data.process_context.projectTimeSamples = position.samples;
             data.process_context.projectTimeMusic = position.quarter_notes;
+            data.process_context.barPositionMusic = position.quarter_notes;
         }
         Ok(())
     }
@@ -5006,7 +5064,9 @@ const PROCESS_CONTEXT_STATE: u32 = (ProcessContext_::StatesAndFlags_::kPlaying
     | ProcessContext_::StatesAndFlags_::kTempoValid
     | ProcessContext_::StatesAndFlags_::kTimeSigValid
     | ProcessContext_::StatesAndFlags_::kContTimeValid
-    | ProcessContext_::StatesAndFlags_::kProjectTimeMusicValid)
+    | ProcessContext_::StatesAndFlags_::kProjectTimeMusicValid
+    | ProcessContext_::StatesAndFlags_::kBarPositionValid
+    | ProcessContext_::StatesAndFlags_::kSystemTimeValid)
     as u32;
 
 /// The `kPlaying` bit on its own, factored out of [`PROCESS_CONTEXT_STATE`] so the playing
@@ -5018,11 +5078,18 @@ const PROCESS_CONTEXT_PLAYING: u32 = ProcessContext_::StatesAndFlags_::kPlaying 
 const PROCESS_CONTEXT_SYSTEM_TIME_VALID: u32 =
     ProcessContext_::StatesAndFlags_::kSystemTimeValid as u32;
 
+/// Whether the processor needs `flag` from the host `ProcessContext`.
+///
+/// `None` (processor predates `IProcessContextRequirements`) and `Some(0)` both mean "the host
+/// has to provide everything": some processors implement the interface but return 0 while still
+/// reading the context unconditionally — VOCALOID 6's VSTi is one of them. Treating that answer
+/// as "needs nothing" strips every validity flag and leaves such editors without tempo, time
+/// signature or a playhead, so they neither follow the transport nor render.
 #[allow(clippy::unnecessary_cast)]
 fn process_context_needs(requirements: Option<u32>, flag: u32) -> bool {
     match requirements {
-        Some(requirements) => requirements & flag != 0,
-        None => true,
+        Some(requirements) if requirements != 0 => requirements & flag != 0,
+        _ => true,
     }
 }
 
@@ -5030,7 +5097,7 @@ fn process_context_needs(requirements: Option<u32>, flag: u32) -> bool {
 /// IProcessContextRequirements retain the host's complete legacy transport context.
 #[allow(clippy::unnecessary_cast)]
 fn process_context_state(requirements: Option<u32>, playing: bool) -> u32 {
-    let Some(requirements) = requirements else {
+    let Some(requirements) = requirements.filter(|requirements| *requirements != 0) else {
         return if playing {
             PROCESS_CONTEXT_STATE | PROCESS_CONTEXT_PLAYING
         } else {
@@ -5049,6 +5116,10 @@ fn process_context_state(requirements: Option<u32>, playing: bool) -> u32 {
         (
             R::kNeedProjectTimeMusic as u32,
             S::kProjectTimeMusicValid as u32,
+        ),
+        (
+            R::kNeedBarPositionMusic as u32,
+            S::kBarPositionValid as u32,
         ),
         (R::kNeedTempo as u32, S::kTempoValid as u32),
         (R::kNeedTimeSignature as u32, S::kTimeSigValid as u32),
@@ -5085,7 +5156,9 @@ fn advance_process_context(
     if playing {
         ctx.projectTimeSamples = ctx.projectTimeSamples.saturating_add(frames);
         if ctx.sampleRate > 0.0 {
-            ctx.projectTimeMusic += frames as f64 / ctx.sampleRate * (transport_tempo / 60.0);
+            let quarter_notes = frames as f64 / ctx.sampleRate * (transport_tempo / 60.0);
+            ctx.projectTimeMusic += quarter_notes;
+            ctx.barPositionMusic += quarter_notes;
         }
     }
     if process_context_needs(requirements, R::kNeedContinousTimeSamples as u32) {
@@ -5309,6 +5382,33 @@ mod transport_tests {
         assert_ne!(PROCESS_CONTEXT_STATE & F::kTimeSigValid as u32, 0);
         assert_ne!(PROCESS_CONTEXT_STATE & F::kContTimeValid as u32, 0);
         assert_ne!(PROCESS_CONTEXT_STATE & F::kProjectTimeMusicValid as u32, 0);
+    }
+
+    #[test]
+    #[allow(clippy::unnecessary_cast)] // `as u32` needed where the constants are i32 (Windows)
+    fn zero_requirements_fall_back_to_the_legacy_context() {
+        // VOCALOID 6 implements IProcessContextRequirements but returns 0; it still reads the
+        // context. A zero mask must therefore keep every validity flag instead of stripping them.
+        use ProcessContext_::StatesAndFlags_ as F;
+        let playing = process_context_state(Some(0), true);
+        for flag in [
+            F::kPlaying,
+            F::kTempoValid,
+            F::kTimeSigValid,
+            F::kContTimeValid,
+            F::kProjectTimeMusicValid,
+            F::kBarPositionValid,
+        ] {
+            assert_ne!(playing & flag as u32, 0);
+        }
+        assert!(process_context_needs(
+            Some(0),
+            IProcessContextRequirements_::Flags_::kNeedTempo as u32
+        ));
+        assert!(!process_context_needs(
+            Some(IProcessContextRequirements_::Flags_::kNeedTempo as u32),
+            IProcessContextRequirements_::Flags_::kNeedTimeSignature as u32
+        ));
     }
 
     #[test]

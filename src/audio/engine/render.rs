@@ -121,6 +121,9 @@ pub struct OfflineRenderSession {
     saved_playing: bool,
     saved_auto_stop_enabled: bool,
     saved_defer_master_clip: bool,
+    /// 导出前的实时前瞻开关；导出期间关闭，导出结束后恢复。
+    /// Realtime look-ahead flag before the export; disabled while exporting and restored afterwards.
+    saved_lookahead: bool,
     saved_sample_rate: f64,
     sample_rate: f64,
     channels: usize,
@@ -491,9 +494,20 @@ impl Engine {
         }
 
         if !self.playing {
-            if self.live_timeout > 0.0 {
+            if self.plugin_transport_playing {
+                self.send_plugin_transport_stopped();
+            }
+            let auditioning = self.live_timeout > 0.0;
+            // 插件编辑器打开时也要继续处理：VOCALOID 6 等在编辑器里点音符时，试听音频只有在
+            // 宿主持续调用 `process` 时才会从插件输出出来。此时走带不推进，`kPlaying` 保持 false。
+            // Keep processing while a plugin editor is open: VOCALOID 6 and similar instruments only
+            // emit their editor preview through `process`, so the host must keep calling it. The
+            // transport does not advance and `kPlaying` stays false.
+            if auditioning || self.plugin_editor_active {
                 self.render_live(out, frames);
-                self.live_timeout -= frames as f32 / self.sample_rate as f32;
+                if auditioning {
+                    self.live_timeout -= frames as f32 / self.sample_rate as f32;
+                }
             } else {
                 for level in &mut self.levels {
                     *level *= 0.85;
@@ -522,6 +536,38 @@ impl Engine {
     }
 
     /// 所属模块：audio::engine / 实时渲染
+    /// 功能：停止时向插件补发一次 kPlaying=false，编辑器时间线不会一直停在播放态。
+    /// 输入：`self`。
+    /// 输出/副作用：调用插件的 `set_transport` 并清除 `plugin_transport_playing`。
+    /// 复杂度：时间 O(轨道数)，空间 O(1)。
+    ///
+    /// Module: audio::engine / realtime render
+    /// Purpose: Send kPlaying=false once when the transport stops so editor timelines do not stay
+    /// in the playing state.
+    /// Inputs: `self`.
+    /// Outputs / side effects: calls the plugin `set_transport` and clears
+    /// `plugin_transport_playing`.
+    /// Complexity: O(tracks) time and O(1) space.
+    fn send_plugin_transport_stopped(&mut self) {
+        self.plugin_transport_playing = false;
+        self.plugin_transport_seek = true;
+        for runtime in &mut self.tracks {
+            if let InstrumentRuntime::Plugin(plugin) = &mut runtime.instrument {
+                plugin.set_playing(false);
+            }
+            // 效果器（含 ARA 同步桥）同样要收到停止：否则 Bridge 会让编辑器停在“播放中”。
+            // Effects (including the ARA sync bridge) need the stop too, otherwise the Bridge
+            // leaves the editor app in the playing state.
+            for effect in &mut runtime.effects {
+                effect.set_playing(false);
+            }
+        }
+        if let Some(effect) = &mut self.master_effect {
+            effect.set_playing(false);
+        }
+    }
+
+    /// 所属模块：audio::engine / 实时渲染
     /// 功能：按固定 block 推进走带，处理循环、自动停止与块边界。
     /// 输入：
     /// - `out`：设备声道缓冲。
@@ -540,7 +586,36 @@ impl Engine {
     /// Complexity: O(frames × tracks + events in block) time and O(1) space.
     fn render_block(&mut self, out: &mut [Vec<f32>], frames: usize) {
         let bps = self.project.bpm.max(1.0) / (60.0 * self.sample_rate);
+        // 新一轮播放：把 kPlaying 重新发给效果器（停止时发过 false，编辑器需要这次恢复）。
+        // A new playback run: re-send kPlaying to effects (they were told to stop, and the editor
+        // app needs the restart).
+        if !self.plugin_transport_playing {
+            for runtime in &mut self.tracks {
+                for effect in &mut runtime.effects {
+                    effect.set_playing(true);
+                }
+            }
+            if let Some(effect) = &mut self.master_effect {
+                effect.set_playing(true);
+            }
+        }
         let mut offset = 0;
+        // 预卷：先把插件链的延迟线用当前位置的内容填满，这一段声音丢弃。之后内部游标比听感
+        // 位置早一个链延迟，补偿延迟 + 插件延迟正好抵消，开效果器不再让整首歌后移。
+        // Pre-roll: fill the plugin chains' delay lines with the content at the current position and
+        // drop that audio. From then on the internal cursor runs one chain latency ahead, so the
+        // compensation plus the plugin latency cancel out and enabling an effect no longer shifts
+        // the whole mix.
+        if self.preroll_frames > 0 {
+            let count = self.preroll_frames.min(frames);
+            self.render_chunk(out, 0, count, true);
+            for channel in out.iter_mut() {
+                let limit = count.min(channel.len());
+                channel[..limit].fill(0.0);
+            }
+            self.preroll_frames -= count;
+            offset = count;
+        }
         while offset < frames {
             let mut chunk = self.block_size.min(frames - offset).max(1);
             let auto_stop_beat = self.auto_stop_beat();
@@ -550,6 +625,7 @@ impl Engine {
 
             if loop_active && self.position_beats >= self.project.loop_end - 1e-9 {
                 self.position_beats = self.project.loop_start.max(0.0);
+                self.plugin_transport_seek = true;
                 self.audio_cursors.clear();
                 self.reset_note_state(self.position_beats);
             }
@@ -664,6 +740,9 @@ impl Engine {
                 if runtime.notes_active || !runtime.live.is_empty() {
                     runtime.panic();
                 }
+                // 静音期间丢弃补偿延迟里的残留，取消静音时不会突然冒出旧音频。
+                // Drop audio left in the compensation line while muted so unmuting cannot replay it.
+                runtime.comp_delay.reset();
                 // 静音期间把事件游标推到块尾，取消静音时不会补发旧音符。
                 // Skip events while muted so unmuting never replays stale notes.
                 if advance {
@@ -715,7 +794,26 @@ impl Engine {
                     native.render(&mut track_l, &gates);
                     track_r.copy_from_slice(&track_l);
                 }
+                InstrumentRuntime::Sample(sample) => {
+                    sample.render(&mut track_l, &gates);
+                    track_r.copy_from_slice(&track_l);
+                }
                 InstrumentRuntime::Plugin(plugin) => {
+                    // 走带位置每块都作为参数交给插件，但只在插件内部位置与宿主不一致时才真正写入：
+                    // 连续播放由插件的 ProcessContext 自行推进，不会反复重置；一旦某块因插件忙被跳过，
+                    // 下一块立即把插件拉回宿主位置，避免“每跳一次就永久晚一截”的累积延迟。
+                    // The host position is handed to the plugin every block, but only written when the
+                    // plugin's internal position disagrees: continuous playback advances inside the
+                    // plugin without repeated resets, while a block skipped for a busy lock is
+                    // corrected on the next call so no delay accumulates.
+                    if advance && !self.plugin_transport_playing {
+                        plugin.set_playing(true);
+                    }
+                    let transport_samples =
+                        (block_start * 60.0 / self.project.bpm.max(1.0) * sample_rate) as i64;
+                    if advance && self.plugin_transport_seek {
+                        plugin.seek_transport(block_start, transport_samples);
+                    }
                     plugin.process(
                         sample_rate,
                         frames,
@@ -723,6 +821,10 @@ impl Engine {
                         &gates,
                         &mut track_l,
                         &mut track_r,
+                        Some(vst3_host::TransportPosition {
+                            samples: transport_samples,
+                            quarter_notes: block_start,
+                        }),
                     );
                 }
                 InstrumentRuntime::Failed(_) => {}
@@ -756,6 +858,12 @@ impl Engine {
             // 关闭的效果器直接旁路：实例、参数与状态保留，重新启用后立即恢复处理。
             // Disabled effects are bypassed: the instance, parameters and state stay loaded, so
             // re-enabling resumes processing immediately.
+            let transport_samples =
+                (block_start * 60.0 / self.project.bpm.max(1.0) * sample_rate) as i64;
+            let transport = Some(vst3_host::TransportPosition {
+                samples: transport_samples,
+                quarter_notes: block_start,
+            });
             for (effect_index, effect) in runtime.effects.iter_mut().enumerate() {
                 if !track
                     .effects
@@ -775,10 +883,18 @@ impl Engine {
                     &[],
                     &mut wet_l,
                     &mut wet_r,
+                    transport,
                 );
                 std::mem::swap(&mut track_l, &mut wet_l);
                 std::mem::swap(&mut track_r, &mut wet_r);
             }
+
+            // 延迟补偿：把本轨补到全工程最慢的一条链，开启 Pro-MB / Pro-DS 这类带前视的效果器
+            // 后整首歌仍然对齐（否则该轨会整体晚 15–20 ms，听起来就是“效果器带来延迟”）。
+            // Delay compensation: pad this track to the slowest chain so enabling look-ahead effects
+            // such as Pro-MB / Pro-DS keeps the song aligned (otherwise that track is 15–20 ms late,
+            // heard as "the effect added latency").
+            runtime.comp_delay.process(&mut track_l, &mut track_r);
 
             let lane_volume = track
                 .controllers
@@ -840,6 +956,12 @@ impl Engine {
         }
 
         self.gates_scratch = gates;
+        // 试听（`advance == false`）没有把 kPlaying 发给插件，不能把这个标志置为已播放。
+        // An audition (`advance == false`) never sent kPlaying, so the flag must stay untouched.
+        if advance {
+            self.plugin_transport_playing = true;
+            self.plugin_transport_seek = false;
+        }
         self.audio_scratch_l = track_l;
         self.audio_scratch_r = track_r;
         self.wet_scratch_l = wet_l;
@@ -856,6 +978,12 @@ impl Engine {
             .as_ref()
             .is_some_and(|effect| effect.enabled());
         if master_enabled {
+            let transport_samples =
+                (block_start * 60.0 / self.project.bpm.max(1.0) * sample_rate) as i64;
+            let transport = Some(vst3_host::TransportPosition {
+                samples: transport_samples,
+                quarter_notes: block_start,
+            });
             if let Some(effect) = &mut self.master_effect {
                 let mut master_wet_l = std::mem::take(&mut self.master_wet_scratch_l);
                 let mut master_wet_r = std::mem::take(&mut self.master_wet_scratch_r);
@@ -870,6 +998,7 @@ impl Engine {
                     &[],
                     &mut master_wet_l,
                     &mut master_wet_r,
+                    transport,
                 );
                 std::mem::swap(&mut master[0], &mut master_wet_l);
                 std::mem::swap(&mut master[1], &mut master_wet_r);
@@ -913,13 +1042,11 @@ impl Engine {
                         }
                     }
                     let outcome = match self.gpu_realtime.as_mut() {
-                        Some(limiter) => {
-                            limiter.process(scratch, crate::audio::gpu::GPU_REALTIME_TIMEOUT)
-                        }
-                        None => Err("实时 GPU 限幅未初始化".to_string()),
+                        Some(limiter) => limiter.process(scratch),
+                        None => crate::audio::gpu::GpuLimitOutcome::Busy,
                     };
                     match outcome {
-                        Ok(()) => {
+                        crate::audio::gpu::GpuLimitOutcome::Applied => {
                             for frame in 0..frames {
                                 for channel in 0..master_count {
                                     master[channel][frame] =
@@ -928,7 +1055,13 @@ impl Engine {
                             }
                             limited_by_gpu = true;
                         }
-                        Err(error) => gpu_error = Some(error),
+                        // 显卡没算完：本块用 CPU，保留实例；等待会直接变成听感上的延迟。
+                        // The GPU is not ready: use the CPU for this block and keep the instance;
+                        // waiting would turn into audible latency.
+                        crate::audio::gpu::GpuLimitOutcome::Busy => {}
+                        crate::audio::gpu::GpuLimitOutcome::Failed(error) => {
+                            gpu_error = Some(error)
+                        }
                     }
                 }
                 if !limited_by_gpu {
@@ -1062,6 +1195,10 @@ impl Engine {
         let mut engine = Engine::new(sample_rate);
         engine.auto_stop_enabled = false;
         engine.defer_master_clip = options.gpu.is_some();
+        // 离线导出不做实时前瞻：文件必须从第 0 帧开始与工程内容对齐。
+        // Offline export has no realtime look-ahead: the file must align with the project from
+        // frame zero.
+        engine.lookahead_enabled = false;
         engine.sync_project(&render_project);
         // 离线渲染不能等待 UI 的后台解码线程。
         // Offline rendering cannot wait for the UI's background decoder.
@@ -1152,6 +1289,7 @@ impl Engine {
         let saved_playing = self.playing;
         let saved_auto_stop_enabled = self.auto_stop_enabled;
         let saved_defer_master_clip = self.defer_master_clip;
+        let saved_lookahead = self.lookahead_enabled;
         let saved_sample_rate = self.sample_rate;
 
         if (sample_rate - self.sample_rate).abs() > 1.0 {
@@ -1159,6 +1297,11 @@ impl Engine {
         }
         self.auto_stop_enabled = false;
         self.defer_master_clip = options.gpu.is_some();
+        // 导出文件必须从第 0 帧开始对齐：关闭实时前瞻，不丢弃预卷样本。
+        // The exported file must line up from frame zero: turn off realtime look-ahead so no
+        // pre-roll samples are dropped.
+        self.lookahead_enabled = false;
+        self.preroll_frames = 0;
         self.sync_project(&render_project);
         self.load_pending_audio_blocking();
         let channels = options.layout.channels();
@@ -1169,6 +1312,7 @@ impl Engine {
             saved_playing,
             saved_auto_stop_enabled,
             saved_defer_master_clip,
+            saved_lookahead,
             saved_sample_rate,
             sample_rate,
             channels,
@@ -1270,6 +1414,7 @@ impl Engine {
         let saved_playing = session.saved_playing;
         let saved_auto_stop_enabled = session.saved_auto_stop_enabled;
         let saved_defer_master_clip = session.saved_defer_master_clip;
+        let saved_lookahead = session.saved_lookahead;
         let saved_sample_rate = session.saved_sample_rate;
         self.restore_after_offline(
             saved_project,
@@ -1277,6 +1422,7 @@ impl Engine {
             saved_playing,
             saved_auto_stop_enabled,
             saved_defer_master_clip,
+            saved_lookahead,
             saved_sample_rate,
         );
         Ok(OfflineRender {
@@ -1355,19 +1501,21 @@ impl Engine {
             session.saved_playing,
             session.saved_auto_stop_enabled,
             session.saved_defer_master_clip,
+            session.saved_lookahead,
             session.saved_sample_rate,
         );
     }
 
     /// 所属模块：audio::engine / 离线渲染
     /// 功能：恢复导出前的工程、走带与采样率状态。
-    /// 输入：保存的工程、位置、播放标记、自动停止、GPU 延迟限幅与采样率。
+    /// 输入：保存的工程、位置、播放标记、自动停止、GPU 延迟限幅、前瞻开关与采样率。
     /// 输出/副作用：暂停、按需重载插件、重新同步工程并定位。
     /// 复杂度：时间 O(工程同步 + 插件重载)，空间 O(1)。
     ///
     /// Module: audio::engine / offline render
     /// Purpose: Restore the project, transport and sample rate saved before the export.
-    /// Inputs: saved project, position, playing flag, auto-stop, deferred clip and sample rate.
+    /// Inputs: saved project, position, playing flag, auto-stop, deferred clip, look-ahead and
+    /// sample rate.
     /// Outputs / side effects: pauses, reloads plugins when needed, re-syncs the project and seeks.
     /// Complexity: O(project sync + plugin reload) time and O(1) space.
     fn restore_after_offline(
@@ -1377,8 +1525,11 @@ impl Engine {
         saved_playing: bool,
         saved_auto_stop_enabled: bool,
         saved_defer_master_clip: bool,
+        saved_lookahead: bool,
         saved_sample_rate: f64,
     ) {
+        self.lookahead_enabled = saved_lookahead;
+        self.preroll_frames = 0;
         self.pause();
         self.auto_stop_enabled = saved_auto_stop_enabled;
         self.defer_master_clip = saved_defer_master_clip;
@@ -1390,6 +1541,7 @@ impl Engine {
         self.playing = saved_playing;
         if saved_playing {
             self.reset_note_state(saved_position);
+            self.begin_preroll();
         }
     }
 
@@ -1761,6 +1913,7 @@ fn apply_controller_state(runtime: &mut TrackEngine, track: &Track, block_start:
         match &mut runtime.instrument {
             InstrumentRuntime::Synth(synth) => synth.set_sustain(sustain),
             InstrumentRuntime::Native(native) => native.set_sustain(sustain),
+            InstrumentRuntime::Sample(sample) => sample.set_sustain(sustain),
             InstrumentRuntime::Drums(drums) => drums.set_sustain(sustain),
             InstrumentRuntime::Plugin(plugin) => {
                 plugin.send_cc(64, if sustain { 127 } else { 0 });
@@ -1778,6 +1931,7 @@ fn apply_controller_state(runtime: &mut TrackEngine, track: &Track, block_start:
         match &mut runtime.instrument {
             InstrumentRuntime::Synth(synth) => synth.set_pitch_bend(bend_semitones),
             InstrumentRuntime::Native(native) => native.set_pitch_bend(bend_semitones),
+            InstrumentRuntime::Sample(sample) => sample.set_pitch_bend(bend_semitones),
             InstrumentRuntime::Drums(drums) => drums.set_pitch_bend(bend_semitones),
             InstrumentRuntime::Plugin(plugin) => plugin.send_pitch_bend(bend),
             InstrumentRuntime::Failed(_) => {}
@@ -1990,6 +2144,7 @@ mod tests {
             saved_playing: false,
             saved_auto_stop_enabled: true,
             saved_defer_master_clip: false,
+            saved_lookahead: true,
             saved_sample_rate: 48_000.0,
             sample_rate: 48_000.0,
             channels: 2,

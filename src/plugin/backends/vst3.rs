@@ -140,13 +140,63 @@ pub(super) fn load(
     if let Some(reused) = PluginRuntime::take_reusable(&path_key) {
         return Ok(reused);
     }
-    let mut host = Vst3Host::builder()
+    // ARA 绑定必须在首次 setActive 之前完成，因此通过“组件就绪”钩子建立文档。
+    // 默认只为已验证的 VOCALOID Bridge 启用；其它 ARA 插件可用 SURFING_ARA_HOST=1 打开。
+    // ARA binding must precede the first setActive, so the document is created from the
+    // component-ready hook. It is enabled by default only for the verified VOCALOID Bridge;
+    // other ARA plug-ins can opt in with SURFING_ARA_HOST=1.
+    let ara_capable = crate::plugin::ara::declares_ara(path);
+    let ara_enabled = ara_capable && crate::plugin::ara::host_enabled_for(path);
+    let ara_slot: Arc<Mutex<Option<crate::plugin::ara::AraSession>>> = Arc::new(Mutex::new(None));
+    let mut builder = Vst3Host::builder()
         .sample_rate(sample_rate)
         .block_size(block_size)
         .input_channels(2)
         .output_channels(2)
         .tempo(bpm)
-        .time_signature(time_sig.0 as i32, time_sig.1 as i32)
+        .time_signature(time_sig.0 as i32, time_sig.1 as i32);
+    if ara_enabled {
+        let slot = ara_slot.clone();
+        let document_name = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "SurfingStudio".into());
+        let hook: Arc<vst3_host::ComponentReadyHook> = Arc::new(
+            move |factory: *mut std::ffi::c_void,
+                  component: *mut std::ffi::c_void,
+                  processor: *mut std::ffi::c_void| {
+                let handles = vst3_host::RawPluginHandles {
+                    factory,
+                    component,
+                    processor,
+                };
+                match unsafe {
+                    crate::plugin::ara::AraSession::create(
+                        handles,
+                        sample_rate,
+                        bpm,
+                        time_sig,
+                        &document_name,
+                    )
+                } {
+                    Ok(session) => {
+                        if let Ok(mut slot) = slot.lock() {
+                            *slot = Some(session);
+                        }
+                        Ok(())
+                    }
+                    Err(error) => {
+                        // 绑定失败不阻止插件加载：降级为普通 VST3 实例。
+                        // A failed binding must not block loading; fall back to plain VST3.
+                        crate::diag::warn("plugin.ara", "ara.bind_failed", &[("error", &error)]);
+                        Ok(())
+                    }
+                }
+            },
+        );
+        builder = builder.component_ready_hook(hook);
+    }
+    let mut host = builder
         .build()
         .map_err(|e| format!("VST3 宿主初始化失败: {e}"))?;
 
@@ -179,9 +229,48 @@ pub(super) fn load(
     let has_editor = plugin.has_editor();
     let info = plugin.info();
     let kind = classify_vst3(&info.category, info.has_midi_input, info.audio_inputs);
+    // ARA 会话已在“组件就绪”钩子里创建并绑定；这里只取回并记录结果。
+    // The ARA session was created and bound in the component-ready hook; take it back here.
+    let ara = ara_slot.lock().ok().and_then(|mut slot| slot.take());
+    if let Some(session) = &ara {
+        crate::diag::info(
+            "plugin.ara",
+            "ara.bound",
+            &[
+                ("plugin", &name),
+                ("factory", &session.info().factory_id),
+                ("roles", &session.bound_roles().to_string()),
+            ],
+        );
+    } else if ara_capable && !ara_enabled {
+        // 未启用绑定（非 VOCALOID Bridge 且没有 SURFING_ARA_HOST），只记录插件确实提供 ARA 工厂。
+        // Binding is disabled (not the VOCALOID Bridge and no SURFING_ARA_HOST); just record that
+        // the plug-in does offer an ARA factory.
+        if let Some(handles) = plugin.raw_handles() {
+            if let Some(info) = unsafe { crate::plugin::ara::probe_factory(handles) } {
+                crate::diag::info(
+                    "plugin.ara",
+                    "ara.detected",
+                    &[
+                        ("plugin", &info.plugin_name),
+                        ("factory", &info.factory_id),
+                        ("version", &info.version),
+                        (
+                            "generations",
+                            &format!("{}..{}", info.lowest_generation, info.highest_generation),
+                        ),
+                    ],
+                );
+            }
+        }
+    }
     plugin
         .start_processing()
         .map_err(|e| format!("VST3 启动处理失败: {e}"))?;
+    // VOCALOID Bridge 只同步走带，输出必须直通，否则会用静音渲染替换轨道声音。
+    // The VOCALOID Bridge only synchronises transport; its output must pass the input through,
+    // otherwise its silent render replaces the track audio.
+    let sync_only = crate::plugin::ara::sync_only_passthrough(&name);
 
     Ok(PluginRuntime::Vst3(Vst3Runtime {
         plugin: Arc::new(Mutex::new(plugin)),
@@ -192,5 +281,12 @@ pub(super) fn load(
         kind,
         path_key,
         audio_buffers: None,
+        pending_playing: None,
+        pending_transport: None,
+        sync_only,
+        latency_samples: 0,
+        pending_state: None,
+        state_retries: 0,
+        ara,
     }))
 }

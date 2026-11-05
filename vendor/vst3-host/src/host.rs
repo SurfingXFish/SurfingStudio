@@ -44,6 +44,12 @@ pub struct Vst3Host {
     pub(crate) auto_recover_max_retries: u32,
     /// Per-plugin timeout for the crash-resistant discovery probe ([`Self::discover_plugins_safe`]).
     pub(crate) probe_timeout: std::time::Duration,
+    /// 加载后是否暂缓 `setActive(true)`（ARA 绑定必须在首次激活前完成）。
+    /// Whether to defer `setActive(true)` after loading (ARA binding must precede activation).
+    pub(crate) defer_activation: bool,
+    /// 组件就绪钩子（在激活/状态/上下文查询之前调用）。
+    /// Component-ready hook (runs before activation, state and context queries).
+    pub(crate) component_ready_hook: Option<std::sync::Arc<crate::plugin::ComponentReadyHook>>,
 }
 
 impl Vst3Host {
@@ -286,9 +292,30 @@ impl Vst3Host {
     /// Load a plugin in-process
     fn load_plugin_internal(&mut self, path: &Path, class_id: Option<&str>) -> Result<Plugin> {
         // Load the plugin implementation directly - it will handle path resolution
-        let mut plugin_impl = match class_id {
-            Some(class_id) => crate::internal::plugin_impl::PluginImpl::load_class(path, class_id)?,
-            None => crate::internal::plugin_impl::PluginImpl::load(path)?,
+        let mut plugin_impl = if let Some(hook) = self.component_ready_hook.clone() {
+            crate::internal::plugin_impl::PluginImpl::load_with_hook(
+                path,
+                class_id,
+                self.defer_activation,
+                Some(hook),
+            )?
+        } else {
+            match (class_id, self.defer_activation) {
+                (Some(class_id), true) => {
+                    crate::internal::plugin_impl::PluginImpl::load_class_deferred(
+                        path,
+                        class_id,
+                        true,
+                    )?
+                }
+                (Some(class_id), false) => {
+                    crate::internal::plugin_impl::PluginImpl::load_class(path, class_id)?
+                }
+                (None, true) => {
+                    crate::internal::plugin_impl::PluginImpl::load_deferred(path, true)?
+                }
+                (None, false) => crate::internal::plugin_impl::PluginImpl::load(path)?,
+            }
         };
 
         // Apply the builder's audio config (sample rate / block size) so the plugin actually
@@ -443,6 +470,8 @@ impl Default for Vst3Host {
             auto_recover_plugins: false,
             auto_recover_max_retries: 1,
             probe_timeout: crate::discovery::DEFAULT_PROBE_TIMEOUT,
+            defer_activation: false,
+            component_ready_hook: None,
         }
     }
 }
@@ -462,6 +491,8 @@ pub struct Vst3HostBuilder {
     auto_recover_plugins: bool,
     auto_recover_max_retries: Option<u32>,
     probe_timeout: Option<std::time::Duration>,
+    defer_activation: bool,
+    component_ready_hook: Option<std::sync::Arc<crate::plugin::ComponentReadyHook>>,
 }
 
 impl Vst3HostBuilder {
@@ -574,6 +605,31 @@ impl Vst3HostBuilder {
         self
     }
 
+    /// 加载后暂缓激活（`setActive(true)`），让宿主在首次激活前完成 ARA 文档绑定。
+    /// Defer activation after loading so the host can bind an ARA document controller first.
+    ///
+    /// 调用方必须在开始处理前调用 [`Plugin::start_processing`](crate::Plugin::start_processing)。
+    /// The caller must call [`Plugin::start_processing`](crate::Plugin::start_processing) before
+    /// processing. Ignored by process-isolated loads.
+    pub fn defer_activation(mut self, defer: bool) -> Self {
+        self.defer_activation = defer;
+        self
+    }
+
+    /// 注册组件就绪钩子：在组件初始化之后、激活/状态/进程上下文查询之前调用。
+    /// Register a component-ready hook, called after component initialization and before
+    /// activation, state restore or process-context queries.
+    ///
+    /// ARA 等外围协议用它完成绑定；钩子返回错误会让本次加载失败。
+    /// Companion protocols such as ARA use it to bind; an error fails the load.
+    pub fn component_ready_hook(
+        mut self,
+        hook: std::sync::Arc<crate::plugin::ComponentReadyHook>,
+    ) -> Self {
+        self.component_ready_hook = Some(hook);
+        self
+    }
+
     /// Build the configured host.
     ///
     /// Rejects a sample rate, block size or time signature the plugin setup can't honour, using
@@ -624,6 +680,8 @@ impl Vst3HostBuilder {
             probe_timeout: self
                 .probe_timeout
                 .unwrap_or(crate::discovery::DEFAULT_PROBE_TIMEOUT),
+            defer_activation: self.defer_activation,
+            component_ready_hook: self.component_ready_hook,
         })
     }
 }

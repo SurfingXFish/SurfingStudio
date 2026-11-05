@@ -40,19 +40,56 @@ use surfing_studio::audio::gpu::{GpuApi, GpuRuntime};
 #[cfg(not(target_os = "android"))]
 use surfing_studio::diag;
 
+/// 所属模块：main / 崩溃定位
+/// 功能：把一个地址描述成“模块名+偏移”，用于在没有调试器时定位崩溃位置。
+/// 输入：`address`：代码地址。
+/// 输出/副作用：返回字符串；不修改状态。
+/// 复杂度：时间 O(路径长度)，空间 O(路径长度)。
+///
+/// Module: main / crash location
+/// Purpose: Describe an address as "module+offset" so a crash can be located without a debugger.
+/// Inputs: `address`: code address.
+/// Outputs / side effects: the description; no state change.
+/// Complexity: O(path length) time and space.
+#[cfg(target_os = "windows")]
+unsafe fn describe_address(address: usize) -> String {
+    use winapi::um::libloaderapi::{GetModuleFileNameW, GetModuleHandleExW};
+    // GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT
+    const FLAGS: u32 = 0x0000_0004 | 0x0000_0002;
+    if address == 0 {
+        return "0x0".to_string();
+    }
+    let mut module = std::ptr::null_mut();
+    // SAFETY: `address` points into a loaded module; with FROM_ADDRESS the API treats it as a code
+    // address and only writes the base handle into `module`.
+    if unsafe { GetModuleHandleExW(FLAGS, address as *const u16, &mut module) } == 0 {
+        return format!("0x{address:X}");
+    }
+    let mut path = [0u16; 260];
+    // SAFETY: `module` is a valid HMODULE and the buffer is large enough (260 WCHARs).
+    let length = unsafe { GetModuleFileNameW(module, path.as_mut_ptr(), path.len() as u32) };
+    let name = if length == 0 {
+        "unknown".to_string()
+    } else {
+        let text = String::from_utf16_lossy(&path[..length as usize]);
+        text.rsplit(['\\', '/']).next().unwrap_or(&text).to_string()
+    };
+    format!("{name}+0x{:X}", address.saturating_sub(module as usize))
+}
+
 /// 所属模块：main / 退出兜底
-/// 功能：未处理异常（含插件内部的原生/.NET 异常）发生时记录 FATAL 并立即结束进程。
+/// 功能：未处理异常（含插件内部的原生/.NET 异常）发生时记录 FATAL、崩溃地址与调用栈，并立即结束进程。
 /// 输入：`info`：Windows 异常信息；可能为空指针。
 /// 输出/副作用：写诊断日志尾帧并调用 `TerminateProcess`；正常情况下不会返回。
-/// 复杂度：时间 O(1)，空间 O(1)。
+/// 复杂度：时间 O(调用栈深度)，空间 O(调用栈深度)。
 ///
 /// Module: main / exit fallback
-/// Purpose: Log a FATAL record and terminate immediately on an unhandled exception (including
-/// native/.NET exceptions raised inside plugins).
+/// Purpose: Log a FATAL record with the fault address and call stack, then terminate immediately on
+/// an unhandled exception (including native/.NET exceptions raised inside plugins).
 /// Inputs: `info`: Windows exception information; may be null.
 /// Outputs / side effects: writes the log footer and calls `TerminateProcess`; normally never
 /// returns.
-/// Complexity: O(1) time and space.
+/// Complexity: O(stack depth) time and space.
 #[cfg(target_os = "windows")]
 unsafe extern "system" fn terminate_on_unhandled_exception(
     info: *mut winapi::um::winnt::EXCEPTION_POINTERS,
@@ -66,11 +103,34 @@ unsafe extern "system" fn terminate_on_unhandled_exception(
         if !info.is_null() {
             if let Some(record) = (*info).ExceptionRecord.as_ref() {
                 let code = format!("0x{:08X}", record.ExceptionCode);
+                // 崩溃位置与调用栈都记成“模块+RVA”，没有调试器也能判断是哪个插件/哪段代码。
+                // Record the fault address and call stack as "module+RVA" so the crashing plug-in or
+                // code path can be identified without a debugger.
+                let fault = describe_address(record.ExceptionAddress as usize);
+                let mut frames = [std::ptr::null_mut(); 16];
+                let count = winapi::um::winnt::RtlCaptureStackBackTrace(
+                    0,
+                    frames.len() as u32,
+                    frames.as_mut_ptr(),
+                    std::ptr::null_mut(),
+                );
+                let mut stack = String::new();
+                for frame in frames.iter().take(count as usize) {
+                    if !stack.is_empty() {
+                        stack.push('|');
+                    }
+                    stack.push_str(&describe_address(*frame as usize));
+                }
                 diag::crash(
                     "unhandled_exception",
                     "app.crash",
                     "unhandled_exception",
-                    &[("exception_code", &code), ("phase", "native")],
+                    &[
+                        ("exception_code", &code),
+                        ("phase", "native"),
+                        ("fault", &fault),
+                        ("stack", &stack),
+                    ],
                 );
             }
         }

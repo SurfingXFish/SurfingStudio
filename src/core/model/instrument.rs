@@ -23,6 +23,7 @@
 //! - `NativeInstrument::new` / `InstrumentRef::label` / `key`: reference construction and labels.
 
 use super::plugin::PluginRef;
+use super::sample_bank::SampleInstrument;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -341,6 +342,12 @@ pub enum InstrumentRef {
     Drums(DrumSettings),
     Native(NativeInstrument),
     Plugin(PluginRef),
+    /// 追加在末尾以保持既有工程文件的 MessagePack 变体序号不变。
+    /// 旧版临时实现曾使用 `Sampled` 变体名，通过 alias 兼容读取。
+    /// Appended last so the MessagePack variant indices of existing projects stay stable.
+    /// An earlier build used the `Sampled` variant name; the alias keeps those projects readable.
+    #[serde(alias = "Sampled")]
+    Sample(SampleInstrument),
 }
 
 impl InstrumentRef {
@@ -349,6 +356,13 @@ impl InstrumentRef {
             InstrumentRef::Synth(_) => "内置合成器".to_string(),
             InstrumentRef::Drums(_) => "内置鼓机".to_string(),
             InstrumentRef::Native(native) => native.kind.label().to_string(),
+            InstrumentRef::Sample(sample) => {
+                if sample.name.is_empty() {
+                    sample.bank.clone()
+                } else {
+                    sample.name.clone()
+                }
+            }
             InstrumentRef::Plugin(p) => {
                 if p.name.is_empty() {
                     p.path
@@ -367,6 +381,7 @@ impl InstrumentRef {
             InstrumentRef::Synth(_) => "builtin:synth".into(),
             InstrumentRef::Drums(_) => "builtin:drums".into(),
             InstrumentRef::Native(native) => format!("builtin:{}", native.kind.key()),
+            InstrumentRef::Sample(sample) => format!("builtin:bank:{}", sample.bank),
             InstrumentRef::Plugin(p) => p.key(),
         }
     }
