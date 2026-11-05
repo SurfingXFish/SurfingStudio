@@ -42,6 +42,7 @@ pub mod ffi;
 
 use self::ffi::*;
 use crate::diag;
+use std::cell::Cell;
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -88,6 +89,51 @@ const ARA_MARKER_SCAN_LIMIT: u64 = 64 * 1024 * 1024;
 /// 静音音频源的通道数。
 /// Channel count of the silent audio source.
 const SILENT_SOURCE_CHANNELS: i32 = 2;
+
+/// 创建播放区域时没有外部时间范围提示时的默认长度（秒）。
+/// 播放区域必须在插件激活前就存在，否则播放渲染器不会接受它；真实范围随后由
+/// `set_timeline` 更新。
+/// Default playback-region length (seconds) when the caller provides no hint. The region must
+/// exist before the plug-in is activated or the playback renderer will not take it; the real
+/// range is applied afterwards through `set_timeline`.
+const DEFAULT_REGION_SECONDS: f64 = 60.0;
+
+thread_local! {
+    /// 加载插件前由引擎写入的 ARA 区域范围（秒），只在创建会话的线程上使用。
+    /// ARA region range (seconds) written by the engine before loading a plug-in; only used on
+    /// the thread that creates the session.
+    static INITIAL_TIMELINE: Cell<Option<(f64, f64)>> = const { Cell::new(None) };
+}
+
+/// 所属模块：plugin / ARA2 宿主
+/// 功能：登记下一次 ARA 会话创建时要使用的播放区域范围（秒）。
+/// 输入：`span`（起始秒、时长秒）；`None` 表示清除。
+/// 输出/副作用：只写当前线程的暂存值；不调用插件。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: plugin / ARA2 host
+/// Purpose: Record the playback-region range (seconds) the next ARA session should create.
+/// Inputs: `span` (start, duration); `None` clears it.
+/// Outputs / side effects: stores a thread-local value; no plug-in calls.
+/// Complexity: O(1) time and space.
+pub fn set_initial_timeline_hint(span: Option<(f64, f64)>) {
+    INITIAL_TIMELINE.with(|cell| cell.set(span));
+}
+
+/// 所属模块：plugin / ARA2 宿主
+/// 功能：取走并清除当前线程登记的播放区域范围。
+/// 输入：无。
+/// 输出/副作用：返回暂存范围；不调用插件。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: plugin / ARA2 host
+/// Purpose: Take and clear the playback-region range recorded on this thread.
+/// Inputs: none.
+/// Outputs / side effects: the stored range; no plug-in calls.
+/// Complexity: O(1) time and space.
+fn take_initial_timeline_hint() -> Option<(f64, f64)> {
+    INITIAL_TIMELINE.with(Cell::take)
+}
 
 /// `IMainFactory` 的 vtable（`FUnknown` 之后一个 `getFactory`）。
 /// `IMainFactory` vtable (`getFactory` after `FUnknown`).
@@ -348,6 +394,30 @@ pub fn host_enabled_for(path: &Path) -> bool {
 pub unsafe fn probe_factory(handles: RawPluginHandles) -> Option<AraFactoryInfo> {
     let factory = discover_factory(handles).ok()?;
     Some(read_factory_info(factory))
+}
+
+/// 所属模块：plugin / ARA2 宿主
+/// 功能：判断插件是否只是“走带同步桥”，不产生音频。
+/// 输入：`name` 插件显示名或文件名。
+/// 输出/副作用：VOCALOID Bridge 返回 `true`；不修改状态。
+/// 复杂度：时间 O(名称长度)，空间 O(1)。
+///
+/// Module: plugin / ARA2 host
+/// Purpose: Whether the plug-in is only a transport-sync bridge that produces no audio.
+/// Inputs: `name` — display name or file name.
+/// Outputs / side effects: `true` for the VOCALOID Bridge; no state change.
+/// Complexity: O(name length) time and O(1) space.
+///
+/// VOCALOID Bridge 的作用是把走带/速度/循环同步给 VOCALOID6 Editor，人声由 VOCALOID
+/// VSTi 发声（官方流程把 Bridge 放在一条静音音频轨的事件 FX 上）。把它当普通 ARA 效果
+/// 处理会用它的渲染结果替换轨道音频，连编辑器里的试听都会被吞掉。
+/// The VOCALOID Bridge only forwards transport/tempo/cycle to the VOCALOID6 Editor; the vocal
+/// itself is produced by the VOCALOID VSTi (the official flow puts the Bridge on an event of a
+/// muted audio track). Treating it as a regular ARA effect replaces the track audio with its
+/// rendered output, which even swallows the editor's note preview.
+pub fn sync_only_passthrough(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    lower.contains("vocaloid bridge") || lower.contains("vocaloidbridge")
 }
 
 /// 所属模块：plugin / ARA2 宿主
@@ -1089,6 +1159,14 @@ impl AraSession {
         time_sig: (u8, u8),
         document_name: &str,
     ) -> Result<Self, String> {
+        // 绑定过程一旦卡住，日志里会停在 begin 而没有 created：用于区分“插件初始化挂起”。
+        // If binding hangs, the log stops at `begin` without `created`, which pinpoints a hung
+        // plug-in initialisation.
+        diag::info(
+            "plugin.ara",
+            "ara.session_begin",
+            &[("document", document_name)],
+        );
         let factory = discover_factory(handles)?;
         let info = read_factory_info(factory);
 
@@ -1233,6 +1311,40 @@ impl AraSession {
         let (extension, roles) = bind_plugin(handles.processor, controller_ref)?;
         session.extension = extension;
         session.bound_roles = roles;
+
+        // ARA 规范要求 `addPlaybackRegion` 只在插件不处于渲染状态（VST3 未激活）时调用。
+        // 会话在组件就绪钩子里创建，此时插件尚未激活；必须马上建立播放区域，否则激活后的
+        // 渲染器没有区域可渲染，表现为“编辑器里试听有声音、走带播放无声”。
+        // The ARA spec requires `addPlaybackRegion` while the plug-in is not in render state
+        // (VST3 inactive). The session is created from the component-ready hook, before
+        // activation, so the region must be created now: a region added after activation is not
+        // taken by the playback renderer, heard as "editor preview works, transport is silent".
+        let (start, duration) =
+            take_initial_timeline_hint().unwrap_or((0.0, DEFAULT_REGION_SECONDS));
+        if let Some(begin) = dc.begin_editing {
+            begin(controller_ref);
+        }
+        let created = session.create_audio_graph(start, duration);
+        if let Some(end) = dc.end_editing {
+            end(controller_ref);
+        }
+        if let Some(notify) = dc.notify_model_updates {
+            notify(controller_ref);
+        }
+        match &created {
+            Ok(()) => {
+                session.timeline = Some((start, duration));
+            }
+            Err(error) => {
+                // 不在绑定阶段失败：后续 set_timeline 会再试一次。
+                // Do not fail the bind: a later set_timeline retries.
+                diag::warn(
+                    "plugin.ara",
+                    "ara.timeline_create_failed",
+                    &[("plugin", &info.plugin_name), ("error", error)],
+                );
+            }
+        }
 
         diag::info(
             "plugin.ara",
@@ -1436,7 +1548,6 @@ impl AraSession {
     /// Outputs / side effects: updates the host content table and notifies the plug-in.
     /// Complexity: O(1) time and space.
     pub fn set_tempo(&mut self, bpm: f64, time_sig: (u8, u8)) -> Result<(), String> {
-        self.ensure_controller_thread("set_tempo")?;
         let tempo = TempoMap {
             bpm: if bpm.is_finite() && bpm > 0.0 {
                 bpm
@@ -1461,6 +1572,7 @@ impl AraSession {
         if !changed || self.objects.musical_context.is_null() {
             return Ok(());
         }
+        self.ensure_controller_thread("set_tempo")?;
         unsafe {
             let dc = &*self.controller;
             if let Some(begin) = dc.begin_editing {
@@ -1497,21 +1609,28 @@ impl AraSession {
     /// and playback region; later calls update the region properties.
     /// Complexity: O(model objects) time and O(1) space.
     pub fn set_timeline(&mut self, start: f64, duration: f64) -> Result<(), String> {
-        self.ensure_controller_thread("set_timeline")?;
         if !start.is_finite() || !duration.is_finite() || duration <= 0.0 {
             return Err("ARA 播放区域的时间范围无效".to_string());
         }
+        // 值没变就不需要碰插件：界面线程也会调用同步，先比较可以避免把线程错误当成故障。
+        // Unchanged values never touch the plug-in: the UI thread syncs too, and comparing first
+        // keeps a thread mismatch from looking like a real failure.
         if self.timeline.is_some_and(|(old_start, old_duration)| {
             (old_start - start).abs() < 1e-6 && (old_duration - duration).abs() < 1e-6
         }) {
             return Ok(());
         }
+        self.ensure_controller_thread("set_timeline")?;
         unsafe {
             let dc = &*self.controller;
             if let Some(begin) = dc.begin_editing {
                 begin(self.controller_ref);
             }
-            if self.objects.audio_source.is_null() {
+            // 以播放区域是否存在为准：绑定阶段建图失败时可能已经留下音频源，
+            // 只看音频源会走更新路径而永远补不上播放区域。
+            // Key off the playback region: a failed bind-time graph may leave the audio source
+            // behind, and checking only that would take the update path forever without a region.
+            if self.objects.playback_region.is_null() {
                 self.create_audio_graph(start, duration)?;
             } else {
                 self.update_audio_graph(start, duration)?;
@@ -1707,7 +1826,75 @@ impl AraSession {
         }
         self.objects.playback_region = region;
         self.register_region_on_renderers(region, true);
+        let (playback_ready, editor_ready) = if self.extension.is_null() {
+            (false, false)
+        } else {
+            let extension = &*self.extension;
+            (
+                !extension.playback_renderer_interface.is_null()
+                    && !extension.playback_renderer_ref.is_null(),
+                !extension.editor_renderer_interface.is_null()
+                    && !extension.editor_renderer_ref.is_null(),
+            )
+        };
+        diag::info(
+            "plugin.ara",
+            "ara.playback_region",
+            &[
+                ("start", &format!("{start:.3}")),
+                ("duration", &format!("{duration:.3}")),
+                ("playback_renderer", &playback_ready.to_string()),
+                ("editor_renderer", &editor_ready.to_string()),
+            ],
+        );
+        // ARA 2 要求宿主在编辑器视图出现/选择变化时通知当前区域；Bridge 依赖这条选择
+        // 把 DAW 时间轴映射到编辑器时间轴。缺少选择时编辑器播放头不跟随。
+        // ARA 2 wants the host to tell the editor view which region is current; the Bridge uses
+        // this mapping to follow the DAW timeline. Without it the editor playhead stays put.
+        self.notify_selection();
         Ok(())
+    }
+
+    /// 所属模块：plugin / ARA2 宿主
+    /// 功能：把当前播放区域与区域序列作为选择通知给插件编辑器视图。
+    /// 输入：`self`。
+    /// 输出/副作用：调用 `notifySelection`；没有编辑器视图时忽略。
+    /// 复杂度：时间 O(1)，空间 O(1)。
+    ///
+    /// Module: plugin / ARA2 host
+    /// Purpose: Notify the plug-in editor view that the current playback region/sequence is selected.
+    /// Inputs: `self`.
+    /// Outputs / side effects: calls `notifySelection`; ignored without an editor view.
+    /// Complexity: O(1) time and space.
+    unsafe fn notify_selection(&self) {
+        if self.extension.is_null() || self.objects.playback_region.is_null() {
+            return;
+        }
+        let extension = &*self.extension;
+        if extension.editor_view_ref.is_null() || extension.editor_view_interface.is_null() {
+            return;
+        }
+        let view = &*extension.editor_view_interface;
+        let Some(notify) = view.notify_selection else {
+            return;
+        };
+        let regions = [self.objects.playback_region];
+        let sequences = [self.objects.region_sequence];
+        let sequence_count = usize::from(!self.objects.region_sequence.is_null());
+        let selection = AraViewSelection {
+            struct_size: std::mem::size_of::<AraViewSelection>(),
+            playback_region_refs_count: 1,
+            playback_region_refs: regions.as_ptr(),
+            region_sequence_refs_count: sequence_count,
+            region_sequence_refs: sequences.as_ptr(),
+            time_range: std::ptr::null(),
+        };
+        notify(extension.editor_view_ref, &selection);
+        diag::info(
+            "plugin.ara",
+            "ara.selection",
+            &[("regions", "1"), ("sequences", &sequence_count.to_string())],
+        );
     }
 
     /// 所属模块：plugin / ARA2 宿主

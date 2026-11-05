@@ -53,6 +53,9 @@ pub struct Vst3Runtime {
     /// 尚未送达插件的走带位置：同上，避免定位被静默丢弃。
     /// Transport position not yet delivered: same as above, so a seek is never silently dropped.
     pub pending_transport: Option<vst3_host::TransportPosition>,
+    /// 只做走带同步、不产生音频（VOCALOID Bridge）：输出直通输入。
+    /// Transport-sync only, produces no audio (VOCALOID Bridge): its output passes the input through.
+    pub sync_only: bool,
     /// 插件上报的处理延迟（采样数）缓存；插件忙时沿用上一次的值。
     /// Cached reported processing latency in samples; the last value is kept while the plugin is busy.
     pub latency_samples: usize,
@@ -212,6 +215,7 @@ impl PluginRuntime {
             audio_buffers: None,
             pending_playing: None,
             pending_transport: None,
+            sync_only: false,
             latency_samples: 0,
             pending_state: None,
             state_retries: 0,
@@ -1208,7 +1212,20 @@ impl PluginRuntime {
                             dst[..frames.min(r.len())].copy_from_slice(&r[..frames.min(r.len())]);
                         }
                     }
-                    if plugin.process_audio(buffers).is_ok() {
+                    if let Err(error) = plugin.process_audio(buffers) {
+                        // 插件拒绝处理时输出保持静音；失败原因必须留痕，否则现象只是“没有声音”。
+                        // A rejected process leaves the output silent; the reason must be logged or
+                        // the only symptom is "no sound".
+                        use std::sync::atomic::{AtomicU32, Ordering};
+                        static WARNED: AtomicU32 = AtomicU32::new(0);
+                        if WARNED.fetch_add(1, Ordering::Relaxed) < 5 {
+                            crate::diag::warn(
+                                "plugin.runtime",
+                                "plugin.process_failed",
+                                &[("plugin", &v.name), ("error", &error.to_string())],
+                            );
+                        }
+                    } else {
                         let first = buffers.outputs.first();
                         if let Some(src) = first {
                             let n = frames.min(src.len());
@@ -1222,6 +1239,36 @@ impl PluginRuntime {
                         if let Some(src) = second {
                             let n = frames.min(src.len());
                             out_r[..n].copy_from_slice(&src[..n]);
+                        }
+                        // 同步桥不发声：保留输入原样，编辑器里的试听与 VSTi 人声都不会被
+                        // 它的静音渲染替换。走带/速度已经在上面的 `process_audio` 里送达。
+                        // A sync bridge makes no sound: keep the input untouched so its silent render
+                        // can never replace the editor preview or the VOCALOID VSTi output; transport
+                        // was already delivered by `process_audio` above.
+                        if v.sync_only {
+                            if let Some((l, r)) = input {
+                                let n = frames.min(l.len()).min(r.len());
+                                out_l[..n].copy_from_slice(&l[..n]);
+                                out_r[..n].copy_from_slice(&r[..n]);
+                            }
+                            // 只需一条证据：Bridge 是否真的在走带时被处理（收到 ProcessContext）。
+                            // One proof line is enough: is the Bridge really processed during
+                            // playback (i.e. does it receive the ProcessContext)?
+                            use std::sync::atomic::{AtomicBool, Ordering};
+                            static PROCESSED: AtomicBool = AtomicBool::new(false);
+                            if !PROCESSED.swap(true, Ordering::Relaxed) {
+                                let samples = transport.map(|p| p.samples).unwrap_or(-1);
+                                let music = transport.map(|p| p.quarter_notes).unwrap_or(-1.0);
+                                crate::diag::info(
+                                    "plugin.ara",
+                                    "ara.bridge_processed",
+                                    &[
+                                        ("plugin", &v.name),
+                                        ("samples", &samples.to_string()),
+                                        ("quarter_notes", &format!("{music:.3}")),
+                                    ],
+                                );
+                            }
                         }
                     }
                 }

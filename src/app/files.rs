@@ -568,25 +568,11 @@ impl SurfingApp {
         // 导入的工程尚未保存为本软件格式，需要提示用户另存。
         // The imported project has not been saved in the native format yet.
         self.dirty = is_imported;
-        let has_plugins = self
-            .project
-            .master_effect
-            .as_ref()
-            .is_some_and(|effect| effect.plugin().is_some())
-            || self.project.tracks.iter().any(|track| {
-                matches!(track.instrument, InstrumentRef::Plugin(_))
-                    || track.effects.iter().any(|effect| effect.plugin().is_some())
-            });
-        // 插件运行时必须在播放前就绪，因此在加载提示下完成同步。
-        // Plugin runtimes must be ready before playback, so sync while the
-        // loading prompt is visible instead of waiting for the first play.
-        self.engine_stale = false;
-        self.needs_sync = true;
-        // 先让 UI 绘制一帧加载提示，再把插件同步放到后台线程。
-        // Give the UI one frame to paint the loading prompt, then sync plugins
-        // on a worker thread so the window stays responsive.
-        self.defer_sync = true;
-        self.sync_in_background = true;
+        let has_plugins = self.project_has_plugins();
+        // 插件运行时必须在播放前就绪：在 UI 线程按时间片补载，加载提示保持可见。
+        // Plugin runtimes must be ready before playback: load them in UI-thread slices while the
+        // loading prompt stays visible.
+        self.begin_instrument_load();
         self.loading_until = None;
         self.loading_message = Some(if has_plugins {
             "正在加载插件…".into()
@@ -670,7 +656,7 @@ impl SurfingApp {
     /// Complexity: O(project size) time for the snapshot clone (plugin states are `Arc` and not
     /// copied) and O(project size) space.
     pub(super) fn save_project_in_background(&mut self, force_dialog: bool, autosave: bool) {
-        if self.engine_sync_rx.is_some() || self.instrument_load_pending {
+        if self.instrument_load_pending {
             self.status = "正在加载插件，请稍候…".into();
             return;
         }
@@ -717,11 +703,9 @@ impl SurfingApp {
         };
         {
             let engine = self.engine.clone();
-            if !self.engine_stale {
-                if let Ok(engine) = engine.lock() {
-                    engine.capture_plugin_states(&mut self.project);
-                };
-            }
+            if let Ok(engine) = engine.lock() {
+                engine.capture_plugin_states(&mut self.project);
+            };
         }
         // 写入线程持有快照：插件状态是 `Arc<[u8]>`，克隆不会复制可能数 MB 的状态块，
         // UI 线程也无需等待压缩或磁盘 IO。
@@ -925,7 +909,7 @@ impl SurfingApp {
     /// copies it; the status bar reports the target or the error.
     /// Complexity: O(project size) time (background) and O(project snapshot) space.
     pub fn export_project_copy_to_public(&mut self) {
-        if self.engine_sync_rx.is_some() || self.instrument_load_pending {
+        if self.instrument_load_pending {
             self.status = "正在加载插件，请稍候…".into();
             return;
         }
@@ -933,7 +917,7 @@ impl SurfingApp {
             self.status = "正在导出副本，请稍候…".into();
             return;
         }
-        if !self.engine_stale {
+        {
             let engine = self.engine.clone();
             if let Ok(engine) = engine.lock() {
                 engine.capture_plugin_states(&mut self.project);
@@ -984,7 +968,7 @@ impl SurfingApp {
     /// the scratch directory, then a worker thread copies it.
     /// Complexity: O(project length × tracks) + user time; O(rendered samples) space.
     pub fn export_wav_copy_to_public(&mut self) {
-        if self.engine_sync_rx.is_some() || self.instrument_load_pending {
+        if self.instrument_load_pending {
             self.status = "正在加载插件，请稍候…".into();
             return;
         }
@@ -999,7 +983,7 @@ impl SurfingApp {
         };
         let temp_path = temp_dir.join(&name);
         self.pause_transport();
-        if !self.engine_stale {
+        {
             let engine = self.engine.clone();
             if let Ok(engine) = engine.lock() {
                 engine.capture_plugin_states(&mut self.project);

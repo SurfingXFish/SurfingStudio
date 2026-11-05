@@ -475,6 +475,25 @@ pub struct AraEditorRendererInterface {
     pub remove_region_sequence: Option<unsafe extern "C" fn(AraRef, AraRef)>,
 }
 
+/// `ARAViewSelection`
+#[repr(C, packed(1))]
+pub struct AraViewSelection {
+    pub struct_size: AraSize,
+    pub playback_region_refs_count: AraSize,
+    pub playback_region_refs: *const AraRef,
+    pub region_sequence_refs_count: AraSize,
+    pub region_sequence_refs: *const AraRef,
+    pub time_range: *const AraContentTimeRange,
+}
+
+/// `ARAEditorViewInterface`
+#[repr(C, packed(1))]
+pub struct AraEditorViewInterface {
+    pub struct_size: AraSize,
+    pub notify_selection: Option<unsafe extern "C" fn(AraRef, *const AraViewSelection)>,
+    pub notify_hide_region_sequences: Option<unsafe extern "C" fn(AraRef, AraSize, *const AraRef)>,
+}
+
 /// `ARAPlugInExtensionInstance`（ARA 2 角色版；旧字段同时保留）。
 /// `ARAPlugInExtensionInstance` (ARA 2 roles; the deprecated fields are kept too).
 #[repr(C, packed(1))]
@@ -487,7 +506,7 @@ pub struct AraPlugInExtensionInstance {
     pub editor_renderer_ref: AraRef,
     pub editor_renderer_interface: *const AraEditorRendererInterface,
     pub editor_view_ref: AraRef,
-    pub editor_view_interface: *const c_void,
+    pub editor_view_interface: *const AraEditorViewInterface,
 }
 
 #[cfg(test)]
@@ -523,6 +542,8 @@ mod tests {
         assert_eq!(std::mem::size_of::<AraFactory>(), 128);
         assert_eq!(std::mem::size_of::<AraPlaybackRendererInterface>(), 24);
         assert_eq!(std::mem::size_of::<AraEditorRendererInterface>(), 40);
+        assert_eq!(std::mem::size_of::<AraEditorViewInterface>(), 24);
+        assert_eq!(std::mem::size_of::<AraViewSelection>(), 48);
         assert_eq!(std::mem::size_of::<AraPlugInExtensionInstance>(), 72);
     }
 }

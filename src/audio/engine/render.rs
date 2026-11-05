@@ -497,9 +497,17 @@ impl Engine {
             if self.plugin_transport_playing {
                 self.send_plugin_transport_stopped();
             }
-            if self.live_timeout > 0.0 {
+            let auditioning = self.live_timeout > 0.0;
+            // 插件编辑器打开时也要继续处理：VOCALOID 6 等在编辑器里点音符时，试听音频只有在
+            // 宿主持续调用 `process` 时才会从插件输出出来。此时走带不推进，`kPlaying` 保持 false。
+            // Keep processing while a plugin editor is open: VOCALOID 6 and similar instruments only
+            // emit their editor preview through `process`, so the host must keep calling it. The
+            // transport does not advance and `kPlaying` stays false.
+            if auditioning || self.plugin_editor_active {
                 self.render_live(out, frames);
-                self.live_timeout -= frames as f32 / self.sample_rate as f32;
+                if auditioning {
+                    self.live_timeout -= frames as f32 / self.sample_rate as f32;
+                }
             } else {
                 for level in &mut self.levels {
                     *level *= 0.85;
@@ -547,6 +555,15 @@ impl Engine {
             if let InstrumentRuntime::Plugin(plugin) = &mut runtime.instrument {
                 plugin.set_playing(false);
             }
+            // 效果器（含 ARA 同步桥）同样要收到停止：否则 Bridge 会让编辑器停在“播放中”。
+            // Effects (including the ARA sync bridge) need the stop too, otherwise the Bridge
+            // leaves the editor app in the playing state.
+            for effect in &mut runtime.effects {
+                effect.set_playing(false);
+            }
+        }
+        if let Some(effect) = &mut self.master_effect {
+            effect.set_playing(false);
         }
     }
 
@@ -569,6 +586,19 @@ impl Engine {
     /// Complexity: O(frames × tracks + events in block) time and O(1) space.
     fn render_block(&mut self, out: &mut [Vec<f32>], frames: usize) {
         let bps = self.project.bpm.max(1.0) / (60.0 * self.sample_rate);
+        // 新一轮播放：把 kPlaying 重新发给效果器（停止时发过 false，编辑器需要这次恢复）。
+        // A new playback run: re-send kPlaying to effects (they were told to stop, and the editor
+        // app needs the restart).
+        if !self.plugin_transport_playing {
+            for runtime in &mut self.tracks {
+                for effect in &mut runtime.effects {
+                    effect.set_playing(true);
+                }
+            }
+            if let Some(effect) = &mut self.master_effect {
+                effect.set_playing(true);
+            }
+        }
         let mut offset = 0;
         // 预卷：先把插件链的延迟线用当前位置的内容填满，这一段声音丢弃。之后内部游标比听感
         // 位置早一个链延迟，补偿延迟 + 插件延迟正好抵消，开效果器不再让整首歌后移。
@@ -776,12 +806,12 @@ impl Engine {
                     // plugin's internal position disagrees: continuous playback advances inside the
                     // plugin without repeated resets, while a block skipped for a busy lock is
                     // corrected on the next call so no delay accumulates.
-                    if !self.plugin_transport_playing {
+                    if advance && !self.plugin_transport_playing {
                         plugin.set_playing(true);
                     }
                     let transport_samples =
                         (block_start * 60.0 / self.project.bpm.max(1.0) * sample_rate) as i64;
-                    if self.plugin_transport_seek {
+                    if advance && self.plugin_transport_seek {
                         plugin.seek_transport(block_start, transport_samples);
                     }
                     plugin.process(
@@ -926,8 +956,12 @@ impl Engine {
         }
 
         self.gates_scratch = gates;
-        self.plugin_transport_playing = true;
-        self.plugin_transport_seek = false;
+        // 试听（`advance == false`）没有把 kPlaying 发给插件，不能把这个标志置为已播放。
+        // An audition (`advance == false`) never sent kPlaying, so the flag must stay untouched.
+        if advance {
+            self.plugin_transport_playing = true;
+            self.plugin_transport_seek = false;
+        }
         self.audio_scratch_l = track_l;
         self.audio_scratch_r = track_r;
         self.wet_scratch_l = wet_l;

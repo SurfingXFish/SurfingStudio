@@ -52,9 +52,6 @@ impl SurfingApp {
     }
 
     pub fn mark_dirty(&mut self) {
-        if self.engine_stale {
-            self.begin_engine_load();
-        }
         self.edit_seq = self.edit_seq.wrapping_add(1);
         self.dirty = true;
         self.needs_sync = true;
@@ -77,9 +74,6 @@ impl SurfingApp {
 
     /// Bump the render revision of a whole track (instrument/effects/controllers).
     pub fn bump_track_revision(&mut self, track_index: usize) {
-        if self.engine_stale {
-            self.begin_engine_load();
-        }
         if let Some(track) = self.project.tracks.get_mut(track_index) {
             track.bump_revision();
             self.edit_seq = self.edit_seq.wrapping_add(1);
@@ -90,9 +84,6 @@ impl SurfingApp {
 
     /// Bump the render revision of a single MIDI clip.
     pub fn bump_clip_revision(&mut self, track_index: usize, clip_index: usize) {
-        if self.engine_stale {
-            self.begin_engine_load();
-        }
         if let Some(clip) = self
             .project
             .tracks
@@ -298,7 +289,6 @@ impl SurfingApp {
         self.effect_can_resize.clear();
         self.inline_failed.clear();
         self.effect_editor_flags.clear();
-        self.background_synced.clear();
         self.effect_drag_from = None;
         self.effect_drag_target = None;
     }

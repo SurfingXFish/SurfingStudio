@@ -152,11 +152,7 @@ pub struct SurfingApp {
     /// 加载/插件同步期间收到关闭请求：等同步结束后再发送关闭。
     /// A close arrived while loading or syncing: close once the background work finishes.
     close_after_ready: bool,
-    /// 延迟关闭的等待上限；超过后强制关闭并放弃引擎，避免插件加载卡死窗口。
-    /// Upper bound for the deferred close; after it the window force-closes and abandons the
-    /// engine so a hung plugin load cannot freeze the window.
-    close_ready_deadline: Option<Instant>,
-    /// 强制关闭时泄漏引擎强引用，避免挂起的后台线程在退出阶段析构未初始化完成的插件。
+    /// 强制关闭时泄漏引擎强引用，避免挂起的线程在退出阶段析构未初始化完成的插件。
     /// When force-closing, leak one engine reference so a hung worker cannot destroy a partially
     /// initialised plugin during shutdown.
     abandon_engine: bool,
@@ -360,29 +356,15 @@ pub struct SurfingApp {
     /// 后台选择导出路径的对话框结果。
     /// Background destination picker for the export window.
     export_dialog_rx: Option<Receiver<Option<PathBuf>>>,
-    /// 后台插件同步：加载工程时在独立线程构建插件运行时，避免 UI 冻结。
-    /// Background plugin sync used when loading a project; keeps the UI responsive.
-    engine_sync_rx: Option<Receiver<(Vec<String>, Vec<PathBuf>)>>,
-    /// 常驻同步线程的任务入口；线程同时泵送插件创建的消息窗口。
-    /// Request channel of the persistent sync thread, which also pumps messages
-    /// for plugin-created windows.
-    engine_sync_tx: Option<Sender<self::transport::SyncRequest>>,
-    /// 下一次同步是否放到后台线程（加载工程时启用）。
-    /// Whether the next engine sync should run in the background.
-    sync_in_background: bool,
-    /// 当前正在进行的同步是否由后台线程执行（用于标记后台创建的插件实例）。
-    /// Whether the in-flight sync runs on the worker thread (used to mark worker-created
-    /// plugin instances).
-    background_sync_in_flight: bool,
-    /// 加载工程后仍在分批补载 VST 乐器插件；为真时每帧只加载一个时间片，保证窗口持续重绘。
-    /// VST instrument plugins are still being loaded in per-frame slices after a project load;
-    /// while true each frame loads at most one slice so the window keeps repainting.
+    /// 加载工程后仍在分批补载插件；为真时每帧只加载一个时间片，保证窗口持续重绘。
+    /// Plugins are still being loaded in per-frame slices after a project load; while true each
+    /// frame loads at most one slice so the window keeps repainting.
     instrument_load_pending: bool,
     /// 分批补载期间累计的插件加载警告，全部就绪后写入状态栏。
     /// Plugin load warnings accumulated during the sliced load; shown in the status bar once done.
     instrument_load_warnings: Vec<String>,
-    /// 分批补载涉及的乐器插件总数，用于进度提示。
-    /// Number of instrument plugins involved in the sliced load, used for the progress prompt.
+    /// 分批补载涉及的插件总数，用于进度提示。
+    /// Number of plugins involved in the sliced load, used for the progress prompt.
     instrument_load_total: usize,
     /// 分批补载开始的时刻，用于记录整体耗时。
     /// Start instant of the sliced load, used to log the overall duration.
@@ -395,9 +377,6 @@ pub struct SurfingApp {
     /// While set, keep the loading prompt on screen until this instant so it is
     /// actually painted even when loading finishes within one frame.
     loading_until: Option<Instant>,
-    defer_sync: bool,
-    /// The UI project changed but plugin loading was postponed until playback.
-    engine_stale: bool,
     pending_play: bool,
     /// Throttles project syncs while playing, so continuous edits do not
     /// repeatedly block the audio callback.
@@ -419,13 +398,9 @@ pub struct SurfingApp {
     /// Whether a slot offers a native editor; cached so a busy engine lock cannot make the
     /// card claim there is no GUI.
     pub effect_editor_flags: HashMap<(TrackId, SlotKind), bool>,
-    /// 等待后台同步完成的插件应用收尾信息。
+    /// 等待插件加载完成的插件应用收尾信息。
     /// Pending post-load bookkeeping for a plugin applied to a slot.
     pending_plugin_apply: Option<PendingPluginApply>,
-    /// 由后台同步线程创建的插件槽位：打开 GUI 前需要在 UI 线程重建实例。
-    /// Slots whose instance was created by the background sync thread; they must be rebuilt on
-    /// the UI thread before their editor opens.
-    background_synced: HashSet<(TrackId, SlotKind)>,
     /// 后台插件类型识别的取消标志。
     /// Cancellation flag of the background plugin classification worker.
     plugin_probe_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
@@ -599,9 +574,6 @@ impl Drop for SurfingApp {
                 ("tid", &tid_text),
             ],
         );
-        // Disconnect the persistent plugin-sync thread; it exits after any
-        // in-flight sync request.
-        self.engine_sync_tx = None;
         // 停止崩溃恢复线程：句柄析构会发送 Shutdown，线程写完当前文件后退出。
         // Stop the crash-recovery thread: dropping the handle sends Shutdown, so the thread exits
         // after finishing its current write.
@@ -1232,7 +1204,6 @@ impl SurfingApp {
             close_prompt: false,
             pending_close: false,
             close_after_ready: false,
-            close_ready_deadline: None,
             abandon_engine: false,
             last_autosave: Instant::now(),
             // 主页窗口只显示空工程，不需要崩溃恢复线程。
@@ -1317,10 +1288,6 @@ impl SurfingApp {
             public_copy_rx: None,
             export: ExportState::default(),
             export_dialog_rx: None,
-            engine_sync_rx: None,
-            engine_sync_tx: None,
-            sync_in_background: false,
-            background_sync_in_flight: false,
             instrument_load_pending: false,
             instrument_load_warnings: Vec::new(),
             instrument_load_total: 0,
@@ -1328,8 +1295,6 @@ impl SurfingApp {
             project_epoch: 0,
             loading_message: None,
             loading_until: None,
-            defer_sync: false,
-            engine_stale: false,
             pending_play: false,
             last_engine_sync: Instant::now(),
             editors: Vec::new(),
@@ -1338,7 +1303,6 @@ impl SurfingApp {
             inline_failed: HashMap::new(),
             effect_editor_flags: HashMap::new(),
             pending_plugin_apply: None,
-            background_synced: HashSet::new(),
             plugin_probe_cancel: None,
             audition_track: None,
             held_pitches: HashSet::new(),
@@ -1679,6 +1643,18 @@ impl SurfingApp {
     pub fn ui_frame(&mut self, ctx: &egui::Context) {
         diag::set_activity("ui.frame");
         self.sync_shared_state();
+        // 乐器插件编辑器打开时，停止走带也要继续处理插件链，编辑器里的试听才会出声。
+        // 音频线程可能正持有引擎锁，这里只做非阻塞尝试，下一帧会再次更新。
+        // While an instrument editor is open the chain must keep processing even when the
+        // transport is stopped, otherwise editor previews stay silent. The audio thread may hold
+        // the engine lock, so this is a non-blocking attempt; the next frame retries.
+        if let Ok(mut engine) = self.engine.try_lock() {
+            let instrument_editor_open = self
+                .editors
+                .iter()
+                .any(|((_, slot), _)| *slot == SlotKind::Instrument);
+            engine.set_plugin_editor_active(instrument_editor_open);
+        }
         self.resolve_native_window(ctx);
         // 最近获得焦点的工程窗口负责 MIDI 输入与插件窗口里的空格快捷键。
         // The project window focused last owns MIDI input and the Space shortcut from plugin windows.
@@ -1767,27 +1743,12 @@ impl SurfingApp {
         self.poll_export_dialog();
         self.poll_export();
         self.poll_autosave();
-        self.poll_engine_sync();
-        // 加载/插件同步结束、关闭请求得以继续时，本帧发送关闭。
-        // Once loading and plugin sync have finished, continue a close requested earlier.
-        if self.close_after_ready {
-            if self.can_close_now() {
-                self.close_after_ready = false;
-                self.close_prompt = false;
-                self.pending_close = true;
-            } else if self
-                .close_ready_deadline
-                .is_some_and(|deadline| Instant::now() >= deadline)
-            {
-                // 后台插件加载超时：放弃引擎并关闭窗口，宁可泄漏一次实例也不让窗口卡死。
-                // The background plugin load timed out: abandon the engine and close the window;
-                // leaking one instance is better than freezing the window.
-                self.close_after_ready = false;
-                self.close_prompt = false;
-                self.abandon_engine = true;
-                self.pending_close = true;
-                self.status = "插件加载超时，正在强制关闭窗口…".into();
-            }
+        // 加载/插件补载结束、关闭请求得以继续时，本帧发送关闭。
+        // Once loading and plugin loading have finished, continue a close requested earlier.
+        if self.close_after_ready && self.can_close_now() {
+            self.close_after_ready = false;
+            self.close_prompt = false;
+            self.pending_close = true;
         }
         // 保存完成或用户放弃修改后，本帧统一请求关闭，避免在轮询函数里依赖 egui 上下文。
         // After a save finishes or the user discards changes, request the close here instead of
@@ -1822,26 +1783,13 @@ impl SurfingApp {
             self.step_instrument_load();
             ctx.request_repaint_after(Duration::from_millis(16));
         } else if self.needs_sync {
-            if self.engine_sync_rx.is_some() {
-                // A background plugin sync is running; keep painting the loading
-                // prompt and apply the newest edit afterwards.
-                ctx.request_repaint_after(Duration::from_millis(16));
-            } else if self.defer_sync {
-                // Paint one frame with the loading prompt before the sync runs.
-                self.defer_sync = false;
-                ctx.request_repaint();
-            } else if playing
+            if playing
                 && self.last_engine_sync.elapsed() < Duration::from_millis(60)
                 && self.loading_message.is_none()
             {
                 // A drag can mark the project dirty every frame. Throttle the
                 // sync while the transport runs so the audio callback does not
                 // miss blocks behind the engine lock.
-                ctx.request_repaint_after(Duration::from_millis(16));
-            } else if self.sync_in_background {
-                self.sync_in_background = false;
-                self.begin_async_sync();
-                self.last_engine_sync = Instant::now();
                 ctx.request_repaint_after(Duration::from_millis(16));
             } else {
                 self.sync_engine();
@@ -1874,6 +1822,7 @@ impl SurfingApp {
 
         diag::set_activity("ui.paint");
         self.app_bar(ctx);
+        diag::set_activity("ui.paint.bar");
         // 主页不显示编曲工具栏；状态栏在两种视图下都保留，用于展示音频/MIDI 与加载提示。
         // The home page hides the arrangement toolbar; the status bar stays in both views so audio,
         // MIDI and loading state remain visible.
@@ -1881,6 +1830,7 @@ impl SurfingApp {
             self.main_toolbar(ctx);
         }
         self.status_bar(ctx);
+        diag::set_activity("ui.paint.status");
 
         // 主页只绘制两栏内容；编曲面板、检查器与编辑卷帘只在工作室视图下存在。
         // The home page only paints its two columns; the arrangement, inspector and editor rolls
@@ -1889,6 +1839,7 @@ impl SurfingApp {
             self.ui_home(ctx);
         } else {
             if self.bottom_open {
+                diag::set_activity("ui.paint.bottom");
                 // 插件 GUI 会等比缩放到卡片大小，底部面板不再需要按插件高度撑开。
                 // Plugin GUIs scale to fit their card, so the panel no longer grows to the
                 // plugin's declared height.
@@ -1915,6 +1866,7 @@ impl SurfingApp {
                     });
             }
 
+            diag::set_activity("ui.paint.inspector");
             egui::SidePanel::right("inspector")
                 .resizable(true)
                 .default_width(340.0)
@@ -1929,12 +1881,14 @@ impl SurfingApp {
                     self.ui_inspector(ui);
                 });
 
+            diag::set_activity("ui.paint.arrangement");
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE.fill(theme::BG))
                 .show(ctx, |ui| {
                     self.ui_arrangement(ui);
                 });
 
+            diag::set_activity("ui.paint.rolls");
             self.update_roll_drag(ctx);
             self.ui_roll_windows(ctx);
             self.ui_lane_paste_prompt(ctx);
@@ -1949,6 +1903,7 @@ impl SurfingApp {
         self.ui_help(ctx);
         self.ui_settings_window(ctx);
         self.ui_export_window(ctx);
+        diag::set_activity("ui.paint.dialogs");
         // 未保存关闭确认绘制在所有面板之上；确认期间窗口保持打开。
         // The unsaved-changes confirmation is painted above every panel; the window stays open
         // while it is shown.
@@ -2000,11 +1955,7 @@ impl SurfingApp {
         }
 
         let playing = self.ui_playing;
-        if self.engine_sync_rx.is_some() {
-            // Keep the loading spinner and the responsive UI animating while
-            // plugins load on the background thread.
-            ctx.request_repaint_after(std::time::Duration::from_millis(16));
-        } else if playing || !self.editors.is_empty() || self.export.busy {
+        if playing || !self.editors.is_empty() || self.export.busy {
             // 插件 GUI 依赖本线程持续分发窗口消息与 idle；编辑器打开时保持 60 FPS 轮询。
             // Plugin GUIs rely on this thread dispatching window messages and idle calls;
             // keep a 60 FPS tick while an editor is open.

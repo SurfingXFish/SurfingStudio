@@ -48,6 +48,7 @@ use crate::core::model::{
     ChannelLayout, ControllerKind, ControllerLanes, EffectRef, InstrumentRef, Project, Track,
     TrackId, evaluate_automation,
 };
+use crate::diag;
 use crate::plugin::{ParamView, PluginHost, PluginKind, PluginRuntime};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -120,6 +121,12 @@ pub struct Engine {
     master_peak_r: f32,
     cpu_load: f32,
     live_timeout: f32,
+    /// 是否有插件编辑器打开：停止走带时仍需持续处理，插件编辑器里的试听（VOCALOID 点音符）
+    /// 才会出声。只在乐器编辑器打开期间启用，避免整首工程在暂停时也一直占用 CPU。
+    /// Whether a plugin editor is open: while the transport is stopped the chain must still be
+    /// processed so editor previews (clicking a note in VOCALOID) are audible. Enabled only while
+    /// an instrument editor is open, so an idle paused project does not burn CPU.
+    plugin_editor_active: bool,
     auto_stop_enabled: bool,
     auto_stopped: bool,
     /// Cached per-sync project facts used by the audio callback.
@@ -187,19 +194,18 @@ pub struct Engine {
     offline: Option<render::OfflineRenderSession>,
 }
 
-/// 乐器插件实例化的时间片预算：一次同步只新建时间片内的插件，其余留到下一次调用。
-/// Instrument plugin instantiation budget: one sync creates only the plugins that fit in the time
-/// slice and leaves the rest for the next call.
-struct InstrumentLoadBudget {
-    /// 本轮允许创建插件的截止时刻；`None` 表示不限时（普通同步与后台同步）。
-    /// Deadline for creating plugins in this pass; `None` means unlimited (regular and background
-    /// syncs).
+/// 插件实例化的时间片预算：一次同步只新建时间片内的插件，其余留到下一次调用。
+/// Plugin instantiation budget: one sync creates only the plugins that fit in the time slice and
+/// leaves the rest for the next call.
+struct PluginLoadBudget {
+    /// 本轮允许创建插件的截止时刻；`None` 表示不限时（普通编辑后的同步）。
+    /// Deadline for creating plugins in this pass; `None` means unlimited (a sync after an edit).
     deadline: Option<Instant>,
     /// 本轮已创建的插件数量；至少允许创建一个，保证每次调用都有进展。
     /// Plugins created in this pass; at least one is allowed so every call makes progress.
     created: usize,
-    /// 因预算耗尽而推迟到下一次调用的乐器插件数量。
-    /// Instrument plugins postponed to the next call because the budget ran out.
+    /// 因预算耗尽而推迟到下一次调用的插件数量。
+    /// Plugins postponed to the next call because the budget ran out.
     pending: usize,
 }
 
@@ -290,6 +296,23 @@ impl EffectRuntime {
     fn panic(&mut self) {
         if let EffectRuntime::Plugin(plugin) = self {
             plugin.panic();
+        }
+    }
+
+    /// 所属模块：audio::engine / 效果链运行时
+    /// 功能：把播放状态写进插件效果器的走带上下文。
+    /// 输入：`playing` 播放中为真。
+    /// 输出/副作用：插件效果器收到 `kPlaying`；内置效果忽略。
+    /// 复杂度：时间 O(1)，空间 O(1)。
+    ///
+    /// Module: audio::engine / effect runtime
+    /// Purpose: Push the playing state into the effect plug-in's transport context.
+    /// Inputs: `playing`.
+    /// Outputs / side effects: plug-in effects receive `kPlaying`; native effects ignore it.
+    /// Complexity: O(1) time and space.
+    fn set_playing(&mut self, playing: bool) {
+        if let EffectRuntime::Plugin(plugin) = self {
+            plugin.set_playing(playing);
         }
     }
 
@@ -542,16 +565,17 @@ impl CompDelay {
 
 /// 所属模块：audio::engine / ARA
 /// 功能：由轨道片段计算 ARA 播放区域的工程时间范围（秒）。
-/// 输入：`track` 轨道、`bpm` 当前速度。
-/// 输出/副作用：返回（起始秒、时长秒）；没有片段时用 0..4 拍。
+/// 输入：`track` 轨道、`bpm` 当前速度、`project_end_beat` 工程最后一拍。
+/// 输出/副作用：返回（起始秒、时长秒）；轨道没有片段时覆盖整首工程。
 /// 复杂度：时间 O(片段数)，空间 O(1)。
 ///
 /// Module: audio::engine / ARA
 /// Purpose: Compute the ARA playback region's project time range (seconds) from a track's clips.
-/// Inputs: `track`, `bpm`.
-/// Outputs / side effects: (start seconds, duration seconds); 0..4 beats when the track is empty.
+/// Inputs: `track`, `bpm`, `project_end_beat` — the project's last beat.
+/// Outputs / side effects: (start seconds, duration seconds); an empty track covers the whole
+/// project.
 /// Complexity: O(clips) time and O(1) space.
-fn ara_span_seconds(track: &Track, bpm: f64) -> (f64, f64) {
+fn ara_span_seconds(track: &Track, bpm: f64, project_end_beat: f64) -> (f64, f64) {
     let mut start = f64::INFINITY;
     let mut end = f64::NEG_INFINITY;
     for clip in &track.clips {
@@ -559,8 +583,13 @@ fn ara_span_seconds(track: &Track, bpm: f64) -> (f64, f64) {
         end = end.max(clip.end());
     }
     if !start.is_finite() || end <= start {
+        // 没有片段的轨道（VOCALOID Bridge 的人声数据在编辑器里）必须覆盖整首工程：
+        // 区域只有几拍时，播放渲染器过了区域末尾就不再出声。
+        // A track without clips (the VOCALOID Bridge keeps its vocal in the editor) must cover
+        // the whole project: with a region of only a few beats the playback renderer stops
+        // sounding once playback passes the region end.
         start = 0.0;
-        end = 4.0;
+        end = project_end_beat.max(4.0);
     }
     let start = start.max(0.0);
     let seconds_per_beat = if bpm.is_finite() && bpm > 0.0 {
@@ -576,20 +605,39 @@ fn ara_span_seconds(track: &Track, bpm: f64) -> (f64, f64) {
 
 /// 所属模块：audio::engine / ARA
 /// 功能：把轨道时间线与速度同步给插件效果器的 ARA 文档。
-/// 输入：`runtime` 插件运行时、`track` 轨道、`bpm` 速度、`time_sig` 拍号。
-/// 输出/副作用：只在值变化时调用插件；线程不符等错误被忽略（效果器可能在另一线程创建）。
+/// 输入：`runtime` 插件运行时、`track` 轨道、`bpm` 速度、`time_sig` 拍号、
+/// `project_end_beat` 工程最后一拍。
+/// 输出/副作用：只在值变化时调用插件；失败原因记录到诊断日志（前几次）。
 /// 复杂度：时间 O(片段数)（仅在变化时），空间 O(1)。
 ///
 /// Module: audio::engine / ARA
 /// Purpose: Push the track timeline and tempo into a plug-in effect's ARA document.
-/// Inputs: `runtime`, `track`, `bpm`, `time_sig`.
-/// Outputs / side effects: calls the plug-in only when values changed; errors such as a thread
-/// mismatch are ignored (an effect may have been created on another thread).
+/// Inputs: `runtime`, `track`, `bpm`, `time_sig`, `project_end_beat`.
+/// Outputs / side effects: calls the plug-in only when values changed; the first failures are
+/// logged instead of silently dropped.
 /// Complexity: O(clips) time (only when changed) and O(1) space.
-fn sync_ara_timeline(runtime: &mut PluginRuntime, track: &Track, bpm: f64, time_sig: (u8, u8)) {
-    let (start, length) = ara_span_seconds(track, bpm);
+fn sync_ara_timeline(
+    runtime: &mut PluginRuntime,
+    track: &Track,
+    bpm: f64,
+    time_sig: (u8, u8),
+    project_end_beat: f64,
+) {
+    let (start, length) = ara_span_seconds(track, bpm, project_end_beat);
     let _ = runtime.set_ara_tempo(bpm, time_sig);
-    let _ = runtime.set_ara_timeline(start, length);
+    if let Err(error) = runtime.set_ara_timeline(start, length) {
+        // ARA 文档操作受线程约束，失败原因不能静默丢弃：记录前几次供排障。
+        // ARA document calls are thread-bound; never drop the reason silently — log the first few.
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static WARNED: AtomicU32 = AtomicU32::new(0);
+        if WARNED.fetch_add(1, Ordering::Relaxed) < 5 {
+            diag::warn(
+                "engine.ara",
+                "ara.timeline_failed",
+                &[("plugin", runtime.display_name()), ("error", &error)],
+            );
+        }
+    }
     // 归档导出只在保存工程时执行：部分插件（VOCALOID Bridge）导出时会同步等待编辑器应用，
     // 放在音频/界面同步路径上会导致界面长时间无响应。
     // Archive export happens only when saving: some plug-ins (VOCALOID Bridge) block while their
@@ -655,27 +703,27 @@ impl TrackEngine {
     }
 
     /// 所属模块：audio::engine / 轨道运行时
-    /// 功能：按乐器身份键增量维护乐器运行时；可延后插件乐器，并可按时间片推迟剩余插件。
+    /// 功能：按乐器身份键增量维护乐器运行时，并按时间片推迟剩余插件。
     /// 输入：
     /// - `track`：轨道快照。
     /// - `sample_rate` / `block_size` / `bpm` / `time_sig`：插件实例参数。
     /// - `force_reload`：为真时丢弃旧实例（采样率变化）。
-    /// - `defer_plugin_instruments`：为真时不在本线程创建 VST 乐器实例。
-    /// - `budget`：本轮乐器插件实例化预算；时间片用尽后剩余插件推迟到下一次调用。
+    /// - `budget`：本轮插件实例化预算；时间片用尽后剩余插件推迟到下一次调用。
+    /// - `project_end_beat`：工程最后一拍（空轨道的 ARA 区域覆盖整首工程）。
     /// - `warnings`：插件加载失败信息。
     /// 输出/副作用：更新 `instrument_key` 与 `instrument`；内置乐器只同步参数。
     /// 复杂度：时间 O(1 + 插件加载)，空间 O(1)。
     ///
     /// Module: audio::engine / track runtime
-    /// Purpose: Incrementally maintain the instrument runtime by identity key; optionally defer
-    /// plugin instruments, and postpone the rest when the time slice is exhausted.
+    /// Purpose: Incrementally maintain the instrument runtime by identity key and postpone the rest
+    /// when the time slice is exhausted.
     /// Inputs:
     /// - `track`: track snapshot.
     /// - `sample_rate` / `block_size` / `bpm` / `time_sig`: plugin instance parameters.
     /// - `force_reload`: drop the old instance when true (sample-rate change).
-    /// - `defer_plugin_instruments`: when true, VST instrument instances are not created here.
-    /// - `budget`: instrument instantiation budget for this pass; remaining plugins are postponed to
-    ///   the next call once the slice is exhausted.
+    /// - `budget`: plugin instantiation budget for this pass; remaining plugins are postponed to the
+    ///   next call once the slice is exhausted.
+    /// - `project_end_beat`: the project's last beat (an empty track's ARA region covers it).
     /// - `warnings`: plugin load failures.
     /// Outputs / side effects: updates `instrument_key` and `instrument`; native instruments only
     /// sync their settings.
@@ -687,26 +735,15 @@ impl TrackEngine {
         sample_rate: f64,
         block_size: usize,
         force_reload: bool,
-        defer_plugin_instruments: bool,
-        budget: &mut InstrumentLoadBudget,
+        budget: &mut PluginLoadBudget,
         bpm: f64,
         time_sig: (u8, u8),
+        project_end_beat: f64,
         warnings: &mut Vec<String>,
         gpu: Option<&mut crate::audio::gpu::GpuTimbreTrainer>,
     ) {
         let desired = track.instrument.key();
         if desired != self.instrument_key || force_reload {
-            // 后台同步线程不创建乐器插件实例：VOCALOID 等插件会在实例化线程创建
-            // WPF 窗口，随后在另一个线程重建/析构时可能崩溃。KEY 保持为空，
-            // 由 UI 线程完成加载后再建立实例。
-            // The background sync thread never instantiates instrument plugins: plugins such as
-            // VOCALOID create WPF windows on the instantiating thread, and rebuilding or destroying
-            // them from another thread can crash. Keep the key empty so the UI thread loads them.
-            if defer_plugin_instruments && matches!(track.instrument, InstrumentRef::Plugin(_)) {
-                self.instrument_key.clear();
-                self.instrument = InstrumentRuntime::Failed("乐器插件将在界面线程加载".into());
-                return;
-            }
             // 界面线程补载乐器插件时按时间片分批：本轮已创建过插件且时间片用尽，就把剩余
             // 轨道留到下一帧，避免一次同步让窗口长时间无响应。
             // UI-thread instrument loading is sliced by time: once a plugin has been created in
@@ -794,7 +831,8 @@ impl TrackEngine {
                             }
                             // ARA 插件的播放区域与速度跟随工程内容。
                             // ARA plug-ins follow the project's timeline and tempo.
-                            let (ara_start, ara_length) = ara_span_seconds(track, bpm);
+                            let (ara_start, ara_length) =
+                                ara_span_seconds(track, bpm, project_end_beat);
                             if let Err(error) = runtime.set_ara_timeline(ara_start, ara_length) {
                                 warnings.push(format!("{}: {}", track.name, error));
                             }
@@ -837,7 +875,7 @@ impl TrackEngine {
             if let (InstrumentRuntime::Plugin(runtime), InstrumentRef::Plugin(_)) =
                 (&mut self.instrument, &track.instrument)
             {
-                let (ara_start, ara_length) = ara_span_seconds(track, bpm);
+                let (ara_start, ara_length) = ara_span_seconds(track, bpm, project_end_beat);
                 let _ = runtime.set_ara_tempo(bpm, time_sig);
                 if let Err(error) = runtime.set_ara_timeline(ara_start, ara_length) {
                     warnings.push(format!("{}: {}", track.name, error));
@@ -853,6 +891,8 @@ impl TrackEngine {
     /// - `track`：轨道快照。
     /// - `sample_rate` / `block_size` / `bpm` / `time_sig`：插件实例参数。
     /// - `force_reload`：为真时丢弃全部旧实例。
+    /// - `project_end_beat`：工程最后一拍（空轨道的 ARA 区域覆盖整首工程）。
+    /// - `budget`：本轮插件实例化预算；时间片用尽后剩余轨道推迟到下一次调用。
     /// - `warnings`：插件加载失败信息。
     /// 输出/副作用：更新 `effect_keys` 与 `effects`；内置效果同步参数但不重建实例。
     /// 复杂度：时间 O(效果器数 + 新增插件加载)，空间 O(效果器数)。
@@ -864,10 +904,14 @@ impl TrackEngine {
     /// - `track`: track snapshot.
     /// - `sample_rate` / `block_size` / `bpm` / `time_sig`: plugin instance parameters.
     /// - `force_reload`: drop every existing instance when true.
+    /// - `project_end_beat`: the project's last beat (an empty track's ARA region covers it).
+    /// - `budget`: plugin instantiation budget; remaining tracks wait for the next call once the
+    ///   slice is exhausted.
     /// - `warnings`: plugin load failures.
     /// Outputs / side effects: updates `effect_keys` and `effects`; native effects only sync
     /// parameters and keep their DSP state.
     /// Complexity: O(effect count + new plugin loads) time and O(effect count) space.
+    #[allow(clippy::too_many_arguments)]
     fn ensure_effects(
         &mut self,
         track: &Track,
@@ -876,20 +920,26 @@ impl TrackEngine {
         force_reload: bool,
         bpm: f64,
         time_sig: (u8, u8),
-        defer_plugin_effects: bool,
+        project_end_beat: f64,
+        budget: &mut PluginLoadBudget,
         warnings: &mut Vec<String>,
     ) {
         let desired: Vec<String> = track.effects.iter().map(EffectRef::key).collect();
-        if defer_plugin_effects {
-            // 界面加载时间片（`defer_plugin_effects = true`）不要实例化新的插件效果器：ARA 插件
-            // （VOCALOID Bridge）的文档初始化会同步等待编辑器应用，实测可让界面停顿数秒到十几秒。
-            // 保留现有链，由后台同步线程在下一次同步时加载。
-            // The UI load slice (`defer_plugin_effects = true`) must not instantiate new plug-in
-            // effects: ARA plug-ins (VOCALOID Bridge) block while initialising their document/editor
-            // app (observed as multi-second UI freezes). Keep the current chain and let the
-            // background sync load it.
-            if desired.iter().any(|key| !self.effect_keys.contains(key)) {
-                return;
+        // 新增了插件效果器且时间片已用尽：整条链留到下一次调用，避免一次同步让窗口无响应。
+        // A new plug-in effect arrived and the slice is exhausted: leave the whole chain for the
+        // next call so one sync never blocks the window.
+        let needs_plugin_load = (force_reload
+            && track.effects.iter().any(|effect| effect.plugin().is_some()))
+            || desired.iter().enumerate().any(|(index, key)| {
+                self.effect_keys.get(index) != Some(key)
+                    && matches!(track.effects.get(index), Some(EffectRef::Plugin(_)))
+            });
+        if needs_plugin_load {
+            if let Some(deadline) = budget.deadline {
+                if budget.created > 0 && Instant::now() >= deadline {
+                    budget.pending += 1;
+                    return;
+                }
             }
         }
         if desired == self.effect_keys && !force_reload {
@@ -902,7 +952,7 @@ impl TrackEngine {
                         native.set_settings(reference.settings.clone());
                     }
                     (EffectRuntime::Plugin(plugin), EffectRef::Plugin(_)) => {
-                        sync_ara_timeline(plugin, track, bpm, time_sig);
+                        sync_ara_timeline(plugin, track, bpm, time_sig, project_end_beat);
                     }
                     _ => {}
                 }
@@ -928,6 +978,9 @@ impl TrackEngine {
                     .position(|key| *key == desired[index])
                     .and_then(|old| previous.get_mut(old).and_then(Option::take))
             };
+            // 新建的插件效果器计入时间片预算；复用的实例不重复计数。
+            // A newly created plug-in effect counts against the slice; reused instances do not.
+            let created_plugin = reused.is_none() && matches!(effect, EffectRef::Plugin(_));
             let runtime = reused.unwrap_or_else(|| match effect {
                 EffectRef::Native(native) => EffectRuntime::Native(NativeEffectProcessor::new(
                     native.kind,
@@ -935,7 +988,31 @@ impl TrackEngine {
                     sample_rate as f32,
                 )),
                 EffectRef::Plugin(pref) => {
-                    match PluginHost::load_plugin(
+                    // 把真实轨道范围交给 ARA 会话：播放区域必须在插件激活前创建，
+                    // 激活后再 `addPlaybackRegion` 不会被播放渲染器接受。
+                    // Hand the real track range to the ARA session: the playback region has to be
+                    // created before the plug-in is activated; `addPlaybackRegion` afterwards is
+                    // not taken by the playback renderer.
+                    crate::plugin::ara::set_initial_timeline_hint(Some(ara_span_seconds(
+                        track,
+                        bpm,
+                        project_end_beat,
+                    )));
+                    // 效果器加载没有 span：崩溃/卡死时无法判断是哪一个插件，这里补上。
+                    // Effect loads had no span, so a crash/hang could not be attributed; add one.
+                    let path_text = pref.path.display().to_string();
+                    let tid = crate::diag::thread_id().to_string();
+                    let span = crate::diag::Span::start_logged(
+                        "app.engine",
+                        "engine.effect.load",
+                        &[
+                            ("name", &pref.name),
+                            ("path", &path_text),
+                            ("track", &track.name),
+                            ("thread", &tid),
+                        ],
+                    );
+                    let loaded = PluginHost::load_plugin(
                         pref.format,
                         &pref.path,
                         &pref.uid,
@@ -943,7 +1020,9 @@ impl TrackEngine {
                         block_size,
                         bpm,
                         time_sig,
-                    ) {
+                    );
+                    crate::plugin::ara::set_initial_timeline_hint(None);
+                    match loaded {
                         Ok(mut runtime) => {
                             let (state_bytes, ara_archive) =
                                 crate::plugin::split_plugin_state(&pref.state);
@@ -953,17 +1032,30 @@ impl TrackEngine {
                                 runtime.select_program(program);
                             }
                             if !ara_archive.is_empty() {
-                                let _ = runtime.restore_ara_archive(ara_archive);
+                                // 恢复失败会让 Bridge 的编辑器内容为空，不能静默。
+                                // A failed restore leaves the Bridge's editor empty; never silent.
+                                if let Err(error) = runtime.restore_ara_archive(ara_archive) {
+                                    diag::warn(
+                                        "engine.ara",
+                                        "ara.archive_restore_failed",
+                                        &[("track", &track.name), ("error", &error)],
+                                    );
+                                }
                             }
+                            span.end(&[("status", "ok")]);
                             EffectRuntime::Plugin(runtime)
                         }
                         Err(error) => {
+                            span.end(&[("status", "error"), ("error", &error)]);
                             warnings.push(format!("{} 效果器: {}", track.name, error));
                             EffectRuntime::Plugin(PluginRuntime::Failed(error))
                         }
                     }
                 }
             });
+            if created_plugin {
+                budget.created += 1;
+            }
             effects.push(runtime);
         }
         self.effects = effects;
@@ -973,7 +1065,7 @@ impl TrackEngine {
                     native.set_settings(reference.settings.clone());
                 }
                 (EffectRuntime::Plugin(plugin), EffectRef::Plugin(_)) => {
-                    sync_ara_timeline(plugin, track, bpm, time_sig);
+                    sync_ara_timeline(plugin, track, bpm, time_sig, project_end_beat);
                 }
                 _ => {}
             }
@@ -1098,6 +1190,7 @@ impl Engine {
             master_peak_r: 0.0,
             cpu_load: 0.0,
             live_timeout: 0.0,
+            plugin_editor_active: false,
             auto_stop_enabled: true,
             auto_stopped: false,
             any_solo: false,
@@ -1308,36 +1401,11 @@ impl Engine {
     /// and note events; returns plugin/audio warnings.
     /// Complexity: O(tracks + clips + notes log notes + plugin load) time and O(project) space.
     pub fn sync_project(&mut self, project: &Project) -> Vec<String> {
-        self.sync_project_with(project, false)
+        self.sync_project_budgeted(project, None).0
     }
 
     /// 所属模块：audio::engine / 同步
-    /// 功能：同步工程；可选择延后乐器插件实例化，交由 UI 线程完成。
-    /// 输入：
-    /// - `project`：工程快照。
-    /// - `defer_plugin_instruments`：为真时不在本线程创建 VST 乐器实例。
-    /// 输出/副作用：重建轨道运行时、效果链、主效果器与音符事件；返回加载警告。
-    /// 复杂度：时间 O(轨道数 + 片段数 + 音符数 log 音符数 + 新增插件加载)，空间 O(工程大小)。
-    ///
-    /// Module: audio::engine / sync
-    /// Purpose: Sync the project, optionally deferring VST instrument instantiation to the UI thread.
-    /// Inputs:
-    /// - `project`: project snapshot.
-    /// - `defer_plugin_instruments`: when true, VST instrument instances are not created here.
-    /// Outputs / side effects: rebuilds track runtimes, effect chains, the master effect and note
-    /// events; returns load warnings.
-    /// Complexity: O(tracks + clips + notes log notes + new plugin loads) time and O(project) space.
-    pub fn sync_project_with(
-        &mut self,
-        project: &Project,
-        defer_plugin_instruments: bool,
-    ) -> Vec<String> {
-        self.sync_project_budgeted(project, defer_plugin_instruments, None)
-            .0
-    }
-
-    /// 所属模块：audio::engine / 同步
-    /// 功能：按时间片补载乐器插件：一次调用最多实例化时间片内的插件，其余推迟到下一次。
+    /// 功能：按时间片补载插件：一次调用最多实例化时间片内的插件，其余推迟到下一次。
     /// 输入：
     /// - `project`：工程快照。
     /// - `budget`：本轮允许创建插件的时长；至少会创建第一个插件，保证每次调用都有进展。
@@ -1345,8 +1413,8 @@ impl Engine {
     /// 复杂度：时间 O(轨道数 + 片段数 + 音符数 log 音符数 + 新增插件加载)，空间 O(工程大小)。
     ///
     /// Module: audio::engine / sync
-    /// Purpose: Load instrument plugins in time slices: one call instantiates at most the plugins
-    /// that fit in the slice and postpones the rest to the next call.
+    /// Purpose: Load plugins in time slices: one call instantiates at most the plugins that fit in
+    /// the slice and postpones the rest to the next call.
     /// Inputs:
     /// - `project`: project snapshot.
     /// - `budget`: how long this pass may spend creating plugins; the first plugin is always
@@ -1360,39 +1428,35 @@ impl Engine {
         budget: Duration,
     ) -> (Vec<String>, Vec<PathBuf>, usize) {
         let (warnings, pending) =
-            self.sync_project_budgeted(project, false, Some(Instant::now() + budget));
+            self.sync_project_budgeted(project, Some(Instant::now() + budget));
         let requests = self.take_audio_requests();
         (warnings, requests, pending)
     }
 
     /// 所属模块：audio::engine / 同步
-    /// 功能：同步工程；可选延后乐器插件实例化，并可按时间片限制本轮新建的插件数量。
+    /// 功能：同步工程，并可按时间片限制本轮新建的插件数量。
     /// 输入：
     /// - `project`：工程快照。
-    /// - `defer_plugin_instruments`：为真时不在本线程创建 VST 乐器实例。
-    /// - `instrument_deadline`：本轮创建插件的截止时刻；`None` 表示不限时。
-    /// 输出/副作用：重建轨道运行时、效果链、主效果器与音符事件；返回（加载警告、推迟的乐器数）。
+    /// - `plugin_deadline`：本轮创建插件的截止时刻；`None` 表示不限时。
+    /// 输出/副作用：重建轨道运行时、效果链、主效果器与音符事件；返回（加载警告、推迟的插件数）。
     /// 复杂度：时间 O(轨道数 + 片段数 + 音符数 log 音符数 + 新增插件加载)，空间 O(工程大小)。
     ///
     /// Module: audio::engine / sync
-    /// Purpose: Sync the project, optionally deferring VST instrument instantiation to the UI
-    /// thread, and optionally limiting how many new plugins this pass may create.
+    /// Purpose: Sync the project and optionally limit how many new plugins this pass may create.
     /// Inputs:
     /// - `project`: project snapshot.
-    /// - `defer_plugin_instruments`: when true, VST instrument instances are not created here.
-    /// - `instrument_deadline`: deadline for creating plugins in this pass; `None` means unlimited.
+    /// - `plugin_deadline`: deadline for creating plugins in this pass; `None` means unlimited.
     /// Outputs / side effects: rebuilds track runtimes, effect chains, the master effect and note
-    /// events; returns (load warnings, postponed instrument count).
+    /// events; returns (load warnings, postponed plugin count).
     /// Complexity: O(tracks + clips + notes log notes + new plugin loads) time and O(project) space.
     fn sync_project_budgeted(
         &mut self,
         project: &Project,
-        defer_plugin_instruments: bool,
-        instrument_deadline: Option<Instant>,
+        plugin_deadline: Option<Instant>,
     ) -> (Vec<String>, usize) {
         let mut warnings = Vec::new();
-        let mut budget = InstrumentLoadBudget {
-            deadline: instrument_deadline,
+        let mut budget = PluginLoadBudget {
+            deadline: plugin_deadline,
             created: 0,
             pending: 0,
         };
@@ -1416,6 +1480,10 @@ impl Engine {
         self.levels_l.resize(project.tracks.len(), 0.0);
         self.levels_r.resize(project.tracks.len(), 0.0);
         let time_sig = (project.time_sig_num, project.time_sig_den);
+        // 空轨道的 ARA 播放区域用工程长度兜底，避免区域太短导致中途无声。
+        // Empty tracks fall back to the project length for their ARA region so playback does not
+        // go silent past a short region.
+        let project_end_beat = project.end_beat();
 
         let mut old_tracks = std::mem::take(&mut self.tracks);
         let mut needed_audio: HashSet<PathBuf> = HashSet::new();
@@ -1431,10 +1499,10 @@ impl Engine {
                 self.sample_rate,
                 self.block_size,
                 force_reload,
-                defer_plugin_instruments,
                 &mut budget,
                 project.bpm,
                 time_sig,
+                project_end_beat,
                 &mut warnings,
                 self.gpu_timbre.as_mut(),
             );
@@ -1445,10 +1513,8 @@ impl Engine {
                 force_reload,
                 project.bpm,
                 time_sig,
-                // 界面加载时间片（defer=false）不新建插件效果器；后台同步线程（defer=true）负责创建。
-                // The UI load slice (defer=false) must not create plug-in effects; the background
-                // sync thread (defer=true) creates them.
-                !defer_plugin_instruments,
+                project_end_beat,
+                &mut budget,
                 &mut warnings,
             );
             runtime.has_audio_clips = track.has_audio_clips();
@@ -1482,7 +1548,19 @@ impl Engine {
         debug_assert_eq!(self.tracks.len(), project.tracks.len());
 
         let desired_master = project.master_effect.as_ref().map(EffectRef::key);
-        if desired_master != self.master_effect_key || force_reload {
+        let master_needs_plugin = desired_master != self.master_effect_key
+            && matches!(project.master_effect.as_ref(), Some(EffectRef::Plugin(_)));
+        let budget_exhausted = budget
+            .deadline
+            .is_some_and(|deadline| budget.created > 0 && Instant::now() >= deadline);
+        if master_needs_plugin && budget_exhausted {
+            // 主效果器同样按时间片推迟，下一帧继续加载。
+            // The master effect follows the same slice and is loaded on the next call.
+            budget.pending += 1;
+        } else if desired_master != self.master_effect_key || force_reload {
+            if matches!(project.master_effect.as_ref(), Some(EffectRef::Plugin(_))) {
+                budget.created += 1;
+            }
             self.master_effect_key = desired_master;
             self.master_effect = project
                 .master_effect
@@ -2058,6 +2136,22 @@ impl Engine {
     /// Complexity: O(track count) time and O(1) space.
     pub fn is_auditioning(&self) -> bool {
         self.live_timeout > 0.0 || self.tracks.iter().any(|track| !track.live.is_empty())
+    }
+
+    /// 所属模块：audio::engine / 试听
+    /// 功能：告知引擎当前是否有乐器插件编辑器打开，停止走带时据此决定是否继续处理插件链。
+    /// 输入：`active`：至少一个乐器编辑器打开时为真。
+    /// 输出/副作用：更新 `plugin_editor_active`；不立即处理音频。
+    /// 复杂度：时间 O(1)，空间 O(1)。
+    ///
+    /// Module: audio::engine / audition
+    /// Purpose: Tell the engine whether an instrument editor is open; while the transport is
+    /// stopped this decides whether the plugin chain keeps being processed.
+    /// Inputs: `active`: true while at least one instrument editor is open.
+    /// Outputs / side effects: updates `plugin_editor_active`; processes no audio immediately.
+    /// Complexity: O(1) time and space.
+    pub fn set_plugin_editor_active(&mut self, active: bool) {
+        self.plugin_editor_active = active;
     }
 
     pub fn plugin_kind(&self, track_id: TrackId, slot: SlotKind) -> Option<PluginKind> {

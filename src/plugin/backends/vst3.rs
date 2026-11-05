@@ -267,6 +267,10 @@ pub(super) fn load(
     plugin
         .start_processing()
         .map_err(|e| format!("VST3 启动处理失败: {e}"))?;
+    // VOCALOID Bridge 只同步走带，输出必须直通，否则会用静音渲染替换轨道声音。
+    // The VOCALOID Bridge only synchronises transport; its output must pass the input through,
+    // otherwise its silent render replaces the track audio.
+    let sync_only = crate::plugin::ara::sync_only_passthrough(&name);
 
     Ok(PluginRuntime::Vst3(Vst3Runtime {
         plugin: Arc::new(Mutex::new(plugin)),
@@ -279,6 +283,7 @@ pub(super) fn load(
         audio_buffers: None,
         pending_playing: None,
         pending_transport: None,
+        sync_only,
         latency_samples: 0,
         pending_state: None,
         state_retries: 0,

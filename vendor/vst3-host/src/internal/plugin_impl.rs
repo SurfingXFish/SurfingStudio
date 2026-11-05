@@ -1989,6 +1989,7 @@ impl PluginImpl {
             data.process_context.sampleRate = self.sample_rate;
             data.process_context.projectTimeSamples = self.position.samples;
             data.process_context.projectTimeMusic = self.position.quarter_notes;
+            data.process_context.barPositionMusic = self.position.quarter_notes;
             data.process_context.continousTimeSamples = self.continuous_samples;
             if process_context_needs(
                 self.process_context_requirements,
@@ -2639,6 +2640,7 @@ impl PluginInternal for PluginImpl {
         if let Some(data) = self.process_data.as_mut() {
             data.process_context.projectTimeSamples = position.samples;
             data.process_context.projectTimeMusic = position.quarter_notes;
+            data.process_context.barPositionMusic = position.quarter_notes;
         }
         Ok(())
     }
@@ -5062,7 +5064,9 @@ const PROCESS_CONTEXT_STATE: u32 = (ProcessContext_::StatesAndFlags_::kPlaying
     | ProcessContext_::StatesAndFlags_::kTempoValid
     | ProcessContext_::StatesAndFlags_::kTimeSigValid
     | ProcessContext_::StatesAndFlags_::kContTimeValid
-    | ProcessContext_::StatesAndFlags_::kProjectTimeMusicValid)
+    | ProcessContext_::StatesAndFlags_::kProjectTimeMusicValid
+    | ProcessContext_::StatesAndFlags_::kBarPositionValid
+    | ProcessContext_::StatesAndFlags_::kSystemTimeValid)
     as u32;
 
 /// The `kPlaying` bit on its own, factored out of [`PROCESS_CONTEXT_STATE`] so the playing
@@ -5074,11 +5078,18 @@ const PROCESS_CONTEXT_PLAYING: u32 = ProcessContext_::StatesAndFlags_::kPlaying 
 const PROCESS_CONTEXT_SYSTEM_TIME_VALID: u32 =
     ProcessContext_::StatesAndFlags_::kSystemTimeValid as u32;
 
+/// Whether the processor needs `flag` from the host `ProcessContext`.
+///
+/// `None` (processor predates `IProcessContextRequirements`) and `Some(0)` both mean "the host
+/// has to provide everything": some processors implement the interface but return 0 while still
+/// reading the context unconditionally — VOCALOID 6's VSTi is one of them. Treating that answer
+/// as "needs nothing" strips every validity flag and leaves such editors without tempo, time
+/// signature or a playhead, so they neither follow the transport nor render.
 #[allow(clippy::unnecessary_cast)]
 fn process_context_needs(requirements: Option<u32>, flag: u32) -> bool {
     match requirements {
-        Some(requirements) => requirements & flag != 0,
-        None => true,
+        Some(requirements) if requirements != 0 => requirements & flag != 0,
+        _ => true,
     }
 }
 
@@ -5086,7 +5097,7 @@ fn process_context_needs(requirements: Option<u32>, flag: u32) -> bool {
 /// IProcessContextRequirements retain the host's complete legacy transport context.
 #[allow(clippy::unnecessary_cast)]
 fn process_context_state(requirements: Option<u32>, playing: bool) -> u32 {
-    let Some(requirements) = requirements else {
+    let Some(requirements) = requirements.filter(|requirements| *requirements != 0) else {
         return if playing {
             PROCESS_CONTEXT_STATE | PROCESS_CONTEXT_PLAYING
         } else {
@@ -5105,6 +5116,10 @@ fn process_context_state(requirements: Option<u32>, playing: bool) -> u32 {
         (
             R::kNeedProjectTimeMusic as u32,
             S::kProjectTimeMusicValid as u32,
+        ),
+        (
+            R::kNeedBarPositionMusic as u32,
+            S::kBarPositionValid as u32,
         ),
         (R::kNeedTempo as u32, S::kTempoValid as u32),
         (R::kNeedTimeSignature as u32, S::kTimeSigValid as u32),
@@ -5141,7 +5156,9 @@ fn advance_process_context(
     if playing {
         ctx.projectTimeSamples = ctx.projectTimeSamples.saturating_add(frames);
         if ctx.sampleRate > 0.0 {
-            ctx.projectTimeMusic += frames as f64 / ctx.sampleRate * (transport_tempo / 60.0);
+            let quarter_notes = frames as f64 / ctx.sampleRate * (transport_tempo / 60.0);
+            ctx.projectTimeMusic += quarter_notes;
+            ctx.barPositionMusic += quarter_notes;
         }
     }
     if process_context_needs(requirements, R::kNeedContinousTimeSamples as u32) {
@@ -5365,6 +5382,33 @@ mod transport_tests {
         assert_ne!(PROCESS_CONTEXT_STATE & F::kTimeSigValid as u32, 0);
         assert_ne!(PROCESS_CONTEXT_STATE & F::kContTimeValid as u32, 0);
         assert_ne!(PROCESS_CONTEXT_STATE & F::kProjectTimeMusicValid as u32, 0);
+    }
+
+    #[test]
+    #[allow(clippy::unnecessary_cast)] // `as u32` needed where the constants are i32 (Windows)
+    fn zero_requirements_fall_back_to_the_legacy_context() {
+        // VOCALOID 6 implements IProcessContextRequirements but returns 0; it still reads the
+        // context. A zero mask must therefore keep every validity flag instead of stripping them.
+        use ProcessContext_::StatesAndFlags_ as F;
+        let playing = process_context_state(Some(0), true);
+        for flag in [
+            F::kPlaying,
+            F::kTempoValid,
+            F::kTimeSigValid,
+            F::kContTimeValid,
+            F::kProjectTimeMusicValid,
+            F::kBarPositionValid,
+        ] {
+            assert_ne!(playing & flag as u32, 0);
+        }
+        assert!(process_context_needs(
+            Some(0),
+            IProcessContextRequirements_::Flags_::kNeedTempo as u32
+        ));
+        assert!(!process_context_needs(
+            Some(IProcessContextRequirements_::Flags_::kNeedTempo as u32),
+            IProcessContextRequirements_::Flags_::kNeedTimeSignature as u32
+        ));
     }
 
     #[test]

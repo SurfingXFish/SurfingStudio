@@ -348,11 +348,7 @@ impl SurfingApp {
         if !self.dirty || self.project_path.is_none() || self.close_prompt {
             return;
         }
-        if self.save_rx.is_some()
-            || self.engine_sync_rx.is_some()
-            || self.is_loading_project()
-            || self.instrument_load_pending
-        {
+        if self.save_rx.is_some() || self.is_loading_project() || self.instrument_load_pending {
             return;
         }
         if self.last_autosave.elapsed() < Duration::from_secs(self.settings.autosave_seconds) {
