@@ -1747,6 +1747,10 @@ impl SurfingApp {
         self.poll_scan();
         self.poll_plugin_probes();
         self.poll_midi();
+        // 录音预览片段随播放头延长，保证编曲区/卷帘在录制过程中持续可见。
+        // Recording preview clips grow with the playhead so the arrangement and rolls stay visible
+        // while recording.
+        self.service_recording_preview();
         self.poll_load_project();
         self.poll_save_project();
         self.poll_public_copy();

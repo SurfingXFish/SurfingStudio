@@ -237,6 +237,9 @@ impl SurfingApp {
 
     fn after_history_apply(&mut self) {
         self.release_held_notes();
+        // 撤销会替换工程内容：录音中的预览片段已随之消失，录音必须整段放弃。
+        // Undo replaces the project: preview clips vanish with it, so the whole take is abandoned.
+        self.cancel_recording();
         // 撤销会替换工程内容：先停止音频处理，再 detach 插件编辑器。
         // Undo replaces project content: stop processing before detaching editors.
         if let Ok(mut engine) = self.engine.try_lock() {

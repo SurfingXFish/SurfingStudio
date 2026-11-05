@@ -1,30 +1,37 @@
 //! 所属模块：app / MIDI 录制
 //! 文件用途：
-//! - 维护录音状态：开始/结束录音、按轨道收集输入音符，并在停止后生成新的 MIDI 片段。
-//! - 决定 MIDI 输入的目标轨道：显式绑定优先，默认设备回退到当前选中轨道。
+//! - 维护录音状态：开始/结束录音、按轨道收集输入音符，并在停止后确认 MIDI 片段。
+//! - 录音中把每个有输入的轨道实时写入一个预览片段，实现“边录制边显示”。
+//! - 决定 MIDI 输入的目标轨道：显式绑定优先，默认设备与内置虚拟键盘回退到当前选中轨道。
 //!
 //! 函数清单：
-//! - `SurfingApp::toggle_record` / `start_recording` / `finish_recording`：录音开关与收尾。
-//! - `SurfingApp::record_note_on` / `record_note_off`：把输入音符写入录音缓冲。
+//! - `SurfingApp::toggle_record` / `start_recording` / `finish_recording` / `cancel_recording`：录音开关与收尾。
+//! - `SurfingApp::record_note_on` / `record_note_off`：把输入音符写入录音缓冲并刷新预览片段。
+//! - `SurfingApp::service_recording_preview` / `refresh_recording_preview` / `ensure_recording_preview_id`：
+//!   录音预览片段的创建、按帧延长与按 id 查找。
 //! - `SurfingApp::transport_beat`：读取当前听感播放位置。
 //! - `SurfingApp::midi_target_tracks` / `is_default_midi_device`：输入事件的目标轨道选择。
-//! - `TrackTake::note_on` / `note_off` / `close_all` / `into_clip`：单轨录音缓冲与片段生成。
+//! - `TrackTake::note_on` / `note_off` / `close_all` / `into_clip` / `preview_clip`：单轨缓冲与片段生成。
 //!
 //! Module: app / MIDI recording
 //! Purpose:
-//! - Hold the recording state: start/stop, collect notes per track and create new MIDI clips on stop.
-//! - Resolve MIDI input targets: explicit track bindings win, the default device falls back to the
-//!   currently selected track.
+//! - Hold the recording state: start/stop, collect notes per track and confirm MIDI clips on stop.
+//! - Write a live preview clip for every track receiving input, so recording is visible while it
+//!   happens.
+//! - Resolve MIDI input targets: explicit track bindings win, the default device and the built-in
+//!   virtual keyboard fall back to the currently selected track.
 //!
 //! Functions:
-//! - `SurfingApp::toggle_record` / `start_recording` / `finish_recording`: recording control.
-//! - `SurfingApp::record_note_on` / `record_note_off`: write input notes into the recording buffers.
+//! - `SurfingApp::toggle_record` / `start_recording` / `finish_recording` / `cancel_recording`: recording control.
+//! - `SurfingApp::record_note_on` / `record_note_off`: write input notes into the buffers and refresh the preview.
+//! - `SurfingApp::service_recording_preview` / `refresh_recording_preview` / `ensure_recording_preview_id`:
+//!   create, extend per frame and look up the recording preview clip by id.
 //! - `SurfingApp::transport_beat`: read the audible transport position.
 //! - `SurfingApp::midi_target_tracks` / `is_default_midi_device`: pick the destination tracks.
-//! - `TrackTake::note_on` / `note_off` / `close_all` / `into_clip`: per-track buffer and clip creation.
+//! - `TrackTake::note_on` / `note_off` / `close_all` / `into_clip` / `preview_clip`: per-track buffer and clip creation.
 
 use super::*;
-use crate::core::midi_input::MidiMessage;
+use crate::core::midi_input::{MidiMessage, VIRTUAL_MIDI_DEVICE};
 
 /// 录制音符的最短长度（beat）；过短的点击按该长度保存。
 /// Minimum recorded note length in beats; very short taps are stored with this length.
@@ -32,6 +39,9 @@ const MIN_RECORDED_NOTE_BEATS: f64 = 1.0 / 32.0;
 /// 录制片段的最短长度（beat）；避免“无输入”或极短输入生成零长度片段。
 /// Minimum recorded clip length in beats; prevents zero-length clips.
 const MIN_RECORDED_CLIP_BEATS: f64 = 0.25;
+/// 录音预览片段的显示名称。
+/// Display name of the live recording preview clip.
+const RECORDING_CLIP_NAME: &str = "录音片段";
 
 /// 一个正在按下的录音音符。
 /// One note currently held while recording.
@@ -172,31 +182,89 @@ impl TrackTake {
     /// Outputs / side effects: returns the clip; the project is untouched.
     /// Complexity: O(n log n) time and O(n) space, `n` = recorded notes.
     fn into_clip(self, id: u64, start_beat: f64) -> Option<Clip> {
-        if self.notes.is_empty() {
-            return None;
-        }
-        let mut notes = self.notes;
-        notes.sort_by(|left, right| {
-            left.start_abs
-                .partial_cmp(&right.start_abs)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        let end_beat = notes
-            .iter()
-            .map(|note| note.end_abs)
-            .fold(start_beat + MIN_RECORDED_CLIP_BEATS, f64::max);
-        let mut clip = Clip::new(id, "录音片段", start_beat, end_beat - start_beat);
-        clip.notes = notes
-            .into_iter()
-            .map(|note| Note {
-                start: (note.start_abs - start_beat).max(0.0),
-                length: (note.end_abs - note.start_abs).max(MIN_RECORDED_NOTE_BEATS),
-                pitch: note.pitch,
-                velocity: note.velocity,
-            })
-            .collect();
-        Some(clip)
+        clip_from_notes(self.notes, id, start_beat, start_beat)
     }
+
+    /// 所属模块：app / MIDI 录制 / 单轨缓冲
+    /// 功能：生成录音中的预览片段：已结束音符加上仍按下音符（结束位置延伸到 `now_beat`）。
+    /// 输入：
+    /// - `id`：预览片段 id（与最终片段相同）。
+    /// - `start_beat`：录音起点（片段起点）。
+    /// - `now_beat`：当前听感播放位置，用于延长片段与按下音符。
+    /// 输出/副作用：返回预览片段；不修改录音缓冲与工程。
+    /// 复杂度：时间 O(n log n)，空间 O(n)，`n` = 录音音符数。
+    ///
+    /// Module: app / MIDI recording / track buffer
+    /// Purpose: Build the live preview clip: finished notes plus held notes extended to `now_beat`.
+    /// Inputs:
+    /// - `id`: preview clip id (same as the final clip).
+    /// - `start_beat`: recording start (clip start).
+    /// - `now_beat`: current audible position, extending the clip and held notes.
+    /// Outputs / side effects: returns the preview clip; buffers and the project are untouched.
+    /// Complexity: O(n log n) time and O(n) space, `n` = recorded notes.
+    fn preview_clip(&self, id: u64, start_beat: f64, now_beat: f64) -> Option<Clip> {
+        let mut notes = self.notes.clone();
+        for active in self.active.values() {
+            notes.push(RecordedNote {
+                start_abs: active.start_abs,
+                end_abs: now_beat.max(active.start_abs + MIN_RECORDED_NOTE_BEATS),
+                pitch: active.pitch,
+                velocity: active.velocity,
+            });
+        }
+        clip_from_notes(notes, id, start_beat, now_beat.max(start_beat))
+    }
+}
+
+/// 所属模块：app / MIDI 录制 / 片段生成
+/// 功能：把绝对 beat 音符列表转换为相对片段；保证最短音符与最短片段长度。
+/// 输入：
+/// - `notes`：绝对 beat 的已结束音符（函数内排序）。
+/// - `id`：片段 id。
+/// - `start_beat`：片段起点。
+/// - `min_end_beat`：片段末尾下限；预览时传当前播放位置。
+/// 输出/副作用：返回片段；没有音符时为 `None`。
+/// 复杂度：时间 O(n log n)，空间 O(n)，`n` = 音符数。
+///
+/// Module: app / MIDI recording / clip creation
+/// Purpose: Convert absolute-beat notes into a relative clip with minimum note and clip lengths.
+/// Inputs:
+/// - `notes`: finished notes in absolute beats (sorted in place).
+/// - `id`: clip id.
+/// - `start_beat`: clip start.
+/// - `min_end_beat`: lower bound of the clip end (the playhead for previews).
+/// Outputs / side effects: returns the clip; `None` when there are no notes.
+/// Complexity: O(n log n) time and O(n) space, `n` = notes.
+fn clip_from_notes(
+    mut notes: Vec<RecordedNote>,
+    id: u64,
+    start_beat: f64,
+    min_end_beat: f64,
+) -> Option<Clip> {
+    if notes.is_empty() {
+        return None;
+    }
+    notes.sort_by(|left, right| {
+        left.start_abs
+            .partial_cmp(&right.start_abs)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let note_end = notes
+        .iter()
+        .map(|note| note.end_abs)
+        .fold(start_beat + MIN_RECORDED_CLIP_BEATS, f64::max);
+    let end_beat = note_end.max(min_end_beat);
+    let mut clip = Clip::new(id, RECORDING_CLIP_NAME, start_beat, end_beat - start_beat);
+    clip.notes = notes
+        .into_iter()
+        .map(|note| Note {
+            start: (note.start_abs - start_beat).max(0.0),
+            length: (note.end_abs - note.start_abs).max(MIN_RECORDED_NOTE_BEATS),
+            pitch: note.pitch,
+            velocity: note.velocity,
+        })
+        .collect();
+    Some(clip)
 }
 
 /// 录制状态；仅 UI 状态，不写入工程文件。
@@ -206,6 +274,13 @@ pub struct RecordState {
     active: bool,
     start_beat: f64,
     takes: HashMap<TrackId, TrackTake>,
+    /// 录音中已插入工程的预览片段 id（按轨道）；停止时用同一 id 确认最终片段。
+    /// Preview clip ids already inserted into the project (per track); the final clip keeps the id.
+    previews: HashMap<TrackId, u64>,
+    /// 本次录音是否已压入撤销快照；预览片段会提前改工程，因此只在首次插入时记录一次。
+    /// Whether the undo snapshot was pushed for this take; previews modify the project early, so the
+    /// snapshot is recorded once before the first insertion.
+    undo_pushed: bool,
 }
 
 impl RecordState {
@@ -280,6 +355,8 @@ impl SurfingApp {
             active: true,
             start_beat,
             takes: HashMap::new(),
+            previews: HashMap::new(),
+            undo_pushed: false,
         };
         if let Ok(mut engine) = self.engine.lock() {
             // 录音期间不允许自动停止，否则空工程在输入前就会停下。
@@ -290,15 +367,16 @@ impl SurfingApp {
     }
 
     /// 所属模块：app / MIDI 录制
-    /// 功能：结束录音：关闭仍按下的音符，为有输入的轨道各生成一个新 MIDI 片段。
+    /// 功能：结束录音：关闭仍按下的音符，并按同 id 确认录音中的预览片段；无输入的轨道不保留片段。
     /// 输入：`self`。
-    /// 输出/副作用：可能创建片段、记录撤销、标记工程已修改并恢复自动停止；无输入时不创建片段。
+    /// 输出/副作用：可能替换/创建片段、记录撤销、标记工程已修改并恢复自动停止；无输入时不创建片段。
     /// 复杂度：时间 O(轨道数 + 录音音符数 log 音符数)，空间 O(录音音符数)。
     ///
     /// Module: app / MIDI recording
-    /// Purpose: Stop recording: close held notes and create one new MIDI clip per track with input.
+    /// Purpose: Stop recording: close held notes and confirm the live preview clips by id; tracks
+    /// without input keep no clip.
     /// Inputs: `self`.
-    /// Outputs / side effects: may create clips, push an undo step, mark the project dirty and
+    /// Outputs / side effects: may replace/create clips, push an undo step, mark the project dirty and
     /// restore auto-stop; no input creates no clip.
     /// Complexity: O(tracks + n log n) time and O(n) space, `n` = recorded notes.
     pub(super) fn finish_recording(&mut self) {
@@ -314,9 +392,9 @@ impl SurfingApp {
         }
         let mut ordered: Vec<(TrackId, TrackTake)> = takes.into_iter().collect();
         ordered.sort_by_key(|(track_id, _)| *track_id);
-        let has_notes = ordered.iter().any(|(_, take)| !take.notes.is_empty());
-        let mut next_clip_id = self.project.next_clip_id();
-        let mut pending: Vec<(usize, Clip)> = Vec::new();
+        let mut undo_pushed = state.undo_pushed;
+        let mut created = 0usize;
+        let mut first_selection: Option<(usize, usize)> = None;
         for (track_id, take) in ordered {
             if take.notes.is_empty() {
                 continue;
@@ -332,23 +410,39 @@ impl SurfingApp {
             if self.project.tracks[track_index].has_audio_clips() {
                 continue;
             }
-            let Some(clip) = take.into_clip(next_clip_id, start_beat) else {
+            // 预览片段已改过工程：撤销快照必须在首次写入前记录，因此沿用录音期间的那一次。
+            // Previews already changed the project: the undo snapshot must predate the first write,
+            // so the one taken during recording is reused.
+            if !undo_pushed {
+                self.push_undo_now();
+                undo_pushed = true;
+            }
+            let preview_index = state.previews.get(&track_id).and_then(|id| {
+                self.project.tracks[track_index]
+                    .clips
+                    .iter()
+                    .position(|clip| clip.id == *id)
+            });
+            let clip_id = preview_index
+                .map(|index| self.project.tracks[track_index].clips[index].id)
+                .unwrap_or_else(|| self.project.next_clip_id());
+            let Some(clip) = take.into_clip(clip_id, start_beat) else {
                 continue;
             };
-            next_clip_id += 1;
-            pending.push((track_index, clip));
-        }
-        let mut created = 0usize;
-        let mut first_selection: Option<(usize, usize)> = None;
-        if has_notes && !pending.is_empty() {
-            self.push_undo_now();
-            for (track_index, clip) in pending {
-                let clip_index = self.project.tracks[track_index].clips.len();
-                self.project.tracks[track_index].clips.push(clip);
-                created += 1;
-                if first_selection.is_none() {
-                    first_selection = Some((track_index, clip_index));
+            let clip_index = match preview_index {
+                Some(index) => {
+                    self.project.tracks[track_index].clips[index] = clip;
+                    index
                 }
+                None => {
+                    let index = self.project.tracks[track_index].clips.len();
+                    self.project.tracks[track_index].clips.push(clip);
+                    index
+                }
+            };
+            created += 1;
+            if first_selection.is_none() {
+                first_selection = Some((track_index, clip_index));
             }
         }
         if let Some((track_index, clip_index)) = first_selection {
@@ -374,22 +468,56 @@ impl SurfingApp {
     }
 
     /// 所属模块：app / MIDI 录制
-    /// 功能：把一个 Note On 写入指定轨道的录音缓冲。
+    /// 功能：放弃录音（例如录音中撤销或切换工程）：移除录音预览片段、清空缓冲并恢复自动停止。
+    /// 输入：`self`。
+    /// 输出/副作用：从当前工程删除预览片段并重置 `RecordState`，恢复引擎自动停止；不标记脏。
+    /// 复杂度：时间 O(轨道数 × 片段数)，空间 O(1)。
+    ///
+    /// Module: app / MIDI recording
+    /// Purpose: Abandon recording (undo or project switch while recording): remove preview clips,
+    /// clear the buffers and restore auto-stop.
+    /// Inputs: `self`.
+    /// Outputs / side effects: removes preview clips from the current project, resets `RecordState`
+    /// and restores engine auto-stop; the project is not marked dirty.
+    /// Complexity: O(tracks × clips) time and O(1) space.
+    pub(super) fn cancel_recording(&mut self) {
+        if !self.record.active {
+            return;
+        }
+        let state = std::mem::take(&mut self.record);
+        for (track_id, clip_id) in &state.previews {
+            if let Some(track) = self
+                .project
+                .tracks
+                .iter_mut()
+                .find(|track| track.id == *track_id)
+            {
+                track.clips.retain(|clip| clip.id != *clip_id);
+            }
+        }
+        if let Ok(mut engine) = self.engine.try_lock() {
+            engine.set_auto_stop(true, &self.project);
+        }
+    }
+
+    /// 所属模块：app / MIDI 录制
+    /// 功能：把一个 Note On 写入指定轨道的录音缓冲，并立即刷新该轨道的预览片段。
     /// 输入：
     /// - `track_id`：目标轨道 id。
     /// - `pitch`：音高。
     /// - `velocity`：7 位力度。
-    /// 输出/副作用：录音未激活时忽略；否则更新对应轨道缓冲。
-    /// 复杂度：时间 O(1)，空间 O(1)。
+    /// 输出/副作用：录音未激活时忽略；否则更新对应轨道缓冲，必要时在工程中插入预览片段。
+    /// 复杂度：时间 O(录音音符数 log 音符数)，空间 O(录音音符数)。
     ///
     /// Module: app / MIDI recording
-    /// Purpose: Write a Note On into the recording buffer of the target track.
+    /// Purpose: Write a Note On into the target track buffer and refresh its live preview clip.
     /// Inputs:
     /// - `track_id`: target track id.
     /// - `pitch`: note pitch.
     /// - `velocity`: 7-bit velocity.
-    /// Outputs / side effects: ignored when recording is off; otherwise updates the track buffer.
-    /// Complexity: O(1) time and space.
+    /// Outputs / side effects: ignored when recording is off; otherwise updates the track buffer and
+    /// inserts the preview clip when needed.
+    /// Complexity: O(n log n) time and O(n) space, `n` = recorded notes.
     pub(super) fn record_note_on(&mut self, track_id: TrackId, pitch: u8, velocity: u8) {
         if !self.record.active {
             return;
@@ -400,31 +528,162 @@ impl SurfingApp {
             .entry(track_id)
             .or_default()
             .note_on(pitch, velocity, beat);
+        self.refresh_recording_preview(track_id, beat);
     }
 
     /// 所属模块：app / MIDI 录制
-    /// 功能：把一个 Note Off 写入指定轨道的录音缓冲。
+    /// 功能：把一个 Note Off 写入指定轨道的录音缓冲，并立即刷新该轨道的预览片段。
     /// 输入：
     /// - `track_id`：目标轨道 id。
     /// - `pitch`：音高。
-    /// 输出/副作用：录音未激活时忽略；否则结束对应音符。
-    /// 复杂度：时间 O(1)，空间 O(1)。
+    /// 输出/副作用：录音未激活时忽略；否则结束对应音符并刷新预览。
+    /// 复杂度：时间 O(录音音符数 log 音符数)，空间 O(录音音符数)。
     ///
     /// Module: app / MIDI recording
-    /// Purpose: Write a Note Off into the recording buffer of the target track.
+    /// Purpose: Write a Note Off into the target track buffer and refresh its live preview clip.
     /// Inputs:
     /// - `track_id`: target track id.
     /// - `pitch`: note pitch.
-    /// Outputs / side effects: ignored when recording is off; otherwise closes the note.
-    /// Complexity: O(1) time and space.
+    /// Outputs / side effects: ignored when recording is off; otherwise closes the note and
+    /// refreshes the preview.
+    /// Complexity: O(n log n) time and O(n) space, `n` = recorded notes.
     pub(super) fn record_note_off(&mut self, track_id: TrackId, pitch: u8) {
         if !self.record.active {
             return;
         }
         let beat = self.transport_beat();
-        if let Some(take) = self.record.takes.get_mut(&track_id) {
-            take.note_off(pitch, beat);
+        let Some(take) = self.record.takes.get_mut(&track_id) else {
+            return;
+        };
+        take.note_off(pitch, beat);
+        self.refresh_recording_preview(track_id, beat);
+    }
+
+    /// 所属模块：app / MIDI 录制 / 预览
+    /// 功能：每帧刷新全部录音预览片段：延长片段末尾与仍按下的音符到当前播放位置。
+    /// 输入：`self`。
+    /// 输出/副作用：可能创建/更新预览片段；不标记脏、不触发引擎同步。
+    /// 复杂度：时间 O(轨道数 × 录音音符数 log 录音音符数)，空间 O(录音音符数)。
+    ///
+    /// Module: app / MIDI recording / preview
+    /// Purpose: Refresh every live preview clip each frame: extend the clip end and held notes to
+    /// the current position.
+    /// Inputs: `self`.
+    /// Outputs / side effects: may create/update preview clips; does not mark the project dirty or
+    /// trigger an engine sync.
+    /// Complexity: O(tracks × n log n) time and O(n) space, `n` = recorded notes per track.
+    pub(super) fn service_recording_preview(&mut self) {
+        if !self.record.active {
+            return;
         }
+        let now_beat = self.transport_beat();
+        let track_ids: Vec<TrackId> = self.record.takes.keys().copied().collect();
+        for track_id in track_ids {
+            self.refresh_recording_preview(track_id, now_beat);
+        }
+    }
+
+    /// 所属模块：app / MIDI 录制 / 预览
+    /// 功能：刷新单条轨道的预览片段；首次写入前记录撤销快照。
+    /// 输入：
+    /// - `track_id`：轨道 id。
+    /// - `now_beat`：当前听感播放位置。
+    /// 输出/副作用：必要时在工程中插入预览片段并更新内容；不标记脏、不 bump revision。
+    /// 复杂度：时间 O(录音音符数 log 录音音符数)，空间 O(录音音符数)。
+    ///
+    /// Module: app / MIDI recording / preview
+    /// Purpose: Refresh one track's preview clip; record the undo snapshot before the first write.
+    /// Inputs:
+    /// - `track_id`: track id.
+    /// - `now_beat`: current audible position.
+    /// Outputs / side effects: inserts and updates the preview clip when needed; never marks the
+    /// project dirty or bumps revisions.
+    /// Complexity: O(n log n) time and O(n) space, `n` = recorded notes.
+    fn refresh_recording_preview(&mut self, track_id: TrackId, now_beat: f64) {
+        if !self.record.active {
+            return;
+        }
+        let start_beat = self.record.start_beat;
+        let Some(clip_id) = self.ensure_recording_preview_id(track_id) else {
+            return;
+        };
+        let Some(preview) = self
+            .record
+            .takes
+            .get(&track_id)
+            .and_then(|take| take.preview_clip(clip_id, start_beat, now_beat))
+        else {
+            return;
+        };
+        if let Some(existing) = self
+            .project
+            .tracks
+            .iter_mut()
+            .find(|track| track.id == track_id)
+            .and_then(|track| track.clips.iter_mut().find(|clip| clip.id == clip_id))
+        {
+            existing.start = preview.start;
+            existing.length = preview.length;
+            existing.notes = preview.notes;
+            // 预览内容变化必须递增 revision，保证音符事件签名可判定；但这里不触发引擎同步，
+            // 避免录制的实时内容与试听重复发声。
+            // Preview content changes must bump the revision so the note-event signature can
+            // detect them; the engine is deliberately not synced here, which would double the
+            // monitoring sound with the recorded notes.
+            existing.bump_revision();
+        }
+    }
+
+    /// 所属模块：app / MIDI 录制 / 预览
+    /// 功能：确保轨道存在预览片段并返回其 id；首次插入前记录撤销快照。
+    /// 输入：`track_id`：轨道 id。
+    /// 输出/副作用：可能插入空预览片段、压入撤销快照并写入 `RecordState::previews`；轨道不存在时为 `None`。
+    /// 复杂度：时间 O(轨道数 + 片段数)，空间 O(1)。
+    ///
+    /// Module: app / MIDI recording / preview
+    /// Purpose: Ensure the track owns a preview clip and return its id; record the undo snapshot
+    /// before the first insertion.
+    /// Inputs: `track_id`: track id.
+    /// Outputs / side effects: may insert an empty preview clip, push the undo snapshot and fill
+    /// `RecordState::previews`; `None` when the track is gone.
+    /// Complexity: O(tracks + clips) time and O(1) space.
+    fn ensure_recording_preview_id(&mut self, track_id: TrackId) -> Option<u64> {
+        if let Some(clip_id) = self.record.previews.get(&track_id).copied() {
+            let alive = self
+                .project
+                .tracks
+                .iter()
+                .find(|track| track.id == track_id)
+                .is_some_and(|track| track.clips.iter().any(|clip| clip.id == clip_id));
+            if alive {
+                return Some(clip_id);
+            }
+            self.record.previews.remove(&track_id);
+        }
+        let track_index = self
+            .project
+            .tracks
+            .iter()
+            .position(|track| track.id == track_id)?;
+        // 音频轨道不能承载 MIDI 片段；录音缓冲仍保留，停止时按原规则跳过。
+        // Audio lanes cannot hold MIDI clips; the take is kept and skipped when recording stops.
+        if self.project.tracks[track_index].has_audio_clips() {
+            return None;
+        }
+        if !self.record.undo_pushed {
+            self.push_undo_now();
+            self.record.undo_pushed = true;
+        }
+        let clip_id = self.project.next_clip_id();
+        let clip = Clip::new(
+            clip_id,
+            RECORDING_CLIP_NAME,
+            self.record.start_beat,
+            MIN_RECORDED_CLIP_BEATS,
+        );
+        self.project.tracks[track_index].clips.push(clip);
+        self.record.previews.insert(track_id, clip_id);
+        Some(clip_id)
     }
 
     /// 所属模块：app / MIDI 录制
@@ -489,17 +748,24 @@ impl SurfingApp {
     }
 
     /// 所属模块：app / MIDI 录制 / 输入路由
-    /// 功能：判断端口是否为当前默认 MIDI 设备。
+    /// 功能：判断端口是否为当前默认 MIDI 设备；内置虚拟键盘始终作为选中轨道的回退输入。
     /// 输入：`device`：端口名。
     /// 输出/副作用：布尔值；不修改状态。
     /// 复杂度：时间 O(端口名长度)，空间 O(1)。
     ///
     /// Module: app / MIDI recording / input routing
-    /// Purpose: Whether the port is the current default MIDI device.
+    /// Purpose: Whether the port is the current default MIDI device; the built-in virtual keyboard
+    /// always acts as the selected-track fallback.
     /// Inputs: `device`: port name.
     /// Outputs / side effects: the boolean; no state change.
     /// Complexity: O(port name length) time and O(1) space.
     fn is_default_midi_device(&self, device: &str) -> bool {
+        // 电脑键盘没有可配置的物理端口，始终参与选中轨道回退；显式绑定其他设备的轨道仍优先。
+        // The computer keyboard has no configurable physical port and always joins the selected-track
+        // fallback; tracks bound to another device still take priority.
+        if device.eq_ignore_ascii_case(VIRTUAL_MIDI_DEVICE) {
+            return true;
+        }
         self.shared
             .midi_default_device()
             .is_some_and(|default| default.eq_ignore_ascii_case(device))
@@ -547,6 +813,24 @@ mod tests {
     fn empty_take_creates_no_clip() {
         let take = TrackTake::default();
         assert!(take.into_clip(1, 4.0).is_none());
+    }
+
+    /// 覆盖：录音中的预览片段把按住音符延伸到播放位置，并按播放头延长片段。
+    /// Covers: the live preview extends held notes to the playhead and grows the clip with it.
+    #[test]
+    fn preview_clip_extends_held_notes_to_the_playhead() {
+        let mut take = TrackTake::default();
+        take.note_on(60, 100, 1.0);
+        take.note_off(60, 2.0);
+        take.note_on(64, 80, 3.0);
+        let clip = take.preview_clip(9, 1.0, 4.0).expect("preview with notes");
+        assert_eq!(clip.id, 9);
+        assert!((clip.start - 1.0).abs() < 1e-9);
+        assert!((clip.length - 3.0).abs() < 1e-9);
+        assert_eq!(clip.notes.len(), 2);
+        assert!((clip.notes[0].start - 0.0).abs() < 1e-9);
+        assert!((clip.notes[1].start - 2.0).abs() < 1e-9);
+        assert!((clip.notes[1].length - 1.0).abs() < 1e-9);
     }
 
     /// 覆盖：极短音符与极短片段仍满足最小时长。
