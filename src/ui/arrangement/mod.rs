@@ -2480,20 +2480,9 @@ impl SurfingApp {
                             && !mute_rect.contains(pos)
                             && !solo_rect.contains(pos)
                         {
-                            if self.project.tracks[track_index].is_group() {
-                                // 组合轨道主轨即音量控制器：双击打开它的音量自动化卷帘。
-                                // A group's main lane is its volume controller: double click opens the
-                                // volume automation roll.
-                                self.bottom_view = BottomView::Controller {
-                                    track_id: self.project.tracks[track_index].id,
-                                    kind: ControllerKind::Volume,
-                                };
-                                self.bottom_open = true;
-                                self.controller_selection.clear();
-                                self.controller_marquee_start = None;
-                            } else {
-                                self.open_track_editor(track_index, None);
-                            }
+                            // 双击轨道列表中的轨道：打开右侧轨道属性面板。
+                            // Double-clicking a track in the track list opens the track-properties panel.
+                            self.side_panel = Some(crate::app::SidePanel::Inspector);
                         } else if double_clicked
                             && !matches!(kind, RowKind::Main | RowKind::AddController)
                         {
@@ -2580,7 +2569,7 @@ impl SurfingApp {
                                 // A group's main lane is its volume controller: double click opens the
                                 // volume automation roll.
                                 self.bottom_view = BottomView::Controller {
-                                    track_id: track_id,
+                                    track_id,
                                     kind: ControllerKind::Volume,
                                 };
                                 self.bottom_open = true;

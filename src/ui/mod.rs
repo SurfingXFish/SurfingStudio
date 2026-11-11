@@ -8,6 +8,7 @@
 //! - Declare the view submodules.
 //! - Define shared types: bottom views, plugin filters, pointer tools and drag state.
 
+pub mod ai_panel;
 pub mod arrangement;
 pub mod browser;
 pub mod controller;

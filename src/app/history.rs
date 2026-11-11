@@ -252,7 +252,7 @@ impl SurfingApp {
         }
     }
 
-    fn after_history_apply(&mut self) {
+    pub(super) fn after_history_apply(&mut self) {
         self.release_held_notes();
         // 撤销会替换工程内容：录音中的预览片段已随之消失，录音必须整段放弃。
         // Undo replaces the project: preview clips vanish with it, so the whole take is abandoned.

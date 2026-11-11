@@ -17,6 +17,7 @@
 - **插件**：VST3 扫描与原生编辑器、VST2 支持、ARA2 宿主端（VOCALOID Bridge）、按插件上报延迟对齐轨道（PDC）、按品牌分组的插件浏览器、增量扫描缓存、参数与状态随工程保存。
 - **内置乐器与效果器**：808/909 风格鼓机；内置采样音色库（附录二全部 128 件采样乐器，来自 SoundBug SoundSampler3，已拆分为 Ogg Vorbis 随可执行文件内嵌，统一归入 SurfingStudio，不再依赖 SoundBug VST）；八种原生效果器（过载、失真、法兹、合唱、相位、延时、混响、压缩）。原九种原生建模乐器已由采样版本取代，旧工程与模板中的原生乐器仍可正常加载。
 - **工作流**：多窗口工作区、主页（项目 / 模板 / 插件 / 提示）、19 种风格模板与 6 个范例工程、独立设置窗口、独立导出窗口、自动保存、崩溃恢复、历史版本、可自定义快捷键。
+- **AI 编曲**：顶部「AI 编曲」在右侧打开聊天式面板，可接入 DeepSeek、小米 MiMo 或任意 OpenAI 兼容服务；采用 SSE 流式输出，思考过程实时滚动、`reply` 逐字显示、编曲操作边解析边写入工程，可选择推理强度；内置「轻音乐创作」与「J-Pop」智能体，自动加载基础乐理、现代编曲与曲式、风格与八类配器技能，并可让模型按需调用 14 个编曲技巧（律动、切分、桥段、分层等）。AI 优先调用已扫描的 VST3 / VST2 乐器与效果器（清单带中文用途说明），并可通过 DeepSeek Search 联网检索插件特点；支持文本 / Markdown / JSON / CSV / MIDI 附件。
 - **工程格式**：`.sfsd`（SFS2 分块二进制容器，MessagePack 清单 + 插件状态块 + 波形峰值缓存），兼容导入 SoundBug `.sndp`。
 - **诊断**：每次启动写入二进制 `.sflog` 日志（`--decode-log` 可解码），记录卡顿、资源占用与退出原因。
 
@@ -30,6 +31,7 @@
 | MIDI 输入 | midir 0.11 |
 | 插件 | vst3-host 0.10（本地 patch）、vst 0.4（VST2） |
 | 序列化 | serde / rmp-serde（MessagePack）/ zstd / crc32fast |
+| AI 编曲 | ureq 2（阻塞 HTTPS + SSE 流式，rustls/ring）+ DeepSeek / MiMo OpenAI 兼容接口 |
 | 其他 | hound（WAV）、symphonia（MP3 / FLAC / AAC·M4A / OGG / AIFF / CAF / ALAC）、rfd（文件对话框）、wgpu（GPU 离线渲染与实时限幅） |
 
 ## 快速开始
@@ -57,6 +59,7 @@ powershell -ExecutionPolicy Bypass -File platforms\android\build.ps1 -Abi arm64-
 src/
 ├─ main.rs          # 薄二进制入口：创建 eframe 根窗口
 ├─ lib.rs           # 库根：模块声明
+├─ ai/              # AI 编曲：运行时、OpenAI 兼容流式后端、提示词、流式计划与内置技能
 ├─ platform/        # 平台运行时（desktop / android 后端、SAF）
 ├─ app/             # 应用状态机与多窗口外壳（主页、设置、保存、插件、自动保存…）
 ├─ core/            # 纯数据层：模型、工程运行时（sfsd / soundbug）、MIDI 输入
