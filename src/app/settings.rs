@@ -121,6 +121,19 @@ const BUFFER_FRAMES_OPTIONS: [u32; 6] = [128, 256, 512, 1024, 2048, 4096];
 /// GPU 界面渲染可选 API：持久化标识与展示文本。
 /// Selectable GPU UI-render APIs: persisted id and display text.
 const DEFAULT_GPU_RENDER_API: &str = "auto";
+/// 默认 AI 模型预设 id；与 `ai::MODEL_PRESETS` 的第一项一致。
+/// Default AI model preset id; matches the first entry of `ai::MODEL_PRESETS`.
+const DEFAULT_AI_MODEL_PRESET: &str = "deepseek-flash";
+/// 默认 AI 采样温度：略高以保留编曲创意。
+/// Default AI temperature: slightly high to keep compositional variety.
+const DEFAULT_AI_TEMPERATURE: f32 = 0.7;
+/// 默认单次回复的最大 token 数；编曲计划可能包含大量音符，思考模式也会占用输出预算。
+/// Default maximum tokens per reply; a composition plan may contain many notes and thinking consumes
+/// part of the output budget.
+const DEFAULT_AI_MAX_TOKENS: u32 = 32_768;
+/// 默认 AI 请求超时（秒）。
+/// Default AI request timeout in seconds.
+const DEFAULT_AI_TIMEOUT_SECONDS: u64 = 180;
 
 /// 设置窗口左侧分类。
 /// Settings categories shown in the left column.
@@ -132,18 +145,20 @@ pub enum SettingsPage {
     Audio,
     Render,
     Controller,
+    Ai,
     Plugins,
     Shortcuts,
     About,
 }
 
 impl SettingsPage {
-    pub const ALL: [SettingsPage; 8] = [
+    pub const ALL: [SettingsPage; 9] = [
         SettingsPage::Interface,
         SettingsPage::Storage,
         SettingsPage::Audio,
         SettingsPage::Render,
         SettingsPage::Controller,
+        SettingsPage::Ai,
         SettingsPage::Plugins,
         SettingsPage::Shortcuts,
         SettingsPage::About,
@@ -167,6 +182,7 @@ impl SettingsPage {
             SettingsPage::Audio => "音频",
             SettingsPage::Render => "渲染",
             SettingsPage::Controller => "控制器",
+            SettingsPage::Ai => "AI",
             SettingsPage::Plugins => "插件",
             SettingsPage::Shortcuts => "快捷键",
             SettingsPage::About => "软件信息",
@@ -187,6 +203,206 @@ pub(super) enum SettingsFolderTarget {
     /// 默认存储目录。
     /// Default project directory.
     ProjectDir,
+}
+
+/// AI 编曲设置：模型预设、按服务商保存的 API Key、自定义接口与采样参数。
+/// AI composition settings: model preset, per-provider API keys, custom endpoint and sampling.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AiSettings {
+    /// 当前模型预设 id（`ai::MODEL_PRESETS`）。
+    /// Current model preset id (`ai::MODEL_PRESETS`).
+    #[serde(default = "default_ai_model_preset")]
+    pub model_preset: String,
+    /// 服务商 id → API Key。仅保存在本机设置文件中，不写入工程。
+    /// Provider id → API key. Stored only in the local settings file, never in projects.
+    #[serde(default)]
+    pub api_keys: BTreeMap<String, String>,
+    /// 自定义服务的 Base URL（仅自定义预设使用）。
+    /// Base URL of the custom service (used by the custom preset only).
+    #[serde(default)]
+    pub custom_base_url: String,
+    /// 自定义服务的模型名。
+    /// Model id of the custom service.
+    #[serde(default)]
+    pub custom_model: String,
+    /// 采样温度 0~2。
+    /// Sampling temperature 0..=2.
+    #[serde(default = "default_ai_temperature")]
+    pub temperature: f32,
+    /// 单次回复最大 token 数。
+    /// Maximum tokens per reply.
+    #[serde(default = "default_ai_max_tokens")]
+    pub max_tokens: u32,
+    /// 请求超时（秒）。
+    /// Request timeout in seconds.
+    #[serde(default = "default_ai_timeout_seconds")]
+    pub timeout_seconds: u64,
+    /// 推理强度：`off` / `low` / `medium` / `high`。
+    /// Reasoning effort: `off` / `low` / `medium` / `high`.
+    #[serde(default = "default_ai_reasoning")]
+    pub reasoning: String,
+    /// 允许 AI 在不确定插件特点时使用 DeepSeek Search API 联网检索。
+    /// Whether the AI may use the DeepSeek Search API to research plugin characteristics.
+    #[serde(default = "default_true")]
+    pub search_enabled: bool,
+}
+
+impl Default for AiSettings {
+    /// 所属模块：app / 全局设置 / AI
+    /// 功能：构造默认 AI 设置：DeepSeek Flash、空密钥与默认采样参数。
+    /// 输入：无。
+    /// 输出/副作用：默认设置；不读盘。
+    /// 复杂度：时间 O(1)，空间 O(1)。
+    ///
+    /// Module: app / global settings / AI
+    /// Purpose: Build default AI settings: DeepSeek Flash, empty keys and default sampling.
+    /// Inputs: none.
+    /// Outputs / side effects: defaults; no disk access.
+    /// Complexity: O(1) time and space.
+    fn default() -> Self {
+        Self {
+            model_preset: default_ai_model_preset(),
+            api_keys: BTreeMap::new(),
+            custom_base_url: String::new(),
+            custom_model: String::new(),
+            temperature: DEFAULT_AI_TEMPERATURE,
+            max_tokens: DEFAULT_AI_MAX_TOKENS,
+            timeout_seconds: DEFAULT_AI_TIMEOUT_SECONDS,
+            reasoning: default_ai_reasoning(),
+            search_enabled: true,
+        }
+    }
+}
+
+impl AiSettings {
+    /// 所属模块：app / 全局设置 / AI
+    /// 功能：把持久化的推理强度转换为 AI 请求枚举。
+    /// 输入：`self`。
+    /// 输出/副作用：推理强度；不修改状态。
+    /// 复杂度：时间 O(1)，空间 O(1)。
+    ///
+    /// Module: app / global settings / AI
+    /// Purpose: Convert the persisted reasoning id into the request enum.
+    /// Inputs: `self`.
+    /// Outputs / side effects: reasoning strength; no state change.
+    /// Complexity: O(1) time and space.
+    pub fn reasoning(&self) -> crate::ai::AiReasoning {
+        crate::ai::AiReasoning::from_id(&self.reasoning)
+    }
+
+    /// 所属模块：app / 全局设置 / AI
+    /// 功能：读取某个服务商保存的 API Key。
+    /// 输入：`provider`：服务商标识（`deepseek` / `mimo` / `custom`）。
+    /// 输出/副作用：密钥文本（可能为空）；不修改状态。
+    /// 复杂度：时间 O(日志键数)，空间 O(1)。
+    ///
+    /// Module: app / global settings / AI
+    /// Purpose: Read the saved API key of one provider.
+    /// Inputs: `provider`: provider id (`deepseek` / `mimo` / `custom`).
+    /// Outputs / side effects: key text (may be empty); no state change.
+    /// Complexity: O(keys) time and O(1) space.
+    pub fn api_key(&self, provider: &str) -> &str {
+        self.api_keys
+            .get(provider)
+            .map(String::as_str)
+            .unwrap_or_default()
+    }
+
+    /// 所属模块：app / 全局设置 / AI
+    /// 功能：写入某个服务商的 API Key；空文本会移除记录。
+    /// 输入：`provider` 服务商标识；`key` 密钥文本。
+    /// 输出/副作用：修改 `api_keys`；不写盘（由调用方 `commit_settings`）。
+    /// 复杂度：时间 O(日志键数)，空间 O(密钥长度)。
+    ///
+    /// Module: app / global settings / AI
+    /// Purpose: Store one provider's API key; empty text removes the entry.
+    /// Inputs: `provider` provider id; `key` key text.
+    /// Outputs / side effects: mutates `api_keys`; does not write the file.
+    /// Complexity: O(keys) time and O(key length) space.
+    pub fn set_api_key(&mut self, provider: &str, key: &str) {
+        let trimmed = key.trim();
+        if trimmed.is_empty() {
+            self.api_keys.remove(provider);
+        } else {
+            self.api_keys
+                .insert(provider.to_string(), trimmed.to_string());
+        }
+    }
+}
+
+/// 所属模块：app / 全局设置 / AI
+/// 功能：返回默认 AI 模型预设 id。
+/// 输入：无。
+/// 输出/副作用：静态字符串；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: app / global settings / AI
+/// Purpose: Return the default AI model preset id.
+/// Inputs: none.
+/// Outputs / side effects: static text; no state change.
+/// Complexity: O(1) time and space.
+fn default_ai_model_preset() -> String {
+    DEFAULT_AI_MODEL_PRESET.to_string()
+}
+
+/// 所属模块：app / 全局设置 / AI
+/// 功能：返回默认采样温度。
+/// 输入：无。
+/// 输出/副作用：数值；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: app / global settings / AI
+/// Purpose: Return the default sampling temperature.
+/// Inputs: none.
+/// Outputs / side effects: the value; no state change.
+/// Complexity: O(1) time and space.
+fn default_ai_temperature() -> f32 {
+    DEFAULT_AI_TEMPERATURE
+}
+
+/// 所属模块：app / 全局设置 / AI
+/// 功能：返回默认最大 token 数。
+/// 输入：无。
+/// 输出/副作用：数值；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: app / global settings / AI
+/// Purpose: Return the default maximum token count.
+/// Inputs: none.
+/// Outputs / side effects: the value; no state change.
+/// Complexity: O(1) time and space.
+fn default_ai_max_tokens() -> u32 {
+    DEFAULT_AI_MAX_TOKENS
+}
+
+/// 所属模块：app / 全局设置 / AI
+/// 功能：返回默认请求超时秒数。
+/// 输入：无。
+/// 输出/副作用：数值；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: app / global settings / AI
+/// Purpose: Return the default request timeout in seconds.
+/// Inputs: none.
+/// Outputs / side effects: the value; no state change.
+/// Complexity: O(1) time and space.
+fn default_ai_timeout_seconds() -> u64 {
+    DEFAULT_AI_TIMEOUT_SECONDS
+}
+
+/// 所属模块：app / 全局设置 / AI
+/// 功能：返回默认推理强度（中）。
+/// 输入：无。
+/// 输出/副作用：静态字符串；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: app / global settings / AI
+/// Purpose: Return the default reasoning effort (medium).
+/// Inputs: none.
+/// Outputs / side effects: static text; no state change.
+/// Complexity: O(1) time and space.
+fn default_ai_reasoning() -> String {
+    "medium".into()
 }
 
 /// 可持久化的全局设置。
@@ -303,6 +519,10 @@ pub struct AppSettings {
     /// Enabled controller output device (MIDI output port name).
     #[serde(default)]
     pub controller_output_device: Option<String>,
+    /// AI 编曲设置：模型预设、API Key 与采样参数。
+    /// AI composition settings: model preset, API keys and sampling parameters.
+    #[serde(default)]
+    pub ai: AiSettings,
     /// 自定义快捷键：动作 id → 绑定文本（多个绑定用逗号分隔；缺失表示使用默认值）。
     /// Custom shortcuts: action id → binding text (several bindings separated by commas; a missing
     /// entry means the default binding applies).
@@ -773,6 +993,7 @@ impl Default for AppSettings {
             controller_input_device: None,
             controller_enabled_input_devices: Vec::new(),
             controller_output_device: None,
+            ai: AiSettings::default(),
             shortcuts: BTreeMap::new(),
         }
     }
@@ -992,6 +1213,7 @@ impl SurfingApp {
                                 SettingsPage::Audio => self.ui_settings_audio(ui),
                                 SettingsPage::Render => self.ui_settings_render(ui),
                                 SettingsPage::Controller => self.ui_settings_controller(ui),
+                                SettingsPage::Ai => self.ui_settings_ai(ui),
                                 SettingsPage::Plugins => self.ui_settings_plugins(ui),
                                 SettingsPage::Shortcuts => self.ui_settings_shortcuts(ui),
                                 SettingsPage::About => self.ui_settings_about(ui),
@@ -1821,6 +2043,229 @@ impl SurfingApp {
                 self.settings.controller_input_device.as_deref(),
                 &self.settings.controller_enabled_input_devices,
             );
+        }
+    }
+
+    /// 所属模块：app / 全局设置 / AI
+    /// 功能：绘制 AI 页：模型预设、各服务商 API Key、自定义接口与采样参数。
+    /// 输入：`ui`：设置内容区。
+    /// 输出/副作用：修改全局 AI 设置并写盘；密钥只保存在本机设置文件。
+    /// 复杂度：每帧 O(服务商数 + 预设数)。
+    ///
+    /// Module: app / global settings / AI
+    /// Purpose: Draw the AI page: model presets, per-provider API keys, custom endpoint and sampling.
+    /// Inputs: `ui`: settings content area.
+    /// Outputs / side effects: updates global AI settings and writes them; keys stay in the local file.
+    /// Complexity: O(providers + presets) per frame.
+    fn ui_settings_ai(&mut self, ui: &mut egui::Ui) {
+        let mut changed = false;
+        settings_section(ui, "模型", |ui| {
+            ui.horizontal(|ui| {
+                settings_field_label(ui, "默认模型");
+                let current = crate::ai::find_preset(&self.settings.ai.model_preset)
+                    .map(|preset| preset.label)
+                    .unwrap_or("自定义");
+                let mut preset = self.settings.ai.model_preset.clone();
+                settings_combo(ui, "settings_ai_preset", current.to_string(), |ui| {
+                    for entry in crate::ai::MODEL_PRESETS {
+                        ui.selectable_value(&mut preset, entry.id.to_string(), entry.label);
+                    }
+                });
+                if preset != self.settings.ai.model_preset {
+                    self.settings.ai.model_preset = preset;
+                    changed = true;
+                }
+            });
+            settings_hint(
+                ui,
+                "对话输入框下方的“模型”下拉与此处同步；切换预设会使用对应服务商与模型。",
+            );
+        });
+
+        settings_section(ui, "API Key", |ui| {
+            for provider in [
+                crate::ai::AiProvider::DeepSeek,
+                crate::ai::AiProvider::Mimo,
+                crate::ai::AiProvider::Custom,
+            ] {
+                ui.horizontal(|ui| {
+                    settings_field_label(ui, provider.label());
+                    let mut key = self.settings.ai.api_key(provider.id()).to_string();
+                    let response = ui.add(
+                        egui::TextEdit::singleline(&mut key)
+                            .password(true)
+                            .hint_text("sk-…")
+                            .desired_width(260.0),
+                    );
+                    if response.changed() {
+                        self.settings.ai.set_api_key(provider.id(), key.trim());
+                        changed = true;
+                    }
+                    if ui
+                        .add(
+                            egui::Button::new(egui::RichText::new("清除").size(10.5))
+                                .min_size(egui::vec2(44.0, 22.0)),
+                        )
+                        .on_hover_text("删除该服务商保存的 API Key")
+                        .clicked()
+                    {
+                        self.settings.ai.set_api_key(provider.id(), "");
+                        changed = true;
+                    }
+                });
+            }
+            settings_hint(
+                ui,
+                "密钥只写入本机设置文件（%APPDATA%\\SurfingStudio\\settings.json），不会写入工程，也不会随工程分享。",
+            );
+            settings_hint(
+                ui,
+                "DeepSeek：https://api-docs.deepseek.com　MiMo：https://platform.xiaomimimo.com",
+            );
+        });
+
+        settings_section(ui, "自定义接口", |ui| {
+            ui.horizontal(|ui| {
+                settings_field_label(ui, "Base URL");
+                let mut url = self.settings.ai.custom_base_url.clone();
+                if ui
+                    .add(
+                        egui::TextEdit::singleline(&mut url)
+                            .hint_text("https://example.com/v1")
+                            .desired_width(320.0),
+                    )
+                    .changed()
+                {
+                    self.settings.ai.custom_base_url = url;
+                    changed = true;
+                }
+            });
+            ui.horizontal(|ui| {
+                settings_field_label(ui, "模型名");
+                let mut model = self.settings.ai.custom_model.clone();
+                if ui
+                    .add(
+                        egui::TextEdit::singleline(&mut model)
+                            .hint_text("自定义模型 id")
+                            .desired_width(320.0),
+                    )
+                    .changed()
+                {
+                    self.settings.ai.custom_model = model;
+                    changed = true;
+                }
+            });
+            settings_hint(
+                ui,
+                "仅在选择“自定义”模型时使用；接口需兼容 OpenAI /chat/completions。",
+            );
+        });
+
+        settings_section(ui, "推理强度", |ui| {
+            ui.horizontal(|ui| {
+                settings_field_label(ui, "推理");
+                let current = crate::ai::AiReasoning::from_id(&self.settings.ai.reasoning);
+                let mut reasoning = current;
+                settings_combo(
+                    ui,
+                    "settings_ai_reasoning",
+                    current.label().to_string(),
+                    |ui| {
+                        for entry in crate::ai::AiReasoning::ALL {
+                            ui.selectable_value(&mut reasoning, entry, entry.label());
+                        }
+                    },
+                );
+                if reasoning != current {
+                    self.settings.ai.reasoning = reasoning.id().to_string();
+                    changed = true;
+                }
+            });
+            settings_hint(
+                ui,
+                "关闭 = 不显示思考；低/中/高控制 DeepSeek 的 reasoning_effort。开启思考会增加等待时间与输出 token，但复杂编曲计划更稳。",
+            );
+        });
+
+        settings_section(ui, "联网搜索", |ui| {
+            ui.horizontal(|ui| {
+                settings_field_label(ui, "插件检索");
+                let mut enabled = self.settings.ai.search_enabled;
+                if settings_switch(ui, &mut enabled) {
+                    self.settings.ai.search_enabled = enabled;
+                    changed = true;
+                }
+                ui.label(
+                    egui::RichText::new("允许 AI 在不确定插件特点时联网检索")
+                        .size(11.0)
+                        .color(theme::TEXT),
+                );
+            });
+            settings_hint(
+                ui,
+                "使用 DeepSeek Search API（base https://api.deepseek.com/v1/tools/search），需要 DeepSeek API Key 并按次计费；没有 DeepSeek Key 时自动跳过检索。",
+            );
+            settings_hint(
+                ui,
+                "检索词只包含插件名称/厂商，不会发送工程内容或本机路径。",
+            );
+        });
+
+        settings_section(ui, "采样参数", |ui| {
+            ui.horizontal(|ui| {
+                settings_field_label(ui, "温度");
+                let mut temperature = self.settings.ai.temperature;
+                ui.add_sized(
+                    [260.0, 24.0],
+                    egui::Slider::new(&mut temperature, 0.0..=2.0)
+                        .fixed_decimals(2)
+                        .text("创意程度"),
+                );
+                if (temperature - self.settings.ai.temperature).abs() > 0.001 {
+                    self.settings.ai.temperature = temperature;
+                    changed = true;
+                }
+            });
+            ui.horizontal(|ui| {
+                settings_field_label(ui, "最大输出");
+                let mut tokens = self.settings.ai.max_tokens;
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut tokens)
+                            .range(1024..=131_072)
+                            .speed(256.0)
+                            .suffix(" tokens"),
+                    )
+                    .changed()
+                {
+                    self.settings.ai.max_tokens = tokens;
+                    changed = true;
+                }
+            });
+            ui.horizontal(|ui| {
+                settings_field_label(ui, "超时");
+                let mut seconds = self.settings.ai.timeout_seconds;
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut seconds)
+                            .range(30..=600)
+                            .speed(10.0)
+                            .suffix(" 秒"),
+                    )
+                    .changed()
+                {
+                    self.settings.ai.timeout_seconds = seconds;
+                    changed = true;
+                }
+            });
+            settings_hint(
+                ui,
+                "编曲计划可能包含大量音符；输出上限过低会导致 JSON 被截断。",
+            );
+        });
+
+        if changed {
+            self.commit_settings();
         }
     }
 
@@ -2926,6 +3371,39 @@ mod tests {
         assert!(settings.audio_output_device.is_none());
         assert!(settings.controller_input_device.is_none());
         assert!(settings.controller_enabled_input_devices.is_empty());
+        assert_eq!(settings.ai.model_preset, DEFAULT_AI_MODEL_PRESET);
+        assert!(settings.ai.api_keys.is_empty());
+        assert!((settings.ai.temperature - DEFAULT_AI_TEMPERATURE).abs() < 1e-6);
+        assert_eq!(settings.ai.max_tokens, DEFAULT_AI_MAX_TOKENS);
+        assert_eq!(settings.ai.timeout_seconds, DEFAULT_AI_TIMEOUT_SECONDS);
+        assert_eq!(settings.ai.reasoning, "medium");
+        assert!(settings.ai.search_enabled);
+    }
+
+    /// 覆盖：AI 设置可以往返序列化，且空密钥会移除记录。
+    /// Covers: AI settings round-trip through JSON and an empty key removes its entry.
+    #[test]
+    fn ai_settings_round_trip_and_keys() {
+        let mut settings = AiSettings::default();
+        settings.set_api_key("deepseek", "sk-test");
+        settings.set_api_key("mimo", "  ");
+        settings.custom_base_url = "https://example.com/v1".into();
+        settings.custom_model = "example-model".into();
+        settings.temperature = 1.1;
+        settings.max_tokens = 8_192;
+        settings.timeout_seconds = 90;
+        settings.reasoning = "high".into();
+        settings.search_enabled = false;
+        let text = serde_json::to_string(&settings).expect("serialize");
+        let loaded: AiSettings = serde_json::from_str(&text).expect("deserialize");
+        assert_eq!(loaded.api_key("deepseek"), "sk-test");
+        assert!(loaded.api_key("mimo").is_empty());
+        assert_eq!(loaded.custom_model, "example-model");
+        assert!((loaded.temperature - 1.1).abs() < 1e-6);
+        assert_eq!(loaded.max_tokens, 8_192);
+        assert_eq!(loaded.timeout_seconds, 90);
+        assert_eq!(loaded.reasoning(), crate::ai::AiReasoning::High);
+        assert!(!loaded.search_enabled);
     }
 
     /// 覆盖：音频设置转换为启动选项时保留系统、设备、采样率与缓冲。

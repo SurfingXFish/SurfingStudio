@@ -797,6 +797,22 @@ impl SurfingApp {
                             self.mouse_mode = *mode;
                         }
                     }
+
+                    // AI 编曲：在右侧打开对话面板，与轨道属性共用同一位置。
+                    // AI composition opens the chat panel on the right, sharing the inspector slot.
+                    toolbar_separator(ui);
+                    let ai_open = self.side_panel == Some(SidePanel::Ai);
+                    if ui
+                        .add(
+                            egui::Button::new(egui::RichText::new("AI 编曲").size(11.5))
+                                .selected(ai_open)
+                                .min_size(egui::Vec2::new(72.0, 24.0)),
+                        )
+                        .on_hover_text("打开 / 关闭 AI 编曲对话（DeepSeek / MiMo）")
+                        .clicked()
+                    {
+                        self.toggle_ai_panel();
+                    }
                 });
             });
     }

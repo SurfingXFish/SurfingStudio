@@ -4,6 +4,7 @@
 //!
 //! 导出项：
 //! - `ScanMode` / `Clipboard` / `RollKind` / `RollWindow` / `RollDragState`：编辑与扫描状态。
+//! - `SidePanel`：右侧面板显示轨道属性还是 AI 编曲对话。
 //! - `PianoViewState` / `LanePastePrompt`：卷帘视图与子轨覆盖确认。
 //! - `ArrangementMenu`：编曲区右键菜单的目标（画布或某条轨道）。
 //! - `GroupDeleteMode`：删除组合轨道时“整棵删除”或“释放成员”的选择。
@@ -30,6 +31,14 @@ use crate::core::model::{
 };
 use eframe::egui;
 use std::path::PathBuf;
+
+/// 右侧面板当前显示的内容：轨道属性或 AI 编曲对话。
+/// What the right-hand panel shows: track properties or the AI composition chat.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SidePanel {
+    Inspector,
+    Ai,
+}
 
 /// 当前工作区：主页或工作室（编曲界面）。
 /// Current workspace: the home page or the studio (arrangement) view.

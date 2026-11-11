@@ -59,6 +59,11 @@ flate2 = "1"
 # same compiled artifacts are reused.
 wgpu = "29"
 pollster = "0.4"
+# AI 编曲需要向 DeepSeek / MiMo 的 OpenAI 兼容接口发 HTTPS 请求。ureq 使用阻塞 I/O 与
+# rustls(ring)，不引入 async 运行时，桌面与安卓共用同一实现。
+# AI composition calls the OpenAI-compatible DeepSeek / MiMo endpoints over HTTPS. ureq uses
+# blocking I/O and rustls (ring), adding no async runtime and working on desktop and Android.
+ureq = { version = "2.12", default-features = false, features = ["tls"] }
 
 # 桌面平台（Windows / macOS / Linux）：eframe 走默认特性，文件对话框使用 rfd。
 # Desktop platforms (Windows / macOS / Linux): eframe keeps its default features and file dialogs

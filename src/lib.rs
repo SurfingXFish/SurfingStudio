@@ -3,6 +3,7 @@
 //! 库划分为以下层次：
 //!
 //! - [`core`]：纯数据模型、工程运行时框架与辅助工具，不依赖音频/GUI。
+//! - [`ai`]：AI 编曲运行时、OpenAI 兼容后端与内置技能（只依赖 `core`）。
 //! - [`platform`]：平台运行时框架（类 JVM）：统一的内部平台 API 与各系统后端。
 //! - [`audio`]：实时音频引擎、内置乐器、音频 I/O 运行时框架与 cpal 输出。
 //! - [`plugin`]：插件运行时框架、VST3 / VST2 后端、扫描与参数管理。
@@ -20,6 +21,7 @@
 //! Layers:
 //!
 //! - [`core`]: pure data model, project runtime framework and helpers; no audio/GUI.
+//! - [`ai`]: AI composition runtime, OpenAI-compatible backend and embedded skills (depends on `core` only).
 //! - [`audio`]: real-time engine, built-in instruments, audio I/O runtime framework and cpal output.
 //! - [`plugin`]: plugin runtime framework, VST3 / VST2 backends, scanning and parameters.
 //! - [`diag`]: process-wide diagnostic log (`.sflog`), duration spans, stall/crash monitoring and
@@ -33,6 +35,7 @@
 //! warnings stay visible.
 #![allow(deprecated)]
 
+pub mod ai;
 pub mod app;
 pub mod audio;
 pub mod core;

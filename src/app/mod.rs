@@ -29,6 +29,7 @@
 //! - `SurfingApp::resolve_native_window`: resolve the native handle of this window (Windows).
 //! - `Drop::drop`: stop the recovery thread and wait for the background save before exiting.
 
+use crate::ai::prompt::AiAttachment;
 use crate::audio::{Engine, SlotKind, format_position};
 use crate::core::model::{
     AutomationPoint, Clip, ControllerKind, InstrumentRef, Note, PluginFormat, PluginRef, Project,
@@ -47,6 +48,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use vst3_host::PluginWindow;
 
+mod ai;
 mod autosave;
 mod backup;
 mod edit;
@@ -73,6 +75,7 @@ mod transport;
 use transport::PendingAudition;
 mod window_chrome;
 
+pub use ai::{AiChatMessage, AiChatState, AiLiveMessage, AiMessageMeta, AiPending};
 pub use export::{ExportChannels, ExportFormat, ExportState};
 pub use plugins::EditorWindow;
 pub use render::{TrackRenderPhase, TrackRenderState};
@@ -327,6 +330,15 @@ pub struct SurfingApp {
     pub hotkey_hint: Option<String>,
 
     pub show_help: bool,
+    /// 右侧面板当前显示轨道属性还是 AI 编曲对话；`None` 表示收起。
+    /// Whether the right panel shows track properties or the AI chat; `None` hides it.
+    pub side_panel: Option<SidePanel>,
+    /// AI 编曲对话状态：消息、输入、附件与后台通道。
+    /// AI composition chat state: messages, input, attachments and the background channel.
+    pub ai_chat: AiChatState,
+    /// 后台读取 AI 附件的通道。
+    /// Background channel that reads AI attachments.
+    ai_attach_rx: Option<Receiver<Result<AiAttachment, String>>>,
     /// 应用栏主菜单（文件 / 编辑 / VST 插件 / 帮助）是否展开；仅 UI 状态，不持久化。
     /// Whether the app bar main menu (file / edit / VST / help) is expanded; UI-only, never persisted.
     pub menu_bar_visible: bool,
@@ -1295,6 +1307,9 @@ impl SurfingApp {
             hotkey_recording: None,
             hotkey_hint: None,
             show_help: false,
+            side_panel: Some(SidePanel::Inspector),
+            ai_chat: AiChatState::default(),
+            ai_attach_rx: None,
             menu_bar_visible: false,
             browser: None,
             plugin_cache,
@@ -1776,6 +1791,13 @@ impl SurfingApp {
         self.poll_save_project();
         self.poll_public_copy();
         self.poll_export_dialog();
+        self.poll_ai_chat();
+        self.poll_ai_attachment();
+        if self.ai_chat.pending.is_some() {
+            // 流式输出期间保持较高刷新率，让思考过程与写入步骤实时可见。
+            // Keep a higher refresh rate while streaming so reasoning and write steps appear live.
+            ctx.request_repaint_after(Duration::from_millis(33));
+        }
         self.poll_export();
         self.poll_track_render();
         self.poll_autosave();
@@ -1908,19 +1930,24 @@ impl SurfingApp {
             }
 
             diag::set_activity("ui.paint.inspector");
-            egui::SidePanel::right("inspector")
-                .resizable(true)
-                .default_width(340.0)
-                .min_width(300.0)
-                .max_width(460.0)
-                .frame(
-                    egui::Frame::NONE
-                        .fill(theme::PANEL)
-                        .inner_margin(egui::Margin::symmetric(12, 10)),
-                )
-                .show(ctx, |ui| {
-                    self.ui_inspector(ui);
-                });
+            // 右侧面板在轨道属性与 AI 编曲对话之间切换；关闭时整块收起。
+            // The right panel switches between track properties and the AI chat; closing hides it.
+            if let Some(panel) = self.side_panel {
+                egui::SidePanel::right("inspector")
+                    .resizable(true)
+                    .default_width(360.0)
+                    .min_width(300.0)
+                    .max_width(520.0)
+                    .frame(
+                        egui::Frame::NONE
+                            .fill(theme::PANEL)
+                            .inner_margin(egui::Margin::symmetric(12, 10)),
+                    )
+                    .show(ctx, |ui| match panel {
+                        SidePanel::Inspector => self.ui_inspector(ui),
+                        SidePanel::Ai => self.ui_ai_panel(ui),
+                    });
+            }
 
             diag::set_activity("ui.paint.arrangement");
             egui::CentralPanel::default()

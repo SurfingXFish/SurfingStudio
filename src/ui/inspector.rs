@@ -72,7 +72,7 @@ impl SurfingApp {
         let mut add_native: Option<(u64, NativeEffectKind)> = None;
         let mut remove_effect: Option<usize> = None;
         let mut remove_master_effect = false;
-        let mut remove_track = false;
+        let mut close_panel = false;
         let mut remove_instrument = false;
         let mut effect_actions: Vec<EffectAction> = Vec::new();
         let mut param_changes: Vec<(SlotKind, usize, f64)> = Vec::new();
@@ -96,8 +96,15 @@ impl SurfingApp {
                             .size(14.0),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("删除轨道").clicked() {
-                            remove_track = true;
+                        if ui
+                            .add(
+                                egui::Button::new(RichText::new("关闭").size(11.0))
+                                    .min_size(egui::Vec2::new(48.0, 22.0)),
+                            )
+                            .on_hover_text("关闭轨道属性")
+                            .clicked()
+                        {
+                            close_panel = true;
                         }
                     });
                 });
@@ -809,10 +816,8 @@ impl SurfingApp {
         }
 
         // ---- apply edits ------------------------------------------------------
-        if remove_track {
-            // 组合轨道会弹出“整棵删除 / 释放成员”确认，普通轨道立即删除。
-            // A group opens the subtree/release confirmation; ordinary tracks are deleted at once.
-            self.request_delete_track(track_index);
+        if close_panel {
+            self.close_side_panel();
             return;
         }
 
