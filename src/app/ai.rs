@@ -74,6 +74,33 @@ pub struct AiChatMessage {
     pub changes: Option<AiApplySummary>,
 }
 
+/// 已有 AI 任务运行时触发的冲突提示。
+/// Conflict prompt shown when an AI task is already running.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AiTaskConflict {
+    /// 用户想发送第二个任务。
+    /// The user tried to send a second task.
+    Send,
+    /// 用户开始编辑编曲区/卷帘。
+    /// The user started editing the arrangement or a roll.
+    Edit,
+}
+
+/// 一个项目窗口内的历史对话。
+/// One historical conversation inside a project window.
+pub struct AiConversation {
+    pub id: u64,
+    pub title: String,
+    pub messages: Vec<AiChatMessage>,
+    pub updated_at: f64,
+    /// 该对话自己的后台任务状态；切换对话时随历史一起保存。
+    /// Background task state owned by this conversation; saved with the history when switching.
+    pub pending: Option<AiPending>,
+    pub live: Option<AiLiveMessage>,
+    receiver: Option<Receiver<AiWorkerEvent>>,
+    pub error: Option<String>,
+}
+
 /// 一条助手消息的任务元信息。
 /// Task metadata of one assistant message.
 #[derive(Clone, Debug, Default)]
@@ -81,6 +108,12 @@ pub struct AiMessageMeta {
     pub elapsed_seconds: f32,
     pub searches: usize,
     pub skills: Vec<String>,
+    /// 生成本条消息的模型名。
+    /// Model name that produced this message.
+    pub model: String,
+    /// 过程步骤（思考/写入等）。
+    /// Process steps (reasoning, writes, ...).
+    pub steps: Vec<String>,
 }
 
 /// 后台补全的待处理请求。
@@ -171,6 +204,9 @@ pub struct AiLiveMessage {
     /// 第一个失败操作的原因；有值时停止继续写入。
     /// Reason of the first failed operation; further writes stop once set.
     pub failed: Option<String>,
+    /// 生成本次任务的模型名。
+    /// Model name of this task.
+    pub model: String,
 }
 
 impl Default for AiLiveMessage {
@@ -184,6 +220,7 @@ impl Default for AiLiveMessage {
             started: Instant::now(),
             undo_pushed: false,
             failed: None,
+            model: String::new(),
         }
     }
 }
@@ -200,8 +237,21 @@ pub struct AiChatState {
     /// Assistant message currently streaming.
     pub live: Option<AiLiveMessage>,
     pub error: Option<String>,
+    /// 当前项目窗口内的历史对话；只属于本窗口，不写入工程。
+    /// Historical conversations of this project window; window-local and never persisted.
+    pub conversations: Vec<AiConversation>,
+    /// 当前查看的历史对话 id；`None` 表示新任务。
+    /// Id of the conversation being viewed; `None` means a new task.
+    pub active_conversation: Option<u64>,
+    /// 已有任务运行时的冲突提示。
+    /// Conflict prompt while another task is running.
+    pub conflict_prompt: Option<AiTaskConflict>,
+    /// 用户选择「后台继续」后，本次任务不再重复提示编辑冲突。
+    /// After choosing "keep running", stop prompting for edit conflicts in this task.
+    pub edit_guard_dismissed: bool,
     receiver: Option<Receiver<AiWorkerEvent>>,
     next_request_id: u64,
+    next_conversation_id: u64,
 }
 
 impl Default for AiChatState {
@@ -225,8 +275,13 @@ impl Default for AiChatState {
             pending: None,
             live: None,
             error: None,
+            conversations: Vec::new(),
+            active_conversation: None,
+            conflict_prompt: None,
+            edit_guard_dismissed: false,
             receiver: None,
             next_request_id: 1,
+            next_conversation_id: 1,
         }
     }
 }
@@ -244,6 +299,8 @@ impl AiChatState {
     /// Outputs / side effects: resets UI state; a late worker result is discarded.
     /// Complexity: O(messages) time and O(1) space.
     pub fn clear(&mut self) {
+        self.stash_current();
+        self.active_conversation = None;
         self.messages.clear();
         self.input.clear();
         self.attachments.clear();
@@ -251,7 +308,216 @@ impl AiChatState {
         self.live = None;
         self.error = None;
         self.receiver = None;
+        self.conflict_prompt = None;
+        self.edit_guard_dismissed = false;
     }
+
+    /// 所属模块：app / AI 编曲 / 历史对话
+    /// 功能：打开指定历史对话，并把当前消息与其后台任务一起存回历史；不取消后台任务。
+    /// 输入：`id` 历史对话 id。
+    /// 输出/副作用：切换 `messages`/任务状态/`active_conversation`；后台任务继续运行。
+    /// 复杂度：时间 O(消息数)，空间 O(消息数)。
+    ///
+    /// Module: app / AI composition / history
+    /// Purpose: Open a historical conversation and stash the current messages and task state; the
+    /// background task is not cancelled.
+    /// Inputs: `id`: conversation id.
+    /// Outputs / side effects: switches messages/task state/active id; the background task keeps running.
+    /// Complexity: O(messages) time and space.
+    pub fn open_conversation(&mut self, id: u64) {
+        if self.active_conversation == Some(id) {
+            return;
+        }
+        self.stash_current();
+        self.messages.clear();
+        self.pending = None;
+        self.live = None;
+        self.error = None;
+        self.receiver = None;
+        if let Some(conversation) = self
+            .conversations
+            .iter_mut()
+            .find(|conversation| conversation.id == id)
+        {
+            self.messages = std::mem::take(&mut conversation.messages);
+            self.pending = conversation.pending.take();
+            self.live = conversation.live.take();
+            self.receiver = conversation.receiver.take();
+            self.error = conversation.error.take();
+            self.active_conversation = Some(id);
+        }
+        self.attachments.clear();
+        self.input.clear();
+        self.conflict_prompt = None;
+        self.edit_guard_dismissed = false;
+    }
+
+    /// 所属模块：app / AI 编曲 / 历史对话
+    /// 功能：返回当前查看的对话 id；`None` 表示新任务。
+    /// 输入：`self`。
+    /// 输出/副作用：id；不修改状态。
+    /// 复杂度：时间 O(1)，空间 O(1)。
+    ///
+    /// Module: app / AI composition / history
+    /// Purpose: Return the active conversation id; `None` means a new task.
+    /// Inputs: `self`.
+    /// Outputs / side effects: the id; no state change.
+    /// Complexity: O(1) time and space.
+    pub fn active_conversation(&self) -> Option<u64> {
+        self.active_conversation
+    }
+
+    /// 所属模块：app / AI 编曲 / 后台任务
+    /// 功能：项目中是否有任意对话任务在运行（含已切走的历史对话）。
+    /// 输入：`self`。
+    /// 输出/副作用：布尔值；不修改状态。
+    /// 复杂度：时间 O(历史对话数)，空间 O(1)。
+    ///
+    /// Module: app / AI composition / background tasks
+    /// Purpose: Whether any conversation in this project has a running task, including background ones.
+    /// Inputs: `self`.
+    /// Outputs / side effects: a boolean; no state change.
+    /// Complexity: O(conversations) time and O(1) space.
+    pub fn any_task_running(&self) -> bool {
+        self.pending.is_some()
+            || self
+                .conversations
+                .iter()
+                .any(|conversation| conversation.pending.is_some())
+    }
+
+    /// 所属模块：app / AI 编曲 / 后台任务
+    /// 功能：项目编辑是否应当被锁住；用户选择后台继续后解锁。
+    /// 输入：`self`。
+    /// 输出/副作用：布尔值；不修改状态。
+    /// 复杂度：时间 O(历史对话数)，空间 O(1)。
+    ///
+    /// Module: app / AI composition / background tasks
+    /// Purpose: Whether project editing should be locked; choosing "keep running" unlocks it.
+    /// Inputs: `self`.
+    /// Outputs / side effects: a boolean; no state change.
+    /// Complexity: O(conversations) time and O(1) space.
+    pub fn project_editing_locked(&self) -> bool {
+        self.any_task_running() && !self.edit_guard_dismissed
+    }
+
+    /// 所属模块：app / AI 编曲 / 历史对话
+    /// 功能：当前对话已有消息但尚未登记为历史时，自动登记并设为当前任务。
+    /// 输入：`self`。
+    /// 输出/副作用：可能追加历史并设置 `active_conversation`；不修改消息内容。
+    /// 复杂度：时间 O(消息数)，空间 O(消息数)。
+    ///
+    /// Module: app / AI composition / history
+    /// Purpose: Register the current conversation once it has messages, and make it active.
+    /// Inputs: `self`.
+    /// Outputs / side effects: may append history and set `active_conversation`; messages unchanged.
+    /// Complexity: O(messages) time and space.
+    pub fn ensure_active_conversation(&mut self) {
+        if self.active_conversation.is_none() && !self.messages.is_empty() {
+            self.stash_current();
+        }
+    }
+
+    /// 所属模块：app / AI 编曲 / 历史对话
+    /// 功能：从第一条用户消息生成任务标题。
+    /// 输入：`messages` 消息列表。
+    /// 输出/副作用：标题文本；不修改输入。
+    /// 复杂度：时间 O(消息数 + 文本长度)，空间 O(1)。
+    ///
+    /// Module: app / AI composition / history
+    /// Purpose: Build a task title from the first user message.
+    /// Inputs: `messages`.
+    /// Outputs / side effects: the title; the input is unchanged.
+    /// Complexity: O(messages + text length) time and O(1) space.
+    pub fn conversation_title(messages: &[AiChatMessage]) -> String {
+        for message in messages {
+            if message.role == AiRole::User {
+                let text = message.content.replace('\n', " ");
+                let text = text.trim();
+                if !text.is_empty() {
+                    return truncate_title(text, 22);
+                }
+            }
+        }
+        "新任务".into()
+    }
+
+    fn stash_current(&mut self) {
+        if self.messages.is_empty() {
+            return;
+        }
+        let title = Self::conversation_title(&self.messages);
+        let updated_at = now_seconds();
+        if let Some(id) = self.active_conversation {
+            if let Some(conversation) = self
+                .conversations
+                .iter_mut()
+                .find(|conversation| conversation.id == id)
+            {
+                conversation.title = title;
+                conversation.messages = std::mem::take(&mut self.messages);
+                conversation.updated_at = updated_at;
+                conversation.pending = self.pending.take();
+                conversation.live = self.live.take();
+                conversation.receiver = self.receiver.take();
+                conversation.error = self.error.take();
+                return;
+            }
+        }
+        let id = self.next_conversation_id;
+        self.next_conversation_id = self.next_conversation_id.saturating_add(1);
+        // 新任务首次发送后登记为历史；此时任务仍留在活动区，历史项不保存任务状态。
+        // Register a freshly sent task as history; the task state stays in the active fields.
+        self.conversations.push(AiConversation {
+            id,
+            title,
+            messages: self.messages.clone(),
+            updated_at,
+            pending: None,
+            live: None,
+            receiver: None,
+            error: None,
+        });
+        self.active_conversation = Some(id);
+    }
+}
+
+/// 所属模块：app / AI 编曲 / 历史对话
+/// 功能：按字符数截断任务标题。
+/// 输入：`text` 原文本、`max` 最大字符数。
+/// 输出/副作用：截断文本；不修改输入。
+/// 复杂度：时间 O(字符数)，空间 O(1)。
+///
+/// Module: app / AI composition / history
+/// Purpose: Truncate a task title by character count.
+/// Inputs: `text`, `max`.
+/// Outputs / side effects: the truncated text; the input is unchanged.
+/// Complexity: O(characters) time and O(1) space.
+fn truncate_title(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let mut result: String = text.chars().take(max.saturating_sub(1)).collect();
+    result.push('…');
+    result
+}
+
+/// 所属模块：app / AI 编曲 / 历史对话
+/// 功能：返回当前 Unix 秒数，用于对话更新时间排序。
+/// 输入：无。
+/// 输出/副作用：秒级时间戳；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: app / AI composition / history
+/// Purpose: Return Unix seconds for conversation update ordering.
+/// Inputs: none.
+/// Outputs / side effects: a second timestamp; no state change.
+/// Complexity: O(1) time and space.
+fn now_seconds() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs_f64())
+        .unwrap_or(0.0)
 }
 
 impl SurfingApp {
@@ -465,6 +731,7 @@ impl SurfingApp {
                 content: message.content.clone(),
             });
         }
+        let model_name = model.clone();
         let request = AiRequest {
             provider,
             base_url,
@@ -519,12 +786,45 @@ impl SurfingApp {
         self.ai_chat.receiver = Some(rx);
         self.ai_chat.live = Some(AiLiveMessage {
             stage: "正在思考…".into(),
+            model: model_name,
             ..AiLiveMessage::default()
         });
         self.ai_chat.pending = Some(AiPending {
             request_id,
             started: Instant::now(),
         });
+        self.ai_chat.conflict_prompt = None;
+        self.ai_chat.edit_guard_dismissed = false;
+    }
+
+    /// 所属模块：app / AI 编曲 / 冲突
+    /// 功能：AI 任务后台运行时，若用户在任意工程编辑区按下鼠标，则请求冲突提示。
+    /// 输入：`ctx` 渲染上下文、`rect` 编辑区矩形。
+    /// 输出/副作用：可能设置 `conflict_prompt`；不修改工程。
+    /// 复杂度：时间 O(1)，空间 O(1)。
+    ///
+    /// Module: app / AI composition / conflict
+    /// Purpose: Request a conflict prompt when the user presses the mouse in any project edit surface
+    /// while an AI task runs in the background.
+    /// Inputs: `ctx`, `rect`.
+    /// Outputs / side effects: may set `conflict_prompt`; no project change.
+    /// Complexity: O(1) time and space.
+    pub fn note_edit_surface_interaction(&mut self, ctx: &egui::Context, rect: egui::Rect) {
+        if !self.ai_chat.any_task_running()
+            || self.ai_chat.conflict_prompt.is_some()
+            || self.ai_chat.edit_guard_dismissed
+        {
+            return;
+        }
+        let pressed = ctx.input(|input| input.pointer.primary_pressed());
+        if !pressed {
+            return;
+        }
+        if let Some(position) = ctx.input(|input| input.pointer.interact_pos()) {
+            if rect.contains(position) {
+                self.ai_chat.conflict_prompt = Some(AiTaskConflict::Edit);
+            }
+        }
     }
 
     /// 所属模块：app / AI 编曲 / 轮询
@@ -541,6 +841,103 @@ impl SurfingApp {
     /// by step with one undo step, updates the status bar and error.
     /// Complexity: O(events + applied operations × tracks) time and O(streaming text) space.
     pub(super) fn poll_ai_chat(&mut self) {
+        self.poll_background_ai_tasks();
+        self.poll_active_ai_chat();
+    }
+
+    /// 所属模块：app / AI 编曲 / 后台任务
+    /// 功能：依次轮询已切走对话的后台任务；临时借用活动对话字段，处理完再还原。
+    /// 输入：`self`。
+    /// 输出/副作用：把后台事件应用到工程与对应对话消息；不切换当前查看的对话。
+    /// 复杂度：时间 O(后台任务事件数 + 写入操作数 × 轨道数)，空间 O(消息数)。
+    ///
+    /// Module: app / AI composition / background tasks
+    /// Purpose: Poll background tasks of conversations that are not currently viewed, temporarily
+    /// borrowing the active fields and restoring them afterwards.
+    /// Inputs: `self`.
+    /// Outputs / side effects: applies background events to the project and their conversation; the
+    /// visible conversation does not change.
+    /// Complexity: O(background events + operations × tracks) time and O(messages) space.
+    fn poll_background_ai_tasks(&mut self) {
+        let active = self.ai_chat.active_conversation;
+        let indices: Vec<usize> = self
+            .ai_chat
+            .conversations
+            .iter()
+            .enumerate()
+            .filter(|(_, conversation)| {
+                conversation.receiver.is_some() && Some(conversation.id) != active
+            })
+            .map(|(index, _)| index)
+            .collect();
+        for index in indices {
+            let (
+                background_messages,
+                background_pending,
+                background_live,
+                background_receiver,
+                background_error,
+            ) = {
+                let conversation = &mut self.ai_chat.conversations[index];
+                (
+                    std::mem::take(&mut conversation.messages),
+                    conversation.pending.take(),
+                    conversation.live.take(),
+                    conversation.receiver.take(),
+                    conversation.error.take(),
+                )
+            };
+            let active_messages = std::mem::take(&mut self.ai_chat.messages);
+            let active_pending = self.ai_chat.pending.take();
+            let active_live = self.ai_chat.live.take();
+            let active_receiver = self.ai_chat.receiver.take();
+            let active_error = self.ai_chat.error.take();
+            let saved_conflict = self.ai_chat.conflict_prompt.take();
+            let saved_guard = self.ai_chat.edit_guard_dismissed;
+
+            self.ai_chat.messages = background_messages;
+            self.ai_chat.pending = background_pending;
+            self.ai_chat.live = background_live;
+            self.ai_chat.receiver = background_receiver;
+            self.ai_chat.error = background_error;
+            self.poll_active_ai_chat();
+
+            let background_messages = std::mem::take(&mut self.ai_chat.messages);
+            let background_pending = self.ai_chat.pending.take();
+            let background_live = self.ai_chat.live.take();
+            let background_receiver = self.ai_chat.receiver.take();
+            let background_error = self.ai_chat.error.take();
+
+            self.ai_chat.messages = active_messages;
+            self.ai_chat.pending = active_pending;
+            self.ai_chat.live = active_live;
+            self.ai_chat.receiver = active_receiver;
+            self.ai_chat.error = active_error;
+            self.ai_chat.conflict_prompt = saved_conflict;
+            self.ai_chat.edit_guard_dismissed = saved_guard;
+
+            let conversation = &mut self.ai_chat.conversations[index];
+            conversation.messages = background_messages;
+            conversation.pending = background_pending;
+            conversation.live = background_live;
+            conversation.receiver = background_receiver;
+            conversation.error = background_error;
+        }
+    }
+
+    /// 所属模块：app / AI 编曲 / 轮询
+    /// 功能：非阻塞接收当前对话的后台事件。
+    /// 输入：`self`。
+    /// 输出/副作用：更新 `live`、追加助手消息、逐步修改工程并压入一次撤销、更新状态栏与错误。
+    /// 复杂度：时间 O(事件数 + 写入操作数 × 轨道数)，空间 O(流式文本)。
+    ///
+    /// Module: app / AI composition / poll
+    /// Purpose: Receive events of the active conversation without blocking.
+    /// Inputs: `self`.
+    /// Outputs / side effects: updates `live`, appends an assistant message, mutates the project step
+    /// by step with one undo step, updates the status bar and error.
+    /// Complexity: O(events + applied operations × tracks) time and O(streaming text) space.
+    fn poll_active_ai_chat(&mut self) {
         let Some(receiver) = &self.ai_chat.receiver else {
             return;
         };
@@ -610,6 +1007,8 @@ impl SurfingApp {
                     }
                     self.ai_chat.receiver = None;
                     self.ai_chat.pending = None;
+                    self.ai_chat.conflict_prompt = None;
+                    self.ai_chat.edit_guard_dismissed = false;
                     let live = self.ai_chat.live.take();
                     self.finish_ai_task(outcome, live);
                     return;
@@ -623,6 +1022,8 @@ impl SurfingApp {
                     }
                     self.ai_chat.receiver = None;
                     self.ai_chat.pending = None;
+                    self.ai_chat.conflict_prompt = None;
+                    self.ai_chat.edit_guard_dismissed = false;
                     let live = self.ai_chat.live.take();
                     self.fail_ai_task(message, live);
                     return;
@@ -632,6 +1033,8 @@ impl SurfingApp {
         if disconnected {
             self.ai_chat.receiver = None;
             self.ai_chat.pending = None;
+            self.ai_chat.conflict_prompt = None;
+            self.ai_chat.edit_guard_dismissed = false;
             let live = self.ai_chat.live.take();
             self.fail_ai_task("AI 后台线程已退出".into(), live);
         }
@@ -715,6 +1118,19 @@ impl SurfingApp {
         let applied_summary = live.as_ref().map(|live| live.summary).unwrap_or_default();
         let applied_steps = live.as_ref().map(|live| live.steps.len()).unwrap_or(0);
         let failed = live.as_ref().and_then(|live| live.failed.clone());
+        let live_model = live
+            .as_ref()
+            .map(|live| live.model.clone())
+            .filter(|model| !model.is_empty())
+            .unwrap_or_else(|| {
+                find_preset(&self.settings.ai.model_preset)
+                    .map(|preset| preset.model.to_string())
+                    .unwrap_or_default()
+            });
+        let live_steps = live
+            .as_ref()
+            .map(|live| live.steps.clone())
+            .unwrap_or_default();
         let live_reply = live
             .as_ref()
             .map(|live| live.content.trim().to_string())
@@ -772,6 +1188,8 @@ impl SurfingApp {
         let reasoning = outcome.reasoning.or_else(|| {
             live.and_then(|live| (!live.reasoning.trim().is_empty()).then_some(live.reasoning))
         });
+        let model = live_model;
+        let steps = live_steps;
         self.ai_chat.messages.push(AiChatMessage {
             role: AiRole::Assistant,
             content: text,
@@ -780,6 +1198,8 @@ impl SurfingApp {
                 elapsed_seconds: outcome.elapsed_seconds,
                 searches: outcome.searches,
                 skills: outcome.loaded_skills,
+                model,
+                steps,
             }),
             changes,
         });
@@ -810,6 +1230,8 @@ impl SurfingApp {
             .and_then(|live| (!live.reasoning.trim().is_empty()).then(|| live.reasoning.clone()));
         let meta = live.as_ref().map(|live| AiMessageMeta {
             elapsed_seconds: live.started.elapsed().as_secs_f32(),
+            model: live.model.clone(),
+            steps: live.steps.clone(),
             ..Default::default()
         });
         self.ai_chat.messages.push(AiChatMessage {
@@ -866,7 +1288,7 @@ impl SurfingApp {
     /// Inputs: `self`.
     /// Outputs / side effects: clears caches and selection state; project content unchanged.
     /// Complexity: O(1) time and space.
-    fn cleanup_after_ai_write(&mut self) {
+    pub(super) fn cleanup_after_ai_write(&mut self) {
         // 插件槽位可能变化：参数缓存与内嵌失败记录必须失效，否则下一帧会读到旧插件参数。
         // Plugin slots may have changed: parameter caches and inline failures must be invalidated or
         // the next frame reads the old plugin's parameters.
@@ -893,6 +1315,8 @@ impl SurfingApp {
         if self.ai_chat.pending.is_some() {
             self.ai_chat.receiver = None;
             self.ai_chat.pending = None;
+            self.ai_chat.conflict_prompt = None;
+            self.ai_chat.edit_guard_dismissed = false;
             if let Some(live) = self.ai_chat.live.take() {
                 let applied = live.steps.len();
                 let mut text = "已停止生成。".to_string();
@@ -912,6 +1336,8 @@ impl SurfingApp {
                     reasoning,
                     meta: Some(AiMessageMeta {
                         elapsed_seconds: live.started.elapsed().as_secs_f32(),
+                        model: live.model.clone(),
+                        steps: live.steps.clone(),
                         ..Default::default()
                     }),
                     changes,
@@ -919,6 +1345,49 @@ impl SurfingApp {
             }
             self.status = "已停止等待 AI 回复（后台请求可能仍在完成）".into();
         }
+    }
+
+    /// 所属模块：app / AI 编曲 / 后台任务
+    /// 功能：停止当前项目内所有对话的 AI 任务（活动对话与已切走的后台对话）。
+    /// 输入：`self`。
+    /// 输出/副作用：丢弃接收器，并在每个对话末尾追加停止说明；不修改工程。
+    /// 复杂度：时间 O(历史对话数 + 消息数)，空间 O(1)。
+    ///
+    /// Module: app / AI composition / background tasks
+    /// Purpose: Stop every AI task in this project, including background conversations.
+    /// Inputs: `self`.
+    /// Outputs / side effects: drops receivers and appends a stop note to each conversation; no
+    /// project change.
+    /// Complexity: O(conversations + messages) time and O(1) space.
+    pub fn cancel_all_ai_tasks(&mut self) {
+        self.cancel_ai_message();
+        for conversation in &mut self.ai_chat.conversations {
+            if conversation.pending.is_none() {
+                continue;
+            }
+            conversation.pending = None;
+            conversation.receiver = None;
+            conversation.error = None;
+            let applied = conversation
+                .live
+                .as_ref()
+                .map(|live| live.steps.len())
+                .unwrap_or(0);
+            let text = if applied > 0 {
+                format!("已停止生成。已写入 {applied} 项，可按 Ctrl+Z 撤销。")
+            } else {
+                "已停止生成。".to_string()
+            };
+            conversation.live = None;
+            conversation.messages.push(AiChatMessage {
+                role: AiRole::Assistant,
+                content: text,
+                reasoning: None,
+                meta: None,
+                changes: None,
+            });
+        }
+        self.ai_chat.conflict_prompt = None;
     }
 
     /// 所属模块：app / AI 编曲 / 附件
@@ -1295,5 +1764,66 @@ mod tests {
         assert!(state.messages.is_empty());
         assert!(state.attachments.is_empty());
         assert!(state.error.is_none());
+        assert_eq!(state.conversations.len(), 1);
+    }
+
+    /// 覆盖：新任务自动登记为历史，切换历史对话后消息恢复且当前任务正确高亮。
+    /// Covers: a new task is registered automatically and switching restores its messages and active id.
+    #[test]
+    fn conversation_history_switches_and_highlights() {
+        let mut state = AiChatState::default();
+        state.messages.push(AiChatMessage {
+            role: AiRole::User,
+            content: "第一段旋律".into(),
+            reasoning: None,
+            meta: None,
+            changes: None,
+        });
+        state.ensure_active_conversation();
+        let first_id = state.active_conversation().expect("first active");
+        assert_eq!(state.conversations.len(), 1);
+        assert_eq!(state.conversations[0].title, "第一段旋律");
+
+        state.clear();
+        assert_eq!(state.active_conversation(), None);
+        state.messages.push(AiChatMessage {
+            role: AiRole::User,
+            content: "第二段旋律".into(),
+            reasoning: None,
+            meta: None,
+            changes: None,
+        });
+        state.ensure_active_conversation();
+        assert_eq!(state.conversations.len(), 2);
+        assert_ne!(state.active_conversation(), Some(first_id));
+
+        state.open_conversation(first_id);
+        assert_eq!(state.active_conversation(), Some(first_id));
+        assert_eq!(state.messages[0].content, "第一段旋律");
+    }
+
+    /// 覆盖：已切走对话的后台任务也会被视为运行中，并锁住项目编辑。
+    /// Covers: a background task in another conversation counts as running and locks project editing.
+    #[test]
+    fn background_task_locks_editing() {
+        let mut state = AiChatState::default();
+        state.conversations.push(AiConversation {
+            id: 9,
+            title: "后台任务".into(),
+            messages: Vec::new(),
+            updated_at: 0.0,
+            pending: Some(AiPending {
+                request_id: 7,
+                started: std::time::Instant::now(),
+            }),
+            live: None,
+            receiver: None,
+            error: None,
+        });
+        assert!(state.any_task_running());
+        assert!(state.project_editing_locked());
+        state.edit_guard_dismissed = true;
+        assert!(state.any_task_running());
+        assert!(!state.project_editing_locked());
     }
 }

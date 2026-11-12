@@ -75,8 +75,12 @@ mod transport;
 use transport::PendingAudition;
 mod window_chrome;
 
-pub use ai::{AiChatMessage, AiChatState, AiLiveMessage, AiMessageMeta, AiPending};
+pub use ai::{
+    AiChatMessage, AiChatState, AiConversation, AiLiveMessage, AiMessageMeta, AiPending,
+    AiTaskConflict,
+};
 pub use export::{ExportChannels, ExportFormat, ExportState};
+pub(crate) use panels::paint_studio_logo;
 pub use plugins::EditorWindow;
 pub use render::{TrackRenderPhase, TrackRenderState};
 pub use settings::{GpuRenderApi, GpuRenderStartup, gpu_render_startup};
@@ -1901,6 +1905,9 @@ impl SurfingApp {
         if self.view == WorkspaceView::Home {
             self.ui_home(ctx);
         } else {
+            // AI 后台任务运行期间锁住工程编辑；用户选择「后台继续运行」后解锁。
+            // Lock project editing while an AI task runs; choosing "keep running" unlocks it.
+            let editing_locked = self.ai_chat.project_editing_locked();
             if self.bottom_open {
                 diag::set_activity("ui.paint.bottom");
                 // 插件 GUI 会等比缩放到卡片大小，底部面板不再需要按插件高度撑开。
@@ -1909,6 +1916,7 @@ impl SurfingApp {
                 let editor_min_height = 190.0;
                 let editor_max_height = 760.0_f32.max(editor_min_height);
 
+                let mut bottom_rect = None;
                 egui::TopBottomPanel::bottom("editor_panel")
                     .resizable(true)
                     .default_height(370.0_f32.max(editor_min_height))
@@ -1920,41 +1928,71 @@ impl SurfingApp {
                             .inner_margin(egui::Margin::symmetric(8, 6))
                             .stroke(egui::Stroke::new(1.0_f32, theme::LINE)),
                     )
-                    .show(ctx, |ui| match self.bottom_view {
-                        BottomView::PianoRoll => self.ui_piano_roll(ui),
-                        BottomView::Controller { track_id, kind } => {
-                            self.ui_controller_lane(ui, track_id, kind, false)
-                        }
-                        BottomView::Effects { track_id } => self.ui_effects(ui, track_id, false),
+                    .show(ctx, |ui| {
+                        bottom_rect = Some(ui.available_rect_before_wrap());
+                        ui.add_enabled_ui(!editing_locked, |ui| match self.bottom_view {
+                            BottomView::PianoRoll => self.ui_piano_roll(ui),
+                            BottomView::Controller { track_id, kind } => {
+                                self.ui_controller_lane(ui, track_id, kind, false)
+                            }
+                            BottomView::Effects { track_id } => {
+                                self.ui_effects(ui, track_id, false)
+                            }
+                        });
                     });
+                if let Some(rect) = bottom_rect {
+                    self.note_edit_surface_interaction(ctx, rect);
+                }
             }
 
             diag::set_activity("ui.paint.inspector");
             // 右侧面板在轨道属性与 AI 编曲对话之间切换；关闭时整块收起。
             // The right panel switches between track properties and the AI chat; closing hides it.
             if let Some(panel) = self.side_panel {
-                egui::SidePanel::right("inspector")
+                // AI 编曲使用独立的「任务栏 + 对话区」宽度；轨道属性仍保持窄面板。
+                // The AI workspace uses its own task-rail + conversation width; the inspector stays narrow.
+                let (id, default_width, min_width, max_width) = match panel {
+                    SidePanel::Ai => ("ai_workspace", 660.0, 520.0, 920.0),
+                    SidePanel::Inspector => ("inspector", 360.0, 300.0, 520.0),
+                };
+                let panel_fill = match panel {
+                    SidePanel::Ai => theme::BG,
+                    SidePanel::Inspector => theme::PANEL,
+                };
+                let mut inspector_rect = None;
+                egui::SidePanel::right(id)
                     .resizable(true)
-                    .default_width(360.0)
-                    .min_width(300.0)
-                    .max_width(520.0)
+                    .default_width(default_width)
+                    .min_width(min_width)
+                    .max_width(max_width)
                     .frame(
                         egui::Frame::NONE
-                            .fill(theme::PANEL)
+                            .fill(panel_fill)
                             .inner_margin(egui::Margin::symmetric(12, 10)),
                     )
                     .show(ctx, |ui| match panel {
-                        SidePanel::Inspector => self.ui_inspector(ui),
+                        SidePanel::Inspector => {
+                            inspector_rect = Some(ui.available_rect_before_wrap());
+                            ui.add_enabled_ui(!editing_locked, |ui| self.ui_inspector(ui));
+                        }
                         SidePanel::Ai => self.ui_ai_panel(ui),
                     });
+                if let Some(rect) = inspector_rect {
+                    self.note_edit_surface_interaction(ctx, rect);
+                }
             }
 
             diag::set_activity("ui.paint.arrangement");
+            let mut arrangement_rect = None;
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE.fill(theme::BG))
                 .show(ctx, |ui| {
-                    self.ui_arrangement(ui);
+                    arrangement_rect = Some(ui.available_rect_before_wrap());
+                    ui.add_enabled_ui(!editing_locked, |ui| self.ui_arrangement(ui));
                 });
+            if let Some(rect) = arrangement_rect {
+                self.note_edit_surface_interaction(ctx, rect);
+            }
 
             diag::set_activity("ui.paint.rolls");
             self.update_roll_drag(ctx);
@@ -1980,6 +2018,9 @@ impl SurfingApp {
         if self.close_prompt {
             self.ui_close_prompt(ctx);
         }
+        // AI 后台任务进行中，发送第二个任务/切换对话/编辑轨道时弹出冲突确认。
+        // Ask before sending a second task, switching chats or editing tracks while AI runs.
+        self.ui_ai_task_conflict(ctx);
         // 本帧没有被摆放到卡片里的内嵌编辑器必须隐藏，否则会停在旧位置。
         // Inline editors not placed into a card this frame must be hidden or they stay put.
         self.finish_inline_layout();

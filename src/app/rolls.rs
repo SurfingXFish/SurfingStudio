@@ -320,15 +320,23 @@ impl SurfingApp {
                 // 窗口边缘而被裁切。
                 // The detached window has no bottom-panel padding; add an outer margin so the
                 // toolbar title and rounded corners never touch the window edge.
-                egui::Frame::NONE
-                    .inner_margin(egui::Margin::same(DETACHED_ROLL_MARGIN))
-                    .show(ui, |ui| match kind {
-                        RollKind::PianoRoll => self.ui_piano_roll_for(ui, track_id, true),
-                        RollKind::Controller(controller) => {
-                            self.ui_controller_lane(ui, track_id, controller, true)
-                        }
-                        RollKind::Effects => self.ui_effects(ui, track_id, true),
-                    });
+                // 后台 AI 任务运行时锁住浮动卷帘编辑；点击时回到主窗口弹出冲突提示。
+                // Lock the detached roll while an AI task runs; a click raises the conflict prompt.
+                let editing_locked = self.ai_chat.project_editing_locked();
+                if editing_locked && ui.ctx().input(|i| i.pointer.any_pressed()) {
+                    self.ai_chat.conflict_prompt = Some(AiTaskConflict::Edit);
+                }
+                ui.add_enabled_ui(!editing_locked, |ui| {
+                    egui::Frame::NONE
+                        .inner_margin(egui::Margin::same(DETACHED_ROLL_MARGIN))
+                        .show(ui, |ui| match kind {
+                            RollKind::PianoRoll => self.ui_piano_roll_for(ui, track_id, true),
+                            RollKind::Controller(controller) => {
+                                self.ui_controller_lane(ui, track_id, controller, true)
+                            }
+                            RollKind::Effects => self.ui_effects(ui, track_id, true),
+                        });
+                });
             });
             if let Some(drag) = drag {
                 // Keep the detached roll under the pointer while the toolbar is
