@@ -1,38 +1,37 @@
 //! 所属模块：ui / AI 编曲面板
 //! 文件用途：
-//! - 绘制右侧 AI 编曲对话：消息、工程改动卡片、快捷指令与圆角输入区。
+//! - 绘制右侧 AI 编曲工作台：左侧任务栏（新任务与项目内历史对话）与右侧对话区。
 //! - 输入区底部提供模型、智能体、附件与发送/停止按钮，接近聊天应用的编辑器样式。
-//! - 只发出用户意图（发送、停止、添加附件、打开设置），网络与工程写入由 `app::ai` 完成。
+//! - 只发出用户意图（发送、停止、添加附件、打开设置、跳转主页），网络与工程写入由 `app::ai` 完成。
 //!
 //! 函数清单：
-//! - `SurfingApp::ui_ai_panel`：绘制完整面板。
+//! - `SurfingApp::ui_ai_panel` / `ui_ai_panel_main` / `ui_ai_task_rail`：两栏工作台、对话区与任务栏。
 //! - `SurfingApp::ui_ai_composer`：圆角输入区、附件、模型/智能体/推理选择与发送/停止。
+//! - `ai_task_card` / `paint_task_status`：任务卡片与状态图标。
 //! - `paint_ai_message` / `paint_ai_live` / `paint_message_meta` / `paint_thinking_block` /
 //!   `paint_change_card` / `paint_ai_empty`：气泡、流式生成、任务信息、折叠思考、工程改动卡片与空状态。
 //!
 //! Module: ui / AI composition panel
 //! Purpose:
-//! - Draw the right-hand AI chat: messages, reasoning, a project-change card, quick prompts and a
-//!   rounded composer.
+//! - Draw the right-hand AI workspace: a left task rail (new task and project conversation history)
+//!   and the conversation area.
 //! - The composer bottom row offers model, agent, reasoning, attachment and send/stop controls.
 //! - Only emits user intents; networking and project writes live in `app::ai`.
 //!
 //! Functions:
-//! - `SurfingApp::ui_ai_panel`: draw the whole panel.
+//! - `SurfingApp::ui_ai_panel` / `ui_ai_panel_main` / `ui_ai_task_rail`: two-column workspace, conversation and rail.
 //! - `SurfingApp::ui_ai_composer`: rounded input, attachments, selectors and send/stop.
+//! - `ai_task_card` / `paint_task_status`: task card and status icon.
 //! - `paint_ai_message` / `paint_ai_live` / `paint_message_meta` / `paint_thinking_block` /
 //!   `paint_change_card` / `paint_ai_empty`: bubbles, streaming state, metadata, collapsible
 //!   reasoning, change card and empty state.
 
 use crate::ai::skills::AiAgentKind;
 use crate::ai::{AiApplySummary, AiReasoning, AiRole, MODEL_PRESETS, find_preset};
-use crate::app::{AiLiveMessage, AiMessageMeta, SurfingApp};
+use crate::app::{AiLiveMessage, AiMessageMeta, AiTaskConflict, SurfingApp};
 use crate::ui::theme;
 use eframe::egui::{self, RichText};
 
-/// 输入区预留高度（逻辑点）：附件条 + 文本框 + 底部选择行。
-/// Height reserved for the composer in logical points: attachments + text box + bottom row.
-const AI_INPUT_H: f32 = 176.0;
 /// 对话为空时展示的示例问题。
 /// Example prompts shown while the conversation is empty.
 const EMPTY_PROMPTS: [&str; 4] = [
@@ -47,6 +46,182 @@ const QUICK_PROMPTS: [&str; 3] = ["继续发展这段旋律", "加一段弦乐�
 
 impl SurfingApp {
     /// 所属模块：ui / AI 编曲面板
+    /// 功能：绘制「任务栏 + 对话区」两栏布局；窄窗口时自动退化为单栏对话。
+    /// 输入：`ui` 右侧面板绘制区域。
+    /// 输出/副作用：读写任务选择与 `ai_chat` 状态；不直接修改工程。
+    /// 复杂度：每帧 O(任务数 + 消息数)。
+    ///
+    /// Module: ui / AI composition panel
+    /// Purpose: Draw the two-column "task rail + conversation" layout and fall back to a single column
+    /// on narrow windows.
+    /// Inputs: `ui`: right-panel drawing area.
+    /// Outputs / side effects: reads/writes task selection and `ai_chat` state; never edits
+    /// the project directly.
+    /// Complexity: O(tasks + messages) per frame.
+    pub fn ui_ai_panel(&mut self, ui: &mut egui::Ui) {
+        self.ai_chat.ensure_active_conversation();
+        if ui.available_width() < 520.0 {
+            self.ui_ai_panel_main(ui);
+            return;
+        }
+        let height = ui.available_height();
+        ui.horizontal_top(|ui| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(178.0, height),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| self.ui_ai_task_rail(ui),
+            );
+            ui.add_space(2.0);
+            ui.separator();
+            ui.add_space(2.0);
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), height),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| self.ui_ai_panel_main(ui),
+            );
+        });
+    }
+
+    /// 所属模块：ui / AI 编曲面板 / 任务栏
+    /// 功能：列出当前项目窗口内的历史对话；当前查看的对话高亮，没有任务时高亮「新任务」。
+    /// 输入：`ui` 左侧任务栏区域。
+    /// 输出/副作用：切换对话、清空为新任务；只操作本窗口的 `ai_chat`，不修改工程。
+    /// 复杂度：每帧 O(历史对话数)。
+    ///
+    /// Module: ui / AI composition panel / task rail
+    /// Purpose: List historical conversations of this project window; highlight the active one or the
+    /// new-task entry when none is active.
+    /// Inputs: `ui`: left task-rail area.
+    /// Outputs / side effects: switches conversations or starts a new task; touches only this window's
+    /// `ai_chat`, never the project.
+    /// Complexity: O(conversations) per frame.
+    fn ui_ai_task_rail(&mut self, ui: &mut egui::Ui) {
+        let active = self.ai_chat.active_conversation();
+        let current_count = self.ai_chat.messages.len();
+        let current_title = crate::app::AiChatState::conversation_title(&self.ai_chat.messages);
+        let pending = self.ai_chat.pending.is_some();
+        let tasks: Vec<(u64, String, usize, bool)> = self
+            .ai_chat
+            .conversations
+            .iter()
+            .rev()
+            .map(|conversation| {
+                (
+                    conversation.id,
+                    conversation.title.clone(),
+                    conversation.messages.len(),
+                    conversation.pending.is_some(),
+                )
+            })
+            .collect();
+        let mut new_task = false;
+        let mut open_id = None;
+
+        egui::Frame::NONE
+            .inner_margin(egui::Margin::ZERO)
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.set_min_height(ui.available_height());
+                ui.horizontal(|ui| {
+                    let (logo_rect, _) =
+                        ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
+                    crate::app::paint_studio_logo(ui.painter(), logo_rect);
+                    ui.label(
+                        RichText::new("SurfingStudio")
+                            .size(12.5)
+                            .strong()
+                            .color(theme::TEXT),
+                    );
+                });
+                ui.add_space(6.0);
+                let new_selected = active.is_none();
+                let ring = if new_selected {
+                    egui::Stroke::new(1.5_f32, egui::Color32::WHITE)
+                } else {
+                    egui::Stroke::NONE
+                };
+                egui::Frame::NONE
+                    .stroke(ring)
+                    .corner_radius(9)
+                    .inner_margin(2.0)
+                    .show(ui, |ui| {
+                        let fill = if new_selected {
+                            theme::PANEL_2
+                        } else {
+                            theme::ACCENT_DARK
+                        };
+                        let stroke = if new_selected {
+                            egui::Stroke::new(1.0_f32, theme::LINE)
+                        } else {
+                            egui::Stroke::new(1.0_f32, theme::ACCENT)
+                        };
+                        if ui
+                            .add_sized(
+                                [ui.available_width(), 28.0],
+                                egui::Button::new(RichText::new("+  新任务").size(11.0))
+                                    .fill(fill)
+                                    .stroke(stroke),
+                            )
+                            .clicked()
+                        {
+                            new_task = true;
+                        }
+                    });
+                ui.add_space(8.0);
+                ui.label(
+                    RichText::new(format!("任务  {}", tasks.len()))
+                        .size(9.0)
+                        .color(theme::TEXT_FAINT),
+                );
+                ui.add_space(4.0);
+                egui::ScrollArea::vertical()
+                    .id_salt("ai-task-rail")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        for (id, title, count, task_running) in &tasks {
+                            ui.add_space(4.0);
+                            let (title, count) = if active == Some(*id) {
+                                (current_title.clone(), current_count)
+                            } else {
+                                (title.clone(), *count)
+                            };
+                            if ai_task_card(
+                                ui,
+                                &format!("ai-task-{id}"),
+                                active == Some(*id),
+                                if *task_running || (pending && active == Some(*id)) {
+                                    AiTaskStatus::Running
+                                } else {
+                                    AiTaskStatus::Done
+                                },
+                                &title,
+                                &format!("{count} 条消息"),
+                            )
+                            .clicked()
+                            {
+                                open_id = Some(*id);
+                            }
+                        }
+                        if tasks.is_empty() && current_count == 0 {
+                            ui.add_space(8.0);
+                            ui.label(
+                                RichText::new("暂无历史对话；当前项目内的对话会显示在这里。")
+                                    .size(9.0)
+                                    .color(theme::TEXT_FAINT),
+                            );
+                        }
+                    });
+            });
+
+        if new_task {
+            self.ai_chat.clear();
+        }
+        if let Some(id) = open_id {
+            self.ai_chat.open_conversation(id);
+        }
+    }
+
+    /// 所属模块：ui / AI 编曲面板
     /// 功能：绘制 AI 编曲对话：标题栏、密钥提示、消息与改动卡片、快捷指令、圆角输入区。
     /// 输入：`ui`：右侧面板的绘制区域。
     /// 输出/副作用：读写 `ai_chat`；可能发送消息、打开设置或附件选择器；不直接修改工程。
@@ -59,21 +234,20 @@ impl SurfingApp {
     /// Outputs / side effects: reads/writes `ai_chat`; may send a message, open settings or the
     /// attachment picker; never edits the project directly.
     /// Complexity: O(messages + message length) per frame.
-    pub fn ui_ai_panel(&mut self, ui: &mut egui::Ui) {
+    fn ui_ai_panel_main(&mut self, ui: &mut egui::Ui) {
         let mut close = false;
         let mut open_settings = false;
-        let mut new_chat = false;
-        ui.horizontal(|ui| {
-            ui.label(
-                RichText::new("AI 编曲")
-                    .color(theme::ACCENT)
-                    .strong()
-                    .size(14.0),
-            );
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        // 顶部只保留右侧的关闭与设置；任务列表在左栏。
+        // The top bar only keeps close/settings on the right; tasks live in the left rail.
+        let bar_width = ui.available_width();
+        ui.allocate_ui_with_layout(
+            egui::vec2(bar_width, 22.0),
+            egui::Layout::right_to_left(egui::Align::Center),
+            |ui| {
                 if ui
                     .add(
                         egui::Button::new(RichText::new("×").size(15.0))
+                            .fill(egui::Color32::TRANSPARENT)
                             .min_size(egui::vec2(24.0, 22.0)),
                     )
                     .on_hover_text("关闭面板")
@@ -84,6 +258,7 @@ impl SurfingApp {
                 if ui
                     .add(
                         egui::Button::new(RichText::new("⚙").size(12.0))
+                            .fill(egui::Color32::TRANSPARENT)
                             .min_size(egui::vec2(24.0, 22.0)),
                     )
                     .on_hover_text("AI 设置（模型、API Key、联网检索、采样参数）")
@@ -91,27 +266,14 @@ impl SurfingApp {
                 {
                     open_settings = true;
                 }
-                if ui
-                    .add(
-                        egui::Button::new(RichText::new("新对话").size(10.5))
-                            .min_size(egui::vec2(52.0, 22.0)),
-                    )
-                    .on_hover_text("清空当前对话与附件")
-                    .clicked()
-                {
-                    new_chat = true;
-                }
-            });
-        });
+            },
+        );
         if close {
             self.close_side_panel();
             return;
         }
         if open_settings {
             self.open_ai_settings(ui.ctx());
-        }
-        if new_chat {
-            self.ai_chat.clear();
         }
         ui.add_space(4.0);
 
@@ -193,89 +355,92 @@ impl SurfingApp {
             ui.add_space(4.0);
         }
 
-        let quick_extra = if !self.ai_chat.messages.is_empty() && self.ai_chat.pending.is_none() {
-            32.0
-        } else {
-            0.0
-        };
-        let transcript_h = (ui.available_height() - AI_INPUT_H - quick_extra).max(120.0);
-        let mut empty_pick: Option<&'static str> = None;
-        // 深色聊天画布：与输入区的浅色卡片形成层级，接近常见聊天应用。
-        // A darker chat canvas sets the composer card apart, like common chat apps.
-        egui::Frame::NONE
-            .fill(theme::BG)
-            .corner_radius(8)
-            .inner_margin(8.0)
-            .show(ui, |ui| {
-                ui.set_min_height(transcript_h);
-                egui::ScrollArea::vertical()
-                    .id_salt("ai_transcript")
-                    .max_height((transcript_h - 16.0).max(80.0))
-                    .auto_shrink([false, false])
-                    .stick_to_bottom(true)
-                    .show(ui, |ui| {
-                        if self.ai_chat.messages.is_empty() {
-                            empty_pick = paint_ai_empty(ui);
-                        } else {
-                            for (index, message) in self.ai_chat.messages.iter().enumerate() {
-                                paint_ai_message(
-                                    ui,
-                                    index,
-                                    message.role,
-                                    &message.content,
-                                    message.reasoning.as_deref(),
-                                    message.meta.as_ref(),
-                                    message.changes,
-                                );
-                                ui.add_space(10.0);
+        // 输入区先作为底部停靠面板登记，保证任何窗口高度下都不会被消息区挤掉。
+        // Register the composer as a bottom dock first so the transcript can never push it off screen.
+        egui::TopBottomPanel::bottom("ai_composer_dock")
+            .resizable(false)
+            .frame(
+                egui::Frame::NONE
+                    .fill(theme::BG)
+                    .inner_margin(egui::Margin::symmetric(0, 6)),
+            )
+            .show_inside(ui, |ui| {
+                ui.set_width(ui.available_width());
+                // 有对话后给出几个可直接修改的快捷指令；点击只填入输入框，不立即发送。
+                // Quick prompts after the first turn; clicking fills the composer instead of sending.
+                if !self.ai_chat.messages.is_empty() && self.ai_chat.pending.is_none() {
+                    let mut quick: Option<&str> = None;
+                    ui.horizontal_wrapped(|ui| {
+                        for prompt in QUICK_PROMPTS {
+                            if ui
+                                .add(
+                                    egui::Button::new(RichText::new(prompt).size(10.0))
+                                        .fill(theme::PANEL_2)
+                                        .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
+                                        .corner_radius(12)
+                                        .min_size(egui::vec2(0.0, 22.0)),
+                                )
+                                .clicked()
+                            {
+                                quick = Some(prompt);
                             }
                         }
-                        if let Some(live) = self.ai_chat.live.as_ref() {
-                            paint_ai_live(ui, live);
-                            ui.add_space(10.0);
-                        } else if self.ai_chat.pending.is_some() {
-                            ui.horizontal(|ui| {
-                                ui.add(egui::Spinner::new().size(14.0));
-                                ui.label(
-                                    RichText::new("AI 正在思考…（可点输入区右侧停止）")
-                                        .size(10.5)
-                                        .color(theme::TEXT_DIM),
-                                );
-                            });
-                        }
                     });
+                    if let Some(prompt) = quick {
+                        self.ai_chat.input = prompt.to_string();
+                    }
+                    ui.add_space(4.0);
+                }
+                self.ui_ai_composer(ui);
+            });
+
+        let transcript_h = ui.available_height().max(80.0);
+        let mut empty_pick: Option<&'static str> = None;
+        // 右侧整块为深色背景，消息与卡片直接悬浮其上。
+        // The whole right side is one dark canvas; messages and cards float directly on it.
+        // 只在流式生成时自动吸底；否则折叠/展开消息时会把视图拉到最底部，显得页面突然跳远。
+        // Only stick to the bottom while streaming; otherwise expanding/collapsing a message would
+        // yank the view to the very bottom.
+        let streaming = self.ai_chat.live.is_some() || self.ai_chat.pending.is_some();
+        egui::ScrollArea::vertical()
+            .id_salt("ai_transcript")
+            .max_height(transcript_h)
+            .auto_shrink([false, false])
+            .stick_to_bottom(streaming)
+            .show(ui, |ui| {
+                if self.ai_chat.messages.is_empty() {
+                    empty_pick = paint_ai_empty(ui);
+                } else {
+                    for (index, message) in self.ai_chat.messages.iter().enumerate() {
+                        paint_ai_message(
+                            ui,
+                            index,
+                            message.role,
+                            &message.content,
+                            message.reasoning.as_deref(),
+                            message.meta.as_ref(),
+                            message.changes,
+                        );
+                        ui.add_space(10.0);
+                    }
+                }
+                if let Some(live) = self.ai_chat.live.as_ref() {
+                    paint_ai_live(ui, live);
+                    ui.add_space(10.0);
+                } else if self.ai_chat.pending.is_some() {
+                    ui.horizontal(|ui| {
+                        ui.add(egui::Spinner::new().size(14.0));
+                        ui.label(
+                            RichText::new("AI 正在思考…（可点输入区右侧停止）")
+                                .size(10.5)
+                                .color(theme::TEXT_DIM),
+                        );
+                    });
+                }
             });
         if let Some(prompt) = empty_pick {
             self.ai_chat.input = prompt.to_string();
         }
-
-        // 有对话后给出几个可直接修改的快捷指令；点击只填入输入框，不立即发送。
-        // Quick prompts after the first turn; clicking fills the composer instead of sending.
-        if !self.ai_chat.messages.is_empty() && self.ai_chat.pending.is_none() {
-            let mut quick: Option<&str> = None;
-            ui.horizontal_wrapped(|ui| {
-                for prompt in QUICK_PROMPTS {
-                    if ui
-                        .add(
-                            egui::Button::new(RichText::new(prompt).size(10.0))
-                                .fill(theme::PANEL_2)
-                                .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
-                                .corner_radius(12)
-                                .min_size(egui::vec2(0.0, 22.0)),
-                        )
-                        .clicked()
-                    {
-                        quick = Some(prompt);
-                    }
-                }
-            });
-            if let Some(prompt) = quick {
-                self.ai_chat.input = prompt.to_string();
-            }
-            ui.add_space(4.0);
-        }
-
-        self.ui_ai_composer(ui);
     }
 
     /// 所属模块：ui / AI 编曲面板 / 输入区
@@ -462,8 +627,206 @@ impl SurfingApp {
         if stop {
             self.cancel_ai_message();
         }
-        if (send || send_shortcut) && self.ai_chat.pending.is_none() {
-            self.send_ai_message();
+        if (send || send_shortcut)
+            && (!self.ai_chat.input.trim().is_empty() || !self.ai_chat.attachments.is_empty())
+        {
+            if self.ai_chat.any_task_running() {
+                self.ai_chat.conflict_prompt = Some(AiTaskConflict::Send);
+            } else {
+                self.send_ai_message();
+            }
+        }
+    }
+}
+
+/// 已有 AI 任务运行时弹出的冲突确认窗口。
+/// Conflict confirmation shown while another AI task is running.
+impl SurfingApp {
+    /// 所属模块：ui / AI 编曲面板 / 冲突确认
+    /// 功能：提示当前项目已有后台任务，并提供「停止任务」或「后台继续」。
+    /// 输入：`ctx` 渲染上下文。
+    /// 输出/副作用：可能取消当前任务并执行待发送/待切换动作；不直接修改工程。
+    /// 复杂度：时间 O(1)，空间 O(1)。
+    ///
+    /// Module: ui / AI composition panel / conflict
+    /// Purpose: Warn that a background task is running and offer "stop task" or "keep running".
+    /// Inputs: `ctx`.
+    /// Outputs / side effects: may cancel the task and perform the queued send/switch action; never
+    /// edits the project directly.
+    /// Complexity: O(1) time and space.
+    pub fn ui_ai_task_conflict(&mut self, ctx: &egui::Context) {
+        let Some(conflict) = self.ai_chat.conflict_prompt else {
+            return;
+        };
+        if self.ai_chat.pending.is_none() {
+            self.ai_chat.conflict_prompt = None;
+            return;
+        }
+        let mut stop = false;
+        let mut keep = false;
+        let response = egui::Modal::new(egui::Id::new("ai_task_conflict")).show(ctx, |ui| {
+            ui.set_width(340.0);
+            ui.label(
+                RichText::new("已有任务正在进行")
+                    .size(14.0)
+                    .strong()
+                    .color(theme::TEXT),
+            );
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new("当前项目中已有一个 AI 任务正在后台运行。")
+                    .size(11.5)
+                    .strong()
+                    .color(theme::TEXT),
+            );
+            let detail = match conflict {
+                AiTaskConflict::Send => "发送第二个任务前需要先停止当前任务。",
+                AiTaskConflict::Edit => {
+                    "在轨道窗编辑前建议先停止当前任务，避免 AI 写入与手动修改互相覆盖。"
+                }
+            };
+            ui.add_space(4.0);
+            ui.label(RichText::new(detail).size(10.0).color(theme::TEXT_DIM));
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                let stop_label = match conflict {
+                    AiTaskConflict::Send => "停止并发送",
+                    AiTaskConflict::Edit => "停止任务",
+                };
+                if ui
+                    .add(
+                        egui::Button::new(RichText::new(stop_label).size(10.5).color(theme::TEXT))
+                            .fill(theme::RED)
+                            .min_size(egui::vec2(0.0, 26.0)),
+                    )
+                    .clicked()
+                {
+                    stop = true;
+                }
+                if ui
+                    .add(egui::Button::new(RichText::new("后台继续运行").size(10.5)))
+                    .clicked()
+                {
+                    keep = true;
+                }
+            });
+        });
+        if response.should_close() && !stop && !keep {
+            keep = true;
+        }
+        if stop {
+            self.ai_chat.conflict_prompt = None;
+            self.cancel_all_ai_tasks();
+            if conflict == AiTaskConflict::Send {
+                self.send_ai_message();
+            }
+        } else if keep {
+            self.ai_chat.conflict_prompt = None;
+            self.ai_chat.edit_guard_dismissed = true;
+        }
+    }
+}
+
+/// 任务状态图标：完成、运行中。
+/// Task status icon: done, running.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AiTaskStatus {
+    Done,
+    Running,
+}
+
+/// 所属模块：ui / AI 编曲面板 / 任务栏
+/// 功能：绘制一张可点击的任务卡片（状态图标 + 标题 + 副标题 + 选中高亮）。
+/// 输入：`ui`、`id` 稳定标识、`selected` 是否选中、`status` 状态、`title`/`subtitle` 文本。
+/// 输出/副作用：返回点击响应；只绘制，不修改状态。
+/// 复杂度：时间 O(文本长度)，空间 O(1)。
+///
+/// Module: ui / AI composition panel / task rail
+/// Purpose: Draw a clickable task card (status icon + title + subtitle + selection highlight).
+/// Inputs: `ui`, stable `id`, `selected`, `status`, `title`/`subtitle`.
+/// Outputs / side effects: the click response; painting only.
+/// Complexity: O(text length) time and O(1) space.
+fn ai_task_card(
+    ui: &mut egui::Ui,
+    id: &str,
+    selected: bool,
+    status: AiTaskStatus,
+    title: &str,
+    subtitle: &str,
+) -> egui::Response {
+    let fill = if selected { theme::PANEL_2 } else { theme::BG };
+    let stroke = egui::Stroke::new(1.0_f32, theme::LINE);
+    let inner = egui::Frame::NONE
+        .fill(fill)
+        .stroke(stroke)
+        .corner_radius(9)
+        .inner_margin(egui::Margin::symmetric(8, 7))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                paint_task_status(ui, status);
+                ui.add_space(2.0);
+                ui.vertical(|ui| {
+                    ui.label(RichText::new(title).size(10.0).strong().color(if selected {
+                        theme::TEXT
+                    } else {
+                        theme::TEXT_DIM
+                    }));
+                    ui.label(RichText::new(subtitle).size(8.5).color(theme::TEXT_FAINT));
+                });
+            });
+        });
+    if selected {
+        // 选中态用外圈白色描边，不改变卡片底色。
+        // Selection uses a white outer ring instead of a coloured background.
+        ui.painter().rect_stroke(
+            inner.response.rect.expand(2.0),
+            egui::CornerRadius::from(11),
+            egui::Stroke::new(1.5_f32, egui::Color32::WHITE),
+            egui::StrokeKind::Outside,
+        );
+    }
+    let response = ui.interact(
+        inner.response.rect,
+        ui.make_persistent_id(id),
+        egui::Sense::click(),
+    );
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    response
+}
+
+/// 所属模块：ui / AI 编曲面板 / 任务栏
+/// 功能：绘制圆形状态图标；完成态为绿底白勾，运行态为蓝色圆环加点。
+/// 输入：`ui`、`status` 状态。
+/// 输出/副作用：占用 16×16 区域并绘制；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: ui / AI composition panel / task rail
+/// Purpose: Draw the circular status icon: a green disc with a white check when done, a blue ring and
+/// dot while running.
+/// Inputs: `ui`, `status`.
+/// Outputs / side effects: allocates 16×16 and paints; no state change.
+/// Complexity: O(1) time and space.
+fn paint_task_status(ui: &mut egui::Ui, status: AiTaskStatus) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+    let center = rect.center();
+    let painter = ui.painter();
+    match status {
+        AiTaskStatus::Done => {
+            painter.circle_filled(center, 7.5, theme::GREEN);
+            painter.text(
+                center,
+                egui::Align2::CENTER_CENTER,
+                "✓",
+                egui::FontId::proportional(10.0),
+                theme::TEXT,
+            );
+        }
+        AiTaskStatus::Running => {
+            painter.circle_stroke(center, 7.0, egui::Stroke::new(1.5_f32, theme::ACCENT));
+            painter.circle_filled(center, 2.5, theme::ACCENT);
         }
     }
 }
@@ -491,47 +854,321 @@ fn paint_ai_message(
     changes: Option<AiApplySummary>,
 ) {
     let is_user = role == AiRole::User;
-    if !is_user {
-        if let Some(meta) = meta {
-            paint_message_meta(ui, meta);
-            ui.add_space(3.0);
-        }
-        if let Some(reasoning) = reasoning {
-            paint_thinking_block(ui, index, reasoning, false, false);
-            ui.add_space(4.0);
-        }
-    }
-    let (fill, text_color) = if is_user {
-        (theme::ACCENT_DARK, egui::Color32::WHITE)
-    } else {
-        (theme::PANEL_2, theme::TEXT)
-    };
-    let bubble = |ui: &mut egui::Ui| {
-        egui::Frame::NONE
-            .fill(fill)
-            .stroke(egui::Stroke::new(
-                1.0_f32,
-                if is_user {
-                    theme::ACCENT_DARK
-                } else {
-                    theme::LINE
-                },
-            ))
-            .corner_radius(8)
-            .inner_margin(10.0)
-            .show(ui, |ui| {
-                ui.set_max_width((ui.available_width() * 0.94).max(160.0));
-                ui.label(RichText::new(content).size(11.5).color(text_color));
-            });
-    };
     if is_user {
+        let bubble = |ui: &mut egui::Ui| {
+            egui::Frame::NONE
+                .fill(theme::PANEL_2)
+                .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
+                .corner_radius(8)
+                .inner_margin(10.0)
+                .show(ui, |ui| {
+                    ui.set_max_width((ui.available_width() * 0.94).max(160.0));
+                    ui.label(RichText::new(content).size(11.5).color(theme::TEXT));
+                });
+        };
         ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), bubble);
     } else {
-        bubble(ui);
+        paint_assistant_header(ui, index, meta, reasoning);
+        ui.separator();
+        render_markdown(ui, content);
     }
     if let Some(summary) = changes {
         ui.add_space(6.0);
-        paint_change_card(ui, summary);
+        paint_change_card(ui, summary, index);
+    }
+}
+
+/// 所属模块：ui / AI 编曲面板 / 助手输出
+/// 功能：绘制模型图标、模型名与可折叠「任务耗时」；展开后显示思考与写入过程。
+/// 输入：`ui`、消息序号、任务元信息与思考文本。
+/// 输出/副作用：只绘制与维护折叠状态；不修改工程。
+/// 复杂度：时间 O(过程步骤数 + 思考文本长度)，空间 O(1)。
+///
+/// Module: ui / AI composition panel / assistant output
+/// Purpose: Draw the model icon/name and a collapsible "task time"; expanding shows reasoning and writes.
+/// Inputs: `ui`, message index, metadata and reasoning.
+/// Outputs / side effects: paints and maintains collapse state; no project change.
+/// Complexity: O(steps + reasoning length) time and O(1) space.
+fn paint_assistant_header(
+    ui: &mut egui::Ui,
+    index: usize,
+    meta: Option<&AiMessageMeta>,
+    reasoning: Option<&str>,
+) {
+    let state_id = ui.make_persistent_id(("ai-process", index));
+    let mut state =
+        egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), state_id, false);
+    ui.horizontal(|ui| {
+        let (icon_rect, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+        let painter = ui.painter();
+        painter.rect_filled(icon_rect, egui::CornerRadius::from(4), theme::GREEN);
+        painter.text(
+            icon_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "AI",
+            egui::FontId::proportional(8.0),
+            theme::BG,
+        );
+        ui.add_space(4.0);
+        let model = meta
+            .and_then(|meta| (!meta.model.is_empty()).then_some(meta.model.as_str()))
+            .unwrap_or("SurfingStudio AI");
+        ui.label(RichText::new(model).size(10.5).strong().color(theme::TEXT));
+        let elapsed = meta.map(|meta| meta.elapsed_seconds).unwrap_or(0.0);
+        if elapsed > 0.0 {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let arrow = if state.is_open() { "▴" } else { "▾" };
+                if ui
+                    .add(
+                        egui::Button::new(
+                            RichText::new(format!("任务耗时 {} {arrow}", format_elapsed(elapsed)))
+                                .size(9.0)
+                                .color(theme::TEXT_FAINT),
+                        )
+                        .frame(false),
+                    )
+                    .clicked()
+                {
+                    state.toggle(ui);
+                }
+            });
+        }
+    });
+    // 折叠状态必须写回 egui 内存，否则收起时不会保存，下一帧又按“展开”加载。
+    // Persist the collapse state; without this the collapsed state is never stored and the next
+    // frame reloads it as open.
+    let open = state.is_open();
+    state.store(ui.ctx());
+    if open {
+        state.show_body_unindented(ui, |ui| {
+            ui.add_space(2.0);
+            if let Some(reasoning) = reasoning.filter(|text| !text.trim().is_empty()) {
+                ui.label(
+                    RichText::new("思考")
+                        .size(9.0)
+                        .strong()
+                        .color(theme::TEXT_DIM),
+                );
+                ui.label(
+                    RichText::new(reasoning.trim())
+                        .size(9.5)
+                        .color(theme::TEXT_FAINT),
+                );
+                ui.add_space(4.0);
+            }
+            if let Some(meta) = meta {
+                if !meta.steps.is_empty() {
+                    ui.label(
+                        RichText::new("修改")
+                            .size(9.0)
+                            .strong()
+                            .color(theme::TEXT_DIM),
+                    );
+                    for step in &meta.steps {
+                        ui.label(
+                            RichText::new(format!("· {step}"))
+                                .size(9.5)
+                                .color(theme::GREEN),
+                        );
+                    }
+                    ui.add_space(4.0);
+                }
+                paint_message_meta(ui, meta);
+            }
+        });
+    }
+}
+
+/// 所属模块：ui / AI 编曲面板 / 助手输出
+/// 功能：把助手回复按 Markdown 轻量渲染到深色背景：标题、列表、加粗、行内代码与分割线。
+/// 输入：`ui`、Markdown 文本。
+/// 输出/副作用：只绘制；不修改状态。
+/// 复杂度：时间 O(文本长度)，空间 O(行数)。
+///
+/// Module: ui / AI composition panel / assistant output
+/// Purpose: Lightweight Markdown rendering on the dark canvas: headings, lists, bold, inline code and rules.
+/// Inputs: `ui`, Markdown text.
+/// Outputs / side effects: paints only; no state change.
+/// Complexity: O(text length) time and O(lines) space.
+fn render_markdown(ui: &mut egui::Ui, text: &str) {
+    let mut in_code = false;
+    for line in text.lines() {
+        let trimmed = line.trim_end();
+        if trimmed.trim_start().starts_with("```") {
+            in_code = !in_code;
+            ui.add_space(2.0);
+            continue;
+        }
+        if in_code {
+            egui::Frame::NONE
+                .fill(theme::PANEL_2)
+                .corner_radius(4)
+                .inner_margin(egui::Margin::symmetric(6, 3))
+                .show(ui, |ui| {
+                    ui.label(
+                        RichText::new(line)
+                            .monospace()
+                            .size(9.5)
+                            .color(theme::TEXT_DIM),
+                    );
+                });
+            continue;
+        }
+        let trimmed_start = trimmed.trim_start();
+        if trimmed.trim().is_empty() {
+            ui.add_space(4.0);
+            continue;
+        }
+        if trimmed_start == "---" || trimmed_start == "***" {
+            ui.separator();
+            continue;
+        }
+        if let Some(rest) = trimmed_start.strip_prefix("### ") {
+            render_inline(ui, rest, 12.0, true);
+            continue;
+        }
+        if let Some(rest) = trimmed_start.strip_prefix("## ") {
+            render_inline(ui, rest, 13.0, true);
+            continue;
+        }
+        if let Some(rest) = trimmed_start.strip_prefix("# ") {
+            render_inline(ui, rest, 14.0, true);
+            continue;
+        }
+        if let Some(rest) = trimmed_start
+            .strip_prefix("- ")
+            .or_else(|| trimmed_start.strip_prefix("* "))
+        {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new("•").size(10.5).color(theme::TEXT_DIM));
+                render_inline(ui, rest, 10.5, false);
+            });
+            continue;
+        }
+        if let Some((number, rest)) = split_numbered(trimmed_start) {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(
+                    RichText::new(format!("{number}."))
+                        .size(10.5)
+                        .color(theme::TEXT_DIM),
+                );
+                render_inline(ui, rest, 10.5, false);
+            });
+            continue;
+        }
+        render_inline(ui, trimmed_start, 10.5, false);
+    }
+}
+
+/// 所属模块：ui / AI 编曲面板 / Markdown
+/// 功能：解析 `**加粗**` 与 `` `行内代码` `` 后按行内片段绘制。
+/// 输入：`ui`、文本、字号、是否整体加粗。
+/// 输出/副作用：只绘制；不修改状态。
+/// 复杂度：时间 O(字符数)，空间 O(片段数)。
+///
+/// Module: ui / AI composition panel / Markdown
+/// Purpose: Parse `**bold**` and `` `inline code` `` then draw inline spans.
+/// Inputs: `ui`, text, size, whole-line bold flag.
+/// Outputs / side effects: paints only; no state change.
+/// Complexity: O(characters) time and O(spans) space.
+fn render_inline(ui: &mut egui::Ui, text: &str, size: f32, bold: bool) {
+    let spans = parse_inline(text);
+    ui.horizontal_wrapped(|ui| {
+        for (span, span_bold, span_code) in spans {
+            let mut rich = RichText::new(span).size(size).color(theme::TEXT);
+            if bold || span_bold {
+                rich = rich.strong();
+            }
+            if span_code {
+                rich = rich.monospace().background_color(theme::PANEL_2);
+            }
+            ui.label(rich);
+        }
+    });
+}
+
+/// 所属模块：ui / AI 编曲面板 / Markdown
+/// 功能：把一行文本拆成普通、加粗与行内代码片段。
+/// 输入：`text` 单行文本。
+/// 输出/副作用：片段列表；不修改输入。
+/// 复杂度：时间 O(字符数)，空间 O(片段数)。
+///
+/// Module: ui / AI composition panel / Markdown
+/// Purpose: Split one line into normal, bold and inline-code spans.
+/// Inputs: `text`.
+/// Outputs / side effects: spans; the input is unchanged.
+/// Complexity: O(characters) time and O(spans) space.
+fn parse_inline(text: &str) -> Vec<(String, bool, bool)> {
+    let mut spans = Vec::new();
+    let mut buffer = String::new();
+    let mut bold = false;
+    let mut code = false;
+    let chars: Vec<char> = text.chars().collect();
+    let mut index = 0;
+    while index < chars.len() {
+        if chars[index] == '`' {
+            if !buffer.is_empty() {
+                spans.push((std::mem::take(&mut buffer), bold, code));
+            }
+            code = !code;
+            index += 1;
+            continue;
+        }
+        if chars[index] == '*' && index + 1 < chars.len() && chars[index + 1] == '*' {
+            if !buffer.is_empty() {
+                spans.push((std::mem::take(&mut buffer), bold, code));
+            }
+            bold = !bold;
+            index += 2;
+            continue;
+        }
+        buffer.push(chars[index]);
+        index += 1;
+    }
+    if !buffer.is_empty() {
+        spans.push((buffer, bold, code));
+    }
+    spans
+}
+
+/// 所属模块：ui / AI 编曲面板 / Markdown
+/// 功能：识别 `1. ` 形式的有序列表前缀。
+/// 输入：`text` 单行文本。
+/// 输出/副作用：序号与剩余文本；不是有序列表返回 `None`。
+/// 复杂度：时间 O(数字位数)，空间 O(1)。
+///
+/// Module: ui / AI composition panel / Markdown
+/// Purpose: Recognise a `1. ` ordered-list prefix.
+/// Inputs: `text`.
+/// Outputs / side effects: number and remainder, or `None`.
+/// Complexity: O(digits) time and O(1) space.
+fn split_numbered(text: &str) -> Option<(&str, &str)> {
+    let dot = text.find(". ")?;
+    let (number, rest) = text.split_at(dot);
+    if !number.is_empty() && number.chars().all(|character| character.is_ascii_digit()) {
+        Some((number, &rest[2..]))
+    } else {
+        None
+    }
+}
+
+/// 所属模块：ui / AI 编曲面板 / 任务耗时
+/// 功能：把秒数格式化为 `6m 31s` 或 `12s`。
+/// 输入：`seconds` 秒数。
+/// 输出/副作用：格式化文本；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: ui / AI composition panel / task time
+/// Purpose: Format seconds as `6m 31s` or `12s`.
+/// Inputs: `seconds`.
+/// Outputs / side effects: formatted text; no state change.
+/// Complexity: O(1) time and space.
+fn format_elapsed(seconds: f32) -> String {
+    let total = seconds.max(0.0).round() as u64;
+    if total >= 60 {
+        format!("{}m {:02}s", total / 60, total % 60)
+    } else {
+        format!("{total}s")
     }
 }
 
@@ -548,9 +1185,6 @@ fn paint_ai_message(
 /// Complexity: O(techniques) time and O(1) space.
 fn paint_message_meta(ui: &mut egui::Ui, meta: &AiMessageMeta) {
     let mut parts = Vec::new();
-    if meta.elapsed_seconds > 0.0 {
-        parts.push(format!("耗时 {:.1}s", meta.elapsed_seconds));
-    }
     if meta.searches > 0 {
         parts.push(format!("检索 {} 次", meta.searches));
     }
@@ -646,15 +1280,9 @@ fn paint_ai_live(ui: &mut egui::Ui, live: &AiLiveMessage) {
     } else {
         format!("{}▍", live.content.trim())
     };
-    egui::Frame::NONE
-        .fill(theme::PANEL_2)
-        .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
-        .corner_radius(8)
-        .inner_margin(10.0)
-        .show(ui, |ui| {
-            ui.set_max_width((ui.available_width() * 0.94).max(160.0));
-            ui.label(RichText::new(text).size(11.5).color(theme::TEXT));
-        });
+    // 流式输出同样直接绘制在深色背景上，不再套气泡。
+    // Streaming output is drawn directly on the dark canvas without a bubble.
+    ui.label(RichText::new(text).size(11.5).color(theme::TEXT));
     if !live.steps.is_empty() {
         ui.add_space(4.0);
         let first = live.steps.len().saturating_sub(6);
@@ -677,16 +1305,16 @@ fn paint_ai_live(ui: &mut egui::Ui, live: &AiLiveMessage) {
 
 /// 所属模块：ui / AI 编曲面板 / 改动卡片
 /// 功能：绘制“工程已更新”卡片：轨道、片段、音符、效果器、VST 插件与清空操作。
-/// 输入：`ui` 绘制区域；`summary` 结构化改动。
+/// 输入：`ui` 绘制区域；`summary` 结构化改动；`index` 消息序号（网格 id）。
 /// 输出/副作用：只绘制；不修改状态。
 /// 复杂度：时间 O(1)，空间 O(1)。
 ///
 /// Module: ui / AI composition panel / change card
 /// Purpose: Draw the "project updated" card: tracks, clips, notes, effects, VST plugins and clearing.
-/// Inputs: `ui` drawing area; `summary` structured changes.
+/// Inputs: `ui`; `summary`; `index` for a unique grid id.
 /// Outputs / side effects: paints only; no state change.
 /// Complexity: O(1) time and space.
-fn paint_change_card(ui: &mut egui::Ui, summary: AiApplySummary) {
+fn paint_change_card(ui: &mut egui::Ui, summary: AiApplySummary, index: usize) {
     let total = summary.tracks_added
         + summary.tracks_updated
         + summary.clips_added
@@ -716,8 +1344,8 @@ fn paint_change_card(ui: &mut egui::Ui, summary: AiApplySummary) {
                 });
             });
             ui.add_space(4.0);
-            egui::Grid::new("ai_change_grid")
-                .num_columns(3)
+            egui::Grid::new(("ai_change_grid", index))
+                .num_columns(2)
                 .spacing([10.0, 4.0])
                 .show(ui, |ui| {
                     change_rows(ui, &summary);
@@ -808,45 +1436,38 @@ fn change_rows(ui: &mut egui::Ui, summary: &AiApplySummary) {
 /// Complexity: O(examples) time and O(1) space.
 fn paint_ai_empty(ui: &mut egui::Ui) -> Option<&'static str> {
     let mut picked = None;
-    ui.add_space(14.0);
-    ui.vertical_centered(|ui| {
-        ui.label(
-            RichText::new("让 AI 帮你写一段音乐")
-                .size(14.0)
-                .strong()
-                .color(theme::TEXT),
+    ui.add_space(8.0);
+    for (index, example) in EMPTY_PROMPTS.iter().enumerate() {
+        let inner = egui::Frame::NONE
+            .fill(theme::PANEL_2)
+            .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
+            .corner_radius(10)
+            .inner_margin(egui::Margin::symmetric(10, 8))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(format!("· {example}"))
+                            .size(9.8)
+                            .color(theme::TEXT_DIM),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(RichText::new("↗").size(10.0).color(theme::TEXT_FAINT));
+                    });
+                });
+            });
+        let response = ui.interact(
+            inner.response.rect,
+            ui.make_persistent_id(("ai-empty-prompt", index)),
+            egui::Sense::click(),
         );
-        ui.add_space(4.0);
-        ui.label(
-            RichText::new(
-                "AI 会读取当前工程的速度、轨道与已有音符，把新内容直接写入工程；\n\
-                 也会调用你已安装的 VST 乐器与效果器。不满意可按 Ctrl+Z 撤销。",
-            )
-            .size(10.0)
-            .color(theme::TEXT_DIM),
-        );
-    });
-    ui.add_space(12.0);
-    for example in EMPTY_PROMPTS {
-        if ui
-            .add(
-                egui::Button::new(
-                    RichText::new(format!("· {example}"))
-                        .size(10.0)
-                        .color(theme::TEXT_DIM),
-                )
-                .fill(theme::PANEL_2)
-                .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
-                .corner_radius(8)
-                .wrap()
-                .min_size(egui::vec2(ui.available_width(), 26.0)),
-            )
-            .on_hover_text("点击填入输入框")
-            .clicked()
-        {
-            picked = Some(example);
+        if response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
-        ui.add_space(4.0);
+        if response.clicked() {
+            picked = Some(*example);
+        }
+        ui.add_space(6.0);
     }
     picked
 }
