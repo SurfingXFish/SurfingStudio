@@ -43,6 +43,9 @@ const AGENT_LIST_W: f32 = 280.0;
 /// Agent 页编辑器与列表之间的间距（逻辑点）。
 /// Gap between the list and the editor in logical points.
 const AGENT_GAP: f32 = 16.0;
+/// 列表行高度（逻辑点）；用于虚拟化滚动。
+/// List row height in logical points used by virtual scrolling.
+const AGENT_ROW_H: f32 = 56.0;
 /// 列表搜索框高度（逻辑点）。
 /// Search-field height in logical points.
 const AGENT_SEARCH_H: f32 = 26.0;
@@ -121,33 +124,97 @@ impl SurfingApp {
     /// Complexity: O(entries) per frame.
     fn ui_agent_library_page(&mut self, ui: &mut egui::Ui, kind: AiLibraryKind) {
         let library = self.settings.ai.library.clone();
-        ui.add_space(2.0);
         let (title, subtitle) = agent_page_titles(kind);
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new(title)
-                    .size(22.0)
-                    .strong()
-                    .color(theme::TEXT),
-            );
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        let count = match kind {
+            AiLibraryKind::Agent => library.agents.len(),
+            AiLibraryKind::Basic => library.basics.len(),
+            AiLibraryKind::Technique => library.techniques.len(),
+            AiLibraryKind::Instrument => library.instruments.len(),
+        };
+        ui.add_space(2.0);
+        // 页头：小号眉题 + 大标题 + 统计徽章，形成资料库的“索引册”气质。
+        // Page header: eyebrow label, large title and stat badges for a library-index feel.
+        ui.horizontal_top(|ui| {
+            ui.vertical(|ui| {
+                ui.label(
+                    egui::RichText::new("AGENT / LIBRARY")
+                        .size(9.0)
+                        .strong()
+                        .color(theme::ACCENT),
+                );
+                ui.add_space(2.0);
+                ui.label(
+                    egui::RichText::new(title)
+                        .size(30.0)
+                        .strong()
+                        .color(theme::TEXT),
+                );
+                ui.label(
+                    egui::RichText::new(subtitle)
+                        .size(11.5)
+                        .color(theme::TEXT_DIM),
+                );
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
                 if agent_primary_button(ui, "新建").clicked() {
                     self.begin_agent_library_draft(kind);
                 }
+                ui.add_space(6.0);
+                stat_pill(ui, count.to_string(), "条目");
+                ui.add_space(6.0);
+                stat_pill(
+                    ui,
+                    match kind {
+                        AiLibraryKind::Agent => library.basics.len() + library.techniques.len(),
+                        AiLibraryKind::Basic | AiLibraryKind::Technique => {
+                            library.instruments.len()
+                        }
+                        AiLibraryKind::Instrument => library.techniques.len(),
+                    }
+                    .to_string(),
+                    match kind {
+                        AiLibraryKind::Agent => "可绑定技能",
+                        AiLibraryKind::Basic | AiLibraryKind::Technique => "关联乐器",
+                        AiLibraryKind::Instrument => "技巧",
+                    },
+                );
             });
         });
-        ui.label(
-            egui::RichText::new(subtitle)
-                .size(11.0)
-                .color(theme::TEXT_DIM),
-        );
-        ui.add_space(8.0);
-        ui.add(
-            egui::TextEdit::singleline(&mut self.agent_library.search)
-                .hint_text("搜索")
-                .desired_width(f32::INFINITY)
-                .min_size(egui::vec2(0.0, AGENT_SEARCH_H)),
-        );
+        ui.add_space(12.0);
+        egui::Frame::NONE
+            .fill(theme::PANEL)
+            .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
+            .corner_radius(10)
+            .inner_margin(egui::Margin::symmetric(12, 8))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("搜索")
+                            .size(10.0)
+                            .color(theme::TEXT_FAINT),
+                    );
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.agent_library.search)
+                            .frame(egui::Frame::NONE)
+                            .hint_text("按名称、说明或标识过滤…")
+                            .desired_width(f32::INFINITY)
+                            .min_size(egui::vec2(0.0, AGENT_SEARCH_H)),
+                    );
+                });
+            });
+        if kind == AiLibraryKind::Instrument {
+            ui.add_space(8.0);
+            ui.horizontal_wrapped(|ui| {
+                for category in [
+                    "全部", "键盘", "吉他", "弦乐", "管乐", "打击", "合成", "民乐", "其他",
+                ] {
+                    let selected = self.agent_library.instrument_category_filter == category;
+                    if agent_filter_chip(ui, category, selected).clicked() {
+                        self.agent_library.instrument_category_filter = category.to_string();
+                    }
+                }
+            });
+        }
         ui.add_space(8.0);
         if let Some(notice) = &self.agent_library.notice {
             ui.label(
@@ -168,19 +235,14 @@ impl SurfingApp {
                 ui.vertical(|ui| {
                     ui.set_width(AGENT_LIST_W);
                     egui::Frame::NONE
-                        .fill(theme::PANEL)
-                        .corner_radius(8)
-                        .inner_margin(egui::Margin::symmetric(8, 8))
+                        .fill(theme::BG_DEEP)
+                        .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
+                        .corner_radius(12)
+                        .inner_margin(egui::Margin::symmetric(10, 10))
                         .show(ui, |ui| {
-                            ui.set_width(AGENT_LIST_W - 16.0);
-                            ui.set_height(available.y - 16.0);
-                            egui::ScrollArea::vertical()
-                                .id_salt(("agent_library_list", agent_kind_id(kind)))
-                                .auto_shrink([false, false])
-                                .show(ui, |ui| {
-                                    ui.set_width(AGENT_LIST_W - 24.0);
-                                    self.agent_library_list(ui, kind, &library);
-                                });
+                            ui.set_width(AGENT_LIST_W - 20.0);
+                            ui.set_height(available.y - 20.0);
+                            self.agent_library_list(ui, kind, &library);
                         });
                 });
             });
@@ -206,17 +268,20 @@ impl SurfingApp {
     fn agent_library_list(&mut self, ui: &mut egui::Ui, kind: AiLibraryKind, library: &AiLibrary) {
         let search = self.agent_library.search.trim().to_lowercase();
         let selected = self.agent_library.selected.clone();
-        let mut clicked: Option<String> = None;
+        let category_filter = self.agent_library.instrument_category_filter.clone();
+        let mut rows: Vec<(String, String, String, String)> = Vec::new();
         match kind {
             AiLibraryKind::Agent => {
                 for agent in &library.agents {
                     if !matches_search(&search, &[&agent.name, &agent.description, &agent.id]) {
                         continue;
                     }
-                    let active = selected.as_deref() == Some(agent.id.as_str());
-                    if agent_list_row(ui, &agent.name, &agent.description, active).clicked() {
-                        clicked = Some(agent.id.clone());
-                    }
+                    rows.push((
+                        agent.id.clone(),
+                        agent.name.clone(),
+                        agent.description.clone(),
+                        "AGENT".into(),
+                    ));
                 }
             }
             AiLibraryKind::Basic | AiLibraryKind::Technique => {
@@ -229,10 +294,16 @@ impl SurfingApp {
                     if !matches_search(&search, &[&skill.title, &skill.summary, &skill.id]) {
                         continue;
                     }
-                    let active = selected.as_deref() == Some(skill.id.as_str());
-                    if agent_list_row(ui, &skill.title, &skill.summary, active).clicked() {
-                        clicked = Some(skill.id.clone());
-                    }
+                    rows.push((
+                        skill.id.clone(),
+                        skill.title.clone(),
+                        skill.summary.clone(),
+                        if kind == AiLibraryKind::Basic {
+                            "THEORY".into()
+                        } else {
+                            "TECHNIQUE".into()
+                        },
+                    ));
                 }
             }
             AiLibraryKind::Instrument => {
@@ -248,18 +319,52 @@ impl SurfingApp {
                     ) {
                         continue;
                     }
-                    let active = selected.as_deref() == Some(instrument.id.as_str());
-                    let subtitle = if instrument.category.is_empty() {
-                        instrument.aliases.clone()
-                    } else {
-                        format!("{} · {}", instrument.category, instrument.aliases)
-                    };
-                    if agent_list_row(ui, &instrument.name, &subtitle, active).clicked() {
-                        clicked = Some(instrument.id.clone());
+                    if !instrument_category_matches(&instrument.category, &category_filter) {
+                        continue;
                     }
+                    rows.push((
+                        instrument.id.clone(),
+                        instrument.name.clone(),
+                        if instrument.aliases.is_empty() {
+                            instrument.category.clone()
+                        } else {
+                            format!("{} · {}", instrument.category, instrument.aliases)
+                        },
+                        instrument.category.clone(),
+                    ));
                 }
             }
         }
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("索引")
+                    .size(9.0)
+                    .strong()
+                    .color(theme::TEXT_FAINT),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(
+                    egui::RichText::new(format!("{} 项", rows.len()))
+                        .size(9.0)
+                        .color(theme::TEXT_FAINT),
+                );
+            });
+        });
+        ui.add_space(6.0);
+        let total = rows.len();
+        let mut clicked: Option<String> = None;
+        egui::ScrollArea::vertical()
+            .id_salt(("agent_library_rows", agent_kind_id(kind)))
+            .auto_shrink([false, false])
+            .show_rows(ui, AGENT_ROW_H, total, |ui, range| {
+                for index in range {
+                    let (id, title, subtitle, badge) = &rows[index];
+                    let active = selected.as_deref() == Some(id.as_str());
+                    if agent_list_row(ui, index + 1, title, subtitle, badge, active).clicked() {
+                        clicked = Some(id.clone());
+                    }
+                }
+            });
         if let Some(id) = clicked {
             if let Some(draft) = draft_for_entry(library, kind, &id) {
                 self.agent_library.selected = Some(id);
@@ -286,49 +391,38 @@ impl SurfingApp {
         kind: AiLibraryKind,
         library: &AiLibrary,
     ) {
-        // 乐器条目可在编辑器内从内置乐器 / 已扫描 VST 中选择，名称仍可直接编辑。
-        // Instrument entries can pick a built-in or scanned VST name inside the editor; the name
-        // field itself stays editable for custom names.
-        let mut instrument_options: Vec<AiInstrumentDoc> = library.instruments.clone();
-        if crate::platform::caps().plugin_hosting {
-            for plugin in &self.plugin_cache {
-                if plugin.name.is_empty()
-                    || instrument_options
-                        .iter()
-                        .any(|option| option.name == plugin.name)
-                {
-                    continue;
-                }
-                let catalogue = crate::plugin::lookup_catalog(&plugin.name);
-                instrument_options.push(AiInstrumentDoc {
-                    id: String::new(),
-                    name: plugin.name.clone(),
-                    aliases: plugin.name.clone(),
-                    category: if plugin.category.is_empty() {
-                        catalogue
-                            .map(|entry| entry.category.to_string())
-                            .unwrap_or_default()
-                    } else {
-                        plugin.category.clone()
-                    },
-                    range: String::new(),
-                    description: catalogue
-                        .map(|entry| entry.description.to_string())
-                        .unwrap_or_default(),
-                    usage: String::new(),
-                    techniques: String::new(),
-                    body: String::new(),
-                });
-            }
-        }
         let mut pick_filter = self.agent_library.instrument_pick_filter.clone();
         let Some(draft) = self.agent_library.draft.as_mut() else {
-            ui.add_space(40.0);
+            ui.add_space(48.0);
             ui.vertical_centered(|ui| {
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(64.0, 64.0), egui::Sense::hover());
+                ui.painter()
+                    .rect_filled(rect, egui::CornerRadius::from(16), theme::PANEL_2);
+                ui.painter().rect_stroke(
+                    rect,
+                    egui::CornerRadius::from(16),
+                    egui::Stroke::new(1.0_f32, theme::LINE),
+                    egui::StrokeKind::Inside,
+                );
+                ui.painter().text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "A",
+                    egui::FontId::proportional(26.0),
+                    theme::TEXT_DIM,
+                );
+                ui.add_space(12.0);
                 ui.label(
-                    egui::RichText::new("从左侧选择条目，或点击「新建」")
-                        .size(12.0)
-                        .color(theme::TEXT_DIM),
+                    egui::RichText::new("选择一条资料开始编辑")
+                        .size(13.0)
+                        .strong()
+                        .color(theme::TEXT),
+                );
+                ui.label(
+                    egui::RichText::new("左侧是索引，右侧是工作台；也可以点击「新建」。")
+                        .size(10.5)
+                        .color(theme::TEXT_FAINT),
                 );
             });
             return;
@@ -339,8 +433,9 @@ impl SurfingApp {
         let mut ask_delete = false;
         egui::Frame::NONE
             .fill(theme::PANEL)
-            .corner_radius(8)
-            .inner_margin(egui::Margin::symmetric(14, 12))
+            .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
+            .corner_radius(12)
+            .inner_margin(egui::Margin::symmetric(18, 14))
             .show(ui, |ui| {
                 let is_new = match draft {
                     AiLibraryDraft::Agent { original, .. }
@@ -348,6 +443,13 @@ impl SurfingApp {
                     | AiLibraryDraft::Technique { original, .. }
                     | AiLibraryDraft::Instrument { original, .. } => original.is_none(),
                 };
+                ui.label(
+                    egui::RichText::new("WORKBENCH")
+                        .size(8.5)
+                        .strong()
+                        .color(theme::ACCENT),
+                );
+                ui.add_space(2.0);
                 ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new(if is_new {
@@ -355,7 +457,7 @@ impl SurfingApp {
                         } else {
                             "编辑条目"
                         })
-                        .size(14.0)
+                        .size(18.0)
                         .strong()
                         .color(theme::TEXT),
                     );
@@ -363,15 +465,22 @@ impl SurfingApp {
                         if agent_primary_button(ui, "保存").clicked() {
                             save = true;
                         }
-                        if ui.button("取消").clicked() {
+                        if agent_ghost_button(ui, "取消").clicked() {
                             cancel = true;
                         }
-                        if !is_new && ui.button("删除").clicked() {
+                        if !is_new && agent_danger_button(ui, "删除").clicked() {
                             ask_delete = true;
                         }
                     });
                 });
-                ui.add_space(6.0);
+                ui.add_space(8.0);
+                let line = ui.available_rect_before_wrap();
+                ui.painter().hline(
+                    line.left()..=line.right(),
+                    line.top(),
+                    egui::Stroke::new(1.0_f32, theme::LINE),
+                );
+                ui.add_space(8.0);
                 egui::ScrollArea::vertical()
                     .id_salt(("agent_library_editor", agent_kind_id(kind)))
                     .auto_shrink([false, false])
@@ -385,11 +494,11 @@ impl SurfingApp {
                                     .size(10.0)
                                     .color(theme::TEXT_FAINT),
                             );
-                            agent_body_field(ui, "角色补充说明", 4, &mut entry.style);
+                            agent_body_field(ui, "角色补充说明 / 创作准则", 5, &mut entry.style);
                             agent_section_title(ui, "默认加载的基础技能");
                             for skill in &library.basics {
                                 let mut checked = entry.default_skill_ids.contains(&skill.id);
-                                if ui.checkbox(&mut checked, &skill.title).changed() {
+                                if editor_toggle_row(ui, &skill.title, &mut checked) {
                                     toggle_id(&mut entry.default_skill_ids, &skill.id, checked);
                                 }
                             }
@@ -397,7 +506,7 @@ impl SurfingApp {
                             for technique in &library.techniques {
                                 let mut checked =
                                     entry.default_technique_ids.contains(&technique.id);
-                                if ui.checkbox(&mut checked, &technique.title).changed() {
+                                if editor_toggle_row(ui, &technique.title, &mut checked) {
                                     toggle_id(
                                         &mut entry.default_technique_ids,
                                         &technique.id,
@@ -406,17 +515,7 @@ impl SurfingApp {
                                 }
                             }
                             agent_section_title(ui, "默认加载的乐器资料");
-                            for instrument in &library.instruments {
-                                let mut checked =
-                                    entry.default_instrument_ids.contains(&instrument.id);
-                                if ui.checkbox(&mut checked, &instrument.name).changed() {
-                                    toggle_id(
-                                        &mut entry.default_instrument_ids,
-                                        &instrument.id,
-                                        checked,
-                                    );
-                                }
-                            }
+                            default_instrument_selector(ui, entry, library);
                         }
                         AiLibraryDraft::Basic { entry, .. }
                         | AiLibraryDraft::Technique { entry, .. } => {
@@ -430,30 +529,68 @@ impl SurfingApp {
                             agent_body_field(ui, "正文（Markdown）", 18, &mut entry.body);
                         }
                         AiLibraryDraft::Instrument { entry, .. } => {
-                            let mut picked: Option<usize> = None;
+                            let mut chosen: Option<AiInstrumentDoc> = None;
                             ui.horizontal(|ui| {
-                                ui.label(
-                                    egui::RichText::new("从乐器库选择")
-                                        .size(10.5)
-                                        .color(theme::TEXT_DIM),
+                                let response = ui.add(
+                                    egui::Button::new(egui::RichText::new("选择乐器…").size(10.5))
+                                        .fill(theme::PANEL_2)
+                                        .corner_radius(8)
+                                        .min_size(egui::vec2(0.0, 26.0)),
                                 );
-                                let response = ui.button("选择乐器…");
                                 egui::Popup::menu(&response)
                                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                                     .show(|ui| {
-                                        ui.set_min_width(280.0);
+                                        ui.set_min_width(300.0);
                                         ui.add(
                                             egui::TextEdit::singleline(&mut pick_filter)
                                                 .hint_text("搜索内置乐器或 VST")
                                                 .desired_width(f32::INFINITY),
                                         );
                                         let needle = pick_filter.trim().to_lowercase();
-                                        egui::ScrollArea::vertical().max_height(320.0).show(
-                                            ui,
-                                            |ui| {
-                                                for (index, option) in
-                                                    instrument_options.iter().enumerate()
+                                        // 选项只在弹出层打开时构建，避免每帧克隆 130 条资料。
+                                        // Build options only while the popup is open, not every frame.
+                                        let mut options: Vec<AiInstrumentDoc> =
+                                            library.instruments.clone();
+                                        if crate::platform::caps().plugin_hosting {
+                                            for plugin in &self.plugin_cache {
+                                                if plugin.name.is_empty()
+                                                    || options
+                                                        .iter()
+                                                        .any(|option| option.name == plugin.name)
                                                 {
+                                                    continue;
+                                                }
+                                                let catalogue =
+                                                    crate::plugin::lookup_catalog(&plugin.name);
+                                                options.push(AiInstrumentDoc {
+                                                    id: String::new(),
+                                                    name: plugin.name.clone(),
+                                                    aliases: plugin.name.clone(),
+                                                    category: if plugin.category.is_empty() {
+                                                        catalogue
+                                                            .map(|entry| entry.category.to_string())
+                                                            .unwrap_or_default()
+                                                    } else {
+                                                        plugin.category.clone()
+                                                    },
+                                                    range: String::new(),
+                                                    description: catalogue
+                                                        .map(|entry| entry.description.to_string())
+                                                        .unwrap_or_default(),
+                                                    usage: String::new(),
+                                                    techniques: String::new(),
+                                                    body: String::new(),
+                                                });
+                                            }
+                                        }
+                                        egui::ScrollArea::vertical()
+                                            .max_height(340.0)
+                                            .auto_shrink([false, false])
+                                            .show_rows(ui, 24.0, options.len(), |ui, range| {
+                                                for index in range {
+                                                    let Some(option) = options.get(index) else {
+                                                        continue;
+                                                    };
                                                     let label = if option.category.is_empty() {
                                                         option.name.clone()
                                                     } else {
@@ -467,29 +604,40 @@ impl SurfingApp {
                                                     {
                                                         continue;
                                                     }
-                                                    if ui.button(label).clicked() {
-                                                        picked = Some(index);
+                                                    if ui
+                                                        .add(
+                                                            egui::Button::new(
+                                                                egui::RichText::new(&label)
+                                                                    .size(10.0),
+                                                            )
+                                                            .fill(egui::Color32::TRANSPARENT)
+                                                            .stroke(egui::Stroke::NONE)
+                                                            .min_size(egui::vec2(
+                                                                ui.available_width(),
+                                                                22.0,
+                                                            )),
+                                                        )
+                                                        .clicked()
+                                                    {
+                                                        chosen = Some(option.clone());
                                                     }
                                                 }
-                                            },
-                                        );
+                                            });
                                     });
                             });
-                            if let Some(index) = picked {
-                                if let Some(option) = instrument_options.get(index) {
-                                    entry.name = option.name.clone();
-                                    entry.aliases = option.aliases.clone();
-                                    entry.category = option.category.clone();
-                                    entry.range = option.range.clone();
-                                    if entry.description.trim().is_empty() {
-                                        entry.description = option.description.clone();
-                                    }
-                                    if entry.usage.trim().is_empty() {
-                                        entry.usage = option.usage.clone();
-                                    }
-                                    if entry.techniques.trim().is_empty() {
-                                        entry.techniques = option.techniques.clone();
-                                    }
+                            if let Some(option) = chosen {
+                                entry.name = option.name;
+                                entry.aliases = option.aliases;
+                                entry.category = option.category;
+                                entry.range = option.range;
+                                if entry.description.trim().is_empty() {
+                                    entry.description = option.description;
+                                }
+                                if entry.usage.trim().is_empty() {
+                                    entry.usage = option.usage;
+                                }
+                                if entry.techniques.trim().is_empty() {
+                                    entry.techniques = option.techniques;
                                 }
                             }
                             agent_field(ui, "名称（可直接自定义）", &mut entry.name);
@@ -867,39 +1015,225 @@ fn matches_search(search: &str, fields: &[&str]) -> bool {
 /// Complexity: O(1) time and space.
 fn agent_list_row(
     ui: &mut egui::Ui,
+    index: usize,
     title: &str,
     subtitle: &str,
+    badge: &str,
     selected: bool,
 ) -> egui::Response {
     let width = ui.available_width();
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 42.0), egui::Sense::click());
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(width, AGENT_ROW_H), egui::Sense::click());
     let hovered = response.hovered();
     let painter = ui.painter().with_clip_rect(rect);
     if selected {
-        painter.rect_filled(rect, egui::CornerRadius::from(5), theme::ACCENT_DARK);
+        painter.rect_filled(rect, egui::CornerRadius::from(8), theme::ACCENT_DARK);
+        painter.rect_filled(
+            egui::Rect::from_min_size(rect.min, egui::vec2(3.0, rect.height())),
+            egui::CornerRadius::from(2),
+            theme::ACCENT,
+        );
     } else if hovered {
-        painter.rect_filled(rect, egui::CornerRadius::from(5), theme::PANEL_3);
+        painter.rect_filled(rect, egui::CornerRadius::from(8), theme::PANEL_2);
     }
+    // 字母/汉字徽章：让每条资料有一个可识别的“封面”。
+    // Monogram tile: gives every entry a recognisable cover.
+    let tile = egui::Rect::from_min_size(
+        egui::pos2(rect.left() + 10.0, rect.top() + 13.0),
+        egui::vec2(30.0, 30.0),
+    );
+    painter.rect_filled(
+        tile,
+        egui::CornerRadius::from(7),
+        if selected {
+            theme::ACCENT
+        } else {
+            theme::PANEL_3
+        },
+    );
+    let monogram = title
+        .chars()
+        .next()
+        .unwrap_or('·')
+        .to_uppercase()
+        .to_string();
+    painter.text(
+        tile.center(),
+        egui::Align2::CENTER_CENTER,
+        monogram,
+        egui::FontId::proportional(13.0),
+        egui::Color32::WHITE,
+    );
+    let text_left = rect.left() + 50.0;
     let title_color = if selected {
         egui::Color32::WHITE
     } else {
         theme::TEXT
     };
     painter.text(
-        egui::pos2(rect.left() + 8.0, rect.top() + 12.0),
+        egui::pos2(text_left, rect.top() + 18.0),
         egui::Align2::LEFT_CENTER,
-        truncate_list_text(title, 36),
+        truncate_list_text(title, 26),
         egui::FontId::proportional(12.5),
         title_color,
     );
     painter.text(
-        egui::pos2(rect.left() + 8.0, rect.top() + 28.0),
+        egui::pos2(text_left, rect.top() + 36.0),
         egui::Align2::LEFT_CENTER,
-        truncate_list_text(subtitle, 42),
-        egui::FontId::proportional(10.0),
+        truncate_list_text(subtitle, 30),
+        egui::FontId::proportional(9.5),
         theme::TEXT_DIM,
     );
+    let index_text = format!("{index:02}");
+    painter.text(
+        egui::pos2(rect.right() - 10.0, rect.top() + 13.0),
+        egui::Align2::RIGHT_CENTER,
+        index_text,
+        egui::FontId::proportional(8.5),
+        theme::TEXT_FAINT,
+    );
+    if !badge.is_empty() {
+        painter.text(
+            egui::pos2(rect.right() - 10.0, rect.top() + 38.0),
+            egui::Align2::RIGHT_CENTER,
+            truncate_list_text(&badge.to_uppercase(), 12),
+            egui::FontId::proportional(8.0),
+            if selected {
+                egui::Color32::from_rgb(200, 216, 255)
+            } else {
+                theme::TEXT_FAINT
+            },
+        );
+    }
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// 所属模块：app / 主页 / Agent 资料库
+/// 功能：绘制页头统计徽章（数字 + 说明）。
+/// 输入：`ui`；`value` 数字文本；`label` 说明。
+/// 输出/副作用：写入绘制命令；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: app / home / Agent library
+/// Purpose: Draw a header stat badge (number plus label).
+/// Inputs: `ui`; `value`; `label`.
+/// Outputs / side effects: emits paint commands; no state change.
+/// Complexity: O(1) time and space.
+fn stat_pill(ui: &mut egui::Ui, value: String, label: &str) {
+    egui::Frame::NONE
+        .fill(theme::PANEL)
+        .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
+        .corner_radius(8)
+        .inner_margin(egui::Margin::symmetric(10, 5))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(value)
+                        .size(13.0)
+                        .strong()
+                        .color(theme::TEXT),
+                );
+                ui.label(
+                    egui::RichText::new(label)
+                        .size(9.0)
+                        .color(theme::TEXT_FAINT),
+                );
+            });
+        });
+}
+
+/// 所属模块：app / 主页 / Agent 资料库
+/// 功能：绘制乐器分类筛选胶囊。
+/// 输入：`ui`；`label` 分类名；`selected` 是否选中。
+/// 输出/副作用：返回点击响应；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: app / home / Agent library
+/// Purpose: Draw an instrument category filter chip.
+/// Inputs: `ui`; `label`; `selected`.
+/// Outputs / side effects: the click response; no state change.
+/// Complexity: O(1) time and space.
+fn agent_filter_chip(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Response {
+    let fill = if selected {
+        theme::ACCENT_DARK
+    } else {
+        theme::PANEL
+    };
+    let color = if selected {
+        egui::Color32::WHITE
+    } else {
+        theme::TEXT_DIM
+    };
+    ui.add(
+        egui::Button::new(egui::RichText::new(label).size(9.5).color(color))
+            .fill(fill)
+            .stroke(egui::Stroke::new(
+                1.0_f32,
+                if selected { theme::ACCENT } else { theme::LINE },
+            ))
+            .corner_radius(10)
+            .min_size(egui::vec2(0.0, 22.0)),
+    )
+}
+
+/// 所属模块：app / 主页 / Agent 资料库
+/// 功能：判断乐器分类是否匹配筛选胶囊。
+/// 输入：`category` 乐器分类；`filter` 筛选名。
+/// 输出/副作用：布尔值；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: app / home / Agent library
+/// Purpose: Whether an instrument category matches the filter chip.
+/// Inputs: `category`; `filter`.
+/// Outputs / side effects: a boolean; no state change.
+/// Complexity: O(1) time and space.
+fn instrument_category_matches(category: &str, filter: &str) -> bool {
+    if filter == "全部" {
+        return true;
+    }
+    let category = category.to_lowercase();
+    match filter {
+        "键盘" => category.contains("键") || category.contains("钢琴"),
+        "吉他" => category.contains("吉他") || category.contains("贝斯"),
+        "弦乐" => category.contains("弦") || category.contains("提琴"),
+        "管乐" => {
+            category.contains("管")
+                || category.contains("笛")
+                || category.contains("萨克斯")
+                || category.contains("铜")
+                || category.contains("号")
+        }
+        "打击" => category.contains("鼓") || category.contains("打击"),
+        "合成" => category.contains("合成") || category.contains("电子"),
+        "民乐" => {
+            category.contains("民乐")
+                || category.contains("古")
+                || category.contains("琵琶")
+                || category.contains("二胡")
+        }
+        "其他" => {
+            !category.contains("键")
+                && !category.contains("钢琴")
+                && !category.contains("吉他")
+                && !category.contains("贝斯")
+                && !category.contains("弦")
+                && !category.contains("提琴")
+                && !category.contains("管")
+                && !category.contains("笛")
+                && !category.contains("萨克斯")
+                && !category.contains("铜")
+                && !category.contains("号")
+                && !category.contains("鼓")
+                && !category.contains("打击")
+                && !category.contains("合成")
+                && !category.contains("电子")
+                && !category.contains("民乐")
+                && !category.contains("古")
+                && !category.contains("琵琶")
+                && !category.contains("二胡")
+        }
+        _ => true,
+    }
 }
 
 /// 所属模块：app / 主页 / Agent 资料库
@@ -1120,5 +1454,164 @@ fn agent_primary_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
         .fill(theme::ACCENT)
         .corner_radius(6)
         .min_size(egui::vec2(64.0, 26.0)),
+    )
+}
+
+/// 所属模块：app / 主页 / Agent 资料库
+/// 功能：绘制编辑器中的开关行（名称 + 右侧开关）。
+/// 输入：`ui`；`label` 名称；`value` 当前状态。
+/// 输出/副作用：返回是否切换；切换时写入 `value`。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: app / home / Agent library
+/// Purpose: Draw an editor toggle row (label plus right-aligned switch).
+/// Inputs: `ui`; `label`; `value`.
+/// Outputs / side effects: whether the value changed; mutates `value` on toggle.
+/// Complexity: O(1) time and space.
+fn editor_toggle_row(ui: &mut egui::Ui, label: &str, value: &mut bool) -> bool {
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        let width = (ui.available_width() - 40.0).max(40.0);
+        let response = ui.add_sized(
+            egui::vec2(width, 22.0),
+            egui::Label::new(egui::RichText::new(label).size(10.5)).sense(egui::Sense::click()),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if theme::toggle_switch(ui, value).clicked() {
+                changed = true;
+            }
+        });
+        if response.clicked() {
+            *value = !*value;
+            changed = true;
+        }
+    });
+    changed
+}
+
+/// 所属模块：app / 主页 / Agent 资料库
+/// 功能：绘制智能体默认加载乐器资料的选择器与已选标签。
+/// 输入：`ui`；`entry` 智能体草稿；`library` 资料库。
+/// 输出/副作用：修改 `entry.default_instrument_ids`；不修改资料库。
+/// 复杂度：每帧 O(已选数)；弹出列表按可见行 O(可见行数)。
+///
+/// Module: app / home / Agent library
+/// Purpose: Draw the default-instrument selector and selected chips for an agent.
+/// Inputs: `ui`; `entry`; `library`.
+/// Outputs / side effects: mutates `entry.default_instrument_ids`; the library is unchanged.
+/// Complexity: O(selected) per frame; the popup renders O(visible rows).
+fn default_instrument_selector(
+    ui: &mut egui::Ui,
+    entry: &mut crate::ai::AiAgentProfile,
+    library: &AiLibrary,
+) {
+    let selected: Vec<&str> = entry
+        .default_instrument_ids
+        .iter()
+        .filter_map(|id| {
+            library
+                .instrument(id)
+                .map(|instrument| instrument.name.as_str())
+        })
+        .collect();
+    if !selected.is_empty() {
+        ui.horizontal_wrapped(|ui| {
+            for name in selected.iter().take(6) {
+                egui::Frame::NONE
+                    .fill(theme::PANEL_2)
+                    .corner_radius(8)
+                    .inner_margin(egui::Margin::symmetric(8, 3))
+                    .show(ui, |ui| {
+                        ui.label(egui::RichText::new(*name).size(9.5).color(theme::TEXT_DIM));
+                    });
+            }
+            if selected.len() > 6 {
+                ui.label(
+                    egui::RichText::new(format!("+{}", selected.len() - 6))
+                        .size(9.5)
+                        .color(theme::TEXT_FAINT),
+                );
+            }
+        });
+        ui.add_space(4.0);
+    }
+    let response = ui.add(
+        egui::Button::new(
+            egui::RichText::new(format!(
+                "选择默认乐器…（{}）",
+                entry.default_instrument_ids.len()
+            ))
+            .size(10.5),
+        )
+        .fill(theme::PANEL_2)
+        .corner_radius(8)
+        .min_size(egui::vec2(0.0, 26.0)),
+    );
+    egui::Popup::menu(&response)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            ui.set_min_width(300.0);
+            ui.label(
+                egui::RichText::new("默认加载的乐器资料")
+                    .size(9.5)
+                    .color(theme::TEXT_DIM),
+            );
+            ui.add_space(4.0);
+            egui::ScrollArea::vertical()
+                .max_height(340.0)
+                .auto_shrink([false, false])
+                .show_rows(ui, 24.0, library.instruments.len(), |ui, range| {
+                    for index in range {
+                        let Some(instrument) = library.instruments.get(index) else {
+                            continue;
+                        };
+                        let mut checked = entry.default_instrument_ids.contains(&instrument.id);
+                        if editor_toggle_row(ui, &instrument.name, &mut checked) {
+                            toggle_id(&mut entry.default_instrument_ids, &instrument.id, checked);
+                        }
+                    }
+                });
+        });
+}
+
+/// 所属模块：app / 主页 / Agent 资料库
+/// 功能：绘制次要操作按钮（描边、无填充）。
+/// 输入：`ui`；`label` 文本。
+/// 输出/副作用：返回点击响应；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: app / home / Agent library
+/// Purpose: Draw a secondary outlined action button.
+/// Inputs: `ui`; `label`.
+/// Outputs / side effects: the click response; no state change.
+/// Complexity: O(1) time and space.
+fn agent_ghost_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    ui.add(
+        egui::Button::new(egui::RichText::new(label).size(10.5))
+            .fill(egui::Color32::TRANSPARENT)
+            .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
+            .corner_radius(6)
+            .min_size(egui::vec2(56.0, 26.0)),
+    )
+}
+
+/// 所属模块：app / 主页 / Agent 资料库
+/// 功能：绘制危险操作按钮（红色文字）。
+/// 输入：`ui`；`label` 文本。
+/// 输出/副作用：返回点击响应；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: app / home / Agent library
+/// Purpose: Draw a danger action button with red text.
+/// Inputs: `ui`; `label`.
+/// Outputs / side effects: the click response; no state change.
+/// Complexity: O(1) time and space.
+fn agent_danger_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    ui.add(
+        egui::Button::new(egui::RichText::new(label).size(10.5).color(theme::RED))
+            .fill(egui::Color32::TRANSPARENT)
+            .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
+            .corner_radius(6)
+            .min_size(egui::vec2(56.0, 26.0)),
     )
 }

@@ -143,6 +143,9 @@ pub struct AiLibraryUi {
     /// 乐器条目的「从乐器库选择」搜索文本。
     /// Search text of the instrument picker inside an entry.
     pub instrument_pick_filter: String,
+    /// 乐器页的分类筛选（“全部”或分类名）。
+    /// Category filter on the instrument page ("全部" or a category name).
+    pub instrument_category_filter: String,
     /// 新建后尚未保存的提示。
     /// Hint shown for a newly created entry that is not saved yet.
     pub notice: Option<String>,
@@ -168,6 +171,7 @@ impl Default for AiLibraryUi {
             draft: None,
             confirm_delete: None,
             instrument_pick_filter: String::new(),
+            instrument_category_filter: "全部".into(),
             notice: None,
         }
     }

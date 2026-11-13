@@ -612,7 +612,19 @@ impl SurfingApp {
                     egui::Popup::menu(&skill_response)
                         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                         .show(|ui| {
-                            ui.set_min_width(260.0);
+                            ui.set_min_width(280.0);
+                            ui.label(
+                                RichText::new("载入技能")
+                                    .size(12.0)
+                                    .strong()
+                                    .color(theme::TEXT),
+                            );
+                            ui.label(
+                                RichText::new("未手动修改时跟随智能体默认")
+                                    .size(9.0)
+                                    .color(theme::TEXT_FAINT),
+                            );
+                            ui.separator();
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.ai_chat.skill_filter)
                                     .hint_text("搜索技能")
@@ -729,6 +741,16 @@ impl SurfingApp {
                                         }
                                     }
                                 });
+                            ui.separator();
+                            ui.label(
+                                RichText::new(format!(
+                                    "已选 {} 项",
+                                    self.ai_chat.selected_skills.len()
+                                        + self.ai_chat.selected_techniques.len()
+                                ))
+                                .size(9.0)
+                                .color(theme::TEXT_FAINT),
+                            );
                         });
                     for (target, count, label) in [
                         (true, usable_count, "可用乐器"),
@@ -738,7 +760,20 @@ impl SurfingApp {
                         egui::Popup::menu(&response)
                             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                             .show(|ui| {
-                                ui.set_min_width(280.0);
+                                ui.set_min_width(300.0);
+                                ui.label(
+                                    RichText::new(label).size(12.0).strong().color(theme::TEXT),
+                                );
+                                ui.label(
+                                    RichText::new(if target {
+                                        "限制 AI 只能从这些乐器中选择"
+                                    } else {
+                                        "要求 AI 至少各建一条轨道并使用"
+                                    })
+                                    .size(9.0)
+                                    .color(theme::TEXT_FAINT),
+                                );
+                                ui.separator();
                                 let filter_text = if target {
                                     &mut self.ai_chat.usable_filter
                                 } else {
@@ -787,6 +822,12 @@ impl SurfingApp {
                                             }
                                         }
                                     });
+                                ui.separator();
+                                ui.label(
+                                    RichText::new(format!("已选 {} 项", selected.len()))
+                                        .size(9.0)
+                                        .color(theme::TEXT_FAINT),
+                                );
                             });
                     }
                 });
