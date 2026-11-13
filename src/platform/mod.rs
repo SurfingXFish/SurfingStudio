@@ -7,11 +7,12 @@
 //! 函数清单：
 //! - `PlatformRuntime::standard`：返回进程内唯一的平台运行时。
 //! - `PlatformRuntime::info` / `caps`：后端标识与能力描述。
-//! - `PlatformRuntime::config_dir` / `cache_dir` / `data_dir` / `log_dir` / `temp_dir`：平台存储目录。
+//! - `PlatformRuntime::install_dir` / `config_dir` / `cache_dir` / `data_dir` / `log_dir` /
+//!   `temp_dir`：平台存储目录（桌面端全部位于安装目录 `data/` 下）。
 //! - `PlatformRuntime::pick_file` / `pick_folder` / `save_file`：原生文件对话框。
 //! - `PlatformRuntime::exit_process`：确定性退出（各平台自行选择实现）。
-//! - `caps` / `config_dir` / `cache_dir` / `log_dir` / `temp_dir` / `pick_file` / `pick_folder` /
-//!   `save_file` / `exit_process`：对运行时的模块级快捷方式。
+//! - `install_dir` / `caps` / `config_dir` / `cache_dir` / `log_dir` / `temp_dir` / `pick_file` /
+//!   `pick_folder` / `save_file` / `exit_process`：对运行时的模块级快捷方式。
 //!
 //! Module: platform / platform runtime
 //! Purpose:
@@ -24,11 +25,12 @@
 //! Functions:
 //! - `PlatformRuntime::standard`: return the process-wide platform runtime.
 //! - `PlatformRuntime::info` / `caps`: backend identity and capabilities.
-//! - `PlatformRuntime::config_dir` / `cache_dir` / `data_dir` / `log_dir` / `temp_dir`: platform storage.
+//! - `PlatformRuntime::install_dir` / `config_dir` / `cache_dir` / `data_dir` / `log_dir` /
+//!   `temp_dir`: platform storage (all under `<install>/data` on desktop).
 //! - `PlatformRuntime::pick_file` / `pick_folder` / `save_file`: native file dialogs.
 //! - `PlatformRuntime::exit_process`: deterministic exit (each platform picks its own mechanism).
-//! - `caps` / `config_dir` / `cache_dir` / `log_dir` / `temp_dir` / `pick_file` / `pick_folder` /
-//!   `save_file` / `exit_process`: module-level shortcuts over the runtime.
+//! - `install_dir` / `caps` / `config_dir` / `cache_dir` / `log_dir` / `temp_dir` / `pick_file` /
+//!   `pick_folder` / `save_file` / `exit_process`: module-level shortcuts over the runtime.
 
 mod backend;
 mod backends;
@@ -42,12 +44,21 @@ pub use backends::{install_activity, install_storage};
 
 use std::path::{Path, PathBuf};
 
-/// 全局配置目录名（各平台一致）。
-/// Global configuration directory name (identical on every platform).
+/// 全局配置目录名（安卓平台使用）。
+/// Global configuration directory name (used by the Android platform).
 pub const APP_DIR_NAME: &str = "SurfingStudio";
-/// 日志子目录名（位于 `APP_DIR_NAME` 下）。
-/// Log sub-directory name under `APP_DIR_NAME`.
+/// 数据子目录名（位于安装目录下）。
+/// Data sub-directory name under the install directory.
+pub const DATA_DIR_SUFFIX: &str = "data";
+/// 缓存子目录名（位于数据目录下）。
+/// Cache sub-directory name under the data directory.
+pub const CACHE_DIR_SUFFIX: &str = "cache";
+/// 日志子目录名（位于数据目录下）。
+/// Log sub-directory name under the data directory.
 pub const LOG_DIR_SUFFIX: &str = "logs";
+/// 临时子目录名（位于数据目录下）。
+/// Temp sub-directory name under the data directory.
+pub const TEMP_DIR_SUFFIX: &str = "temp";
 
 /// 平台运行时：持有当前系统后端，暴露唯一的上层入口。
 /// Platform runtime: owns the current OS backend and exposes the only upper-layer entry.
@@ -105,6 +116,21 @@ impl PlatformRuntime {
     /// Complexity: O(1) time and space.
     pub fn caps(&self) -> PlatformCaps {
         self.backend.caps()
+    }
+
+    /// 所属模块：platform / 存储目录
+    /// 功能：返回软件安装目录（桌面端为可执行文件所在目录）。
+    /// 输入：`self`。
+    /// 输出/副作用：目录路径或 `None`；不创建目录。
+    /// 复杂度：时间 O(路径长度)，空间 O(路径长度)。
+    ///
+    /// Module: platform / storage directories
+    /// Purpose: Return the install directory (the executable directory on desktop).
+    /// Inputs: `self`.
+    /// Outputs / side effects: the path or `None`; nothing is created.
+    /// Complexity: O(path length) time and space.
+    pub fn install_dir(&self) -> Option<PathBuf> {
+        self.backend.install_dir()
     }
 
     /// 所属模块：platform / 存储目录
@@ -302,6 +328,21 @@ pub fn caps() -> PlatformCaps {
 }
 
 /// 所属模块：platform / 快捷入口
+/// 功能：返回软件安装目录；等价于 `PlatformRuntime::standard().install_dir()`。
+/// 输入：无。
+/// 输出/副作用：目录路径或 `None`；不创建目录。
+/// 复杂度：时间 O(路径长度)，空间 O(路径长度)。
+///
+/// Module: platform / shortcuts
+/// Purpose: Return the install directory; same as `PlatformRuntime::standard().install_dir()`.
+/// Inputs: none.
+/// Outputs / side effects: the path or `None`; nothing is created.
+/// Complexity: O(path length) time and space.
+pub fn install_dir() -> Option<PathBuf> {
+    PlatformRuntime::standard().install_dir()
+}
+
+/// 所属模块：platform / 快捷入口
 /// 功能：返回用户配置目录；等价于 `PlatformRuntime::standard().config_dir()`。
 /// 输入：无。
 /// 输出/副作用：目录路径或 `None`；不创建目录。
@@ -315,6 +356,21 @@ pub fn caps() -> PlatformCaps {
 /// Complexity: O(path length) time and space.
 pub fn config_dir() -> Option<PathBuf> {
     PlatformRuntime::standard().config_dir()
+}
+
+/// 所属模块：platform / 快捷入口
+/// 功能：返回应用数据目录；等价于 `PlatformRuntime::standard().data_dir()`。
+/// 输入：无。
+/// 输出/副作用：目录路径或 `None`；不创建目录。
+/// 复杂度：时间 O(路径长度)，空间 O(路径长度)。
+///
+/// Module: platform / shortcuts
+/// Purpose: Return the app data directory; same as `PlatformRuntime::standard().data_dir()`.
+/// Inputs: none.
+/// Outputs / side effects: the path or `None`; nothing is created.
+/// Complexity: O(path length) time and space.
+pub fn data_dir() -> Option<PathBuf> {
+    PlatformRuntime::standard().data_dir()
 }
 
 /// 所属模块：platform / 快捷入口

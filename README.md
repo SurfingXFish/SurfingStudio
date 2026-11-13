@@ -2,10 +2,11 @@
 
 一个用 Rust 编写的、以 MIDI 为核心的音乐工作站（DAW）。内置合成器与鼓机开箱即用，同时支持 VST3 / VST2 插件、音频片段、自动化与实时渲染播放。
 
-- **轻量**：单个原生可执行文件，不依赖 Electron、浏览器或外部音频服务。
+- **轻量**：原生可执行文件（瘦启动器 + 运行时 DLL），不依赖 Electron、浏览器或外部音频服务。
 - **以 MIDI 为中心**：编曲、钢琴卷帘、控制器自动化是主路径，音频片段作为补充。
 - **开箱即用**：内置复音合成器、鼓机与 128 件采样乐器，即使没有安装任何插件也能发声。
 - **专业能力**：VST3 原生编辑器、VST2 支持、插件状态持久化、实时渲染、多通道 / 环绕声路由与独立导出窗口。
+- **便携数据**：设置、工程、日志与 AI 智能体 / 技能全部位于安装目录 `data/` 下。
 
 当前版本 `1.3.2a`（内部构建版），主要面向 Windows 桌面，也可在安卓平板 / 手机上运行（NativeActivity + OpenGL ES，单窗口模式）。
 
@@ -39,10 +40,20 @@
 环境要求：Rust stable 工具链（edition 2024，最低 1.85）、Windows 10/11 与可用的音频输出设备。
 
 ```bash
-cargo run              # 启动后进入主页，新建 / 打开工程即可开始
-cargo build --release
+cargo build            # 构建运行时 DLL、AI 资料 DLL 与瘦启动器
+target\debug\surfing-studio.exe   # 启动后进入主页，新建 / 打开工程即可开始
 cargo test
 ```
+
+发布安装包（需要 Inno Setup 6：`winget install JRSoftware.InnoSetup`）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\package.ps1
+# 产物：dist\SurfingStudio-<版本>-setup.exe
+```
+
+安装包默认安装到 `Program Files\SurfingStudio`，并授予普通用户对 `data\` 的修改权限；
+智能体、技能、设置、工程与日志都保存在该目录下。
 
 打开工程支持 `.sfsd` 与 SoundBug `.sndp`（导入后需另存为 `.sfsd`）。
 
@@ -56,9 +67,11 @@ powershell -ExecutionPolicy Bypass -File platforms\android\build.ps1 -Abi arm64-
 ## 目录结构
 
 ```text
+launcher/           # 瘦启动器：只加载运行时 DLL，自身不含业务逻辑
+crates/surfing-ai-data/ # AI 资料存储 DLL：智能体 JSON、技能 Markdown、导入导出
 src/
-├─ main.rs          # 薄二进制入口：创建 eframe 根窗口
-├─ lib.rs           # 库根：模块声明
+├─ desktop.rs       # 桌面运行时入口（由启动器通过 DLL 调用）
+├─ lib.rs           # 库根：模块声明与 DLL 导出
 ├─ ai/              # AI 编曲：运行时、OpenAI 兼容流式后端、提示词、流式计划与内置技能
 ├─ platform/        # 平台运行时（desktop / android 后端、SAF）
 ├─ app/             # 应用状态机与多窗口外壳（主页、设置、保存、插件、自动保存…）
@@ -67,12 +80,29 @@ src/
 ├─ plugin/          # 插件运行时框架与 VST3 / VST2 后端
 ├─ diag/            # 进程级诊断日志（.sflog）
 └─ ui/              # 立即模式视图：编曲区、钢琴卷帘、控制器、检查器、浏览器…
+installer/          # Inno Setup 安装包脚本
+tools/package.ps1   # 一键打包安装包
 examples/           # 范例工程
 assets/             # 图标与内置采样音色库（soundbank/）
 platforms/android/  # 安卓入口 crate 与打包脚本
-tools/vst2-fixture/ # 测试用极简 VST2 乐器
 vendor/vst3-host/   # 本地 patch 的 VST3 宿主库
 doc/                # 项目简介、技术文档、代码规范、关键常量、框架工作流
+```
+
+安装目录结构（`data/` 在首次运行时自动创建）：
+
+```text
+SurfingStudio.exe        # 瘦启动器
+surfing_studio.dll       # 运行时（全部业务逻辑）
+surfing_ai_data.dll      # AI 资料存储与导入导出
+data/
+├─ settings.json
+├─ ai/
+│  ├─ library.json                       # 结构版本与条目顺序
+│  ├─ agents/<id>.json                   # 智能体
+│  └─ skills/basics|techniques/*.md      # 基础技能 / 编曲技巧
+│     skills/instruments/*.json          # 乐器资料
+├─ logs/  cache/  temp/  Projects/
 ```
 
 ## 文档

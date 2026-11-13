@@ -3474,6 +3474,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "surfing-ai-data"
+version = "1.3.2-a"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "surfing-studio"
 version = "1.3.2-a"
 dependencies = [
@@ -3483,6 +3490,7 @@ dependencies = [
  "flate2",
  "hound",
  "jni 0.21.1",
+ "libloading 0.8.9",
  "midir",
  "pollster",
  "raw-window-handle",
@@ -3507,6 +3515,14 @@ dependencies = [
  "android-activity",
  "eframe",
  "surfing-studio",
+]
+
+[[package]]
+name = "surfing-studio-launcher"
+version = "1.3.2-a"
+dependencies = [
+ "libloading 0.8.9",
+ "winapi",
 ]
 
 [[package]]

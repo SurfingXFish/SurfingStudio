@@ -6,7 +6,8 @@
 //! 函数清单：
 //! - `backend`：返回桌面后端静态实例。
 //! - `DesktopPlatform::info` / `caps`：标识与能力。
-//! - `DesktopPlatform::config_dir` / `cache_dir` / `data_dir` / `log_dir` / `temp_dir`：目录约定。
+//! - `DesktopPlatform::install_dir` / `config_dir` / `cache_dir` / `data_dir` / `log_dir` /
+//!   `temp_dir`：目录约定（全部位于安装目录 `data/` 下）。
 //! - `DesktopPlatform::pick_file` / `pick_folder` / `save_file`：rfd 对话框。
 //! - `DesktopPlatform::exit_process`：终止进程。
 //!
@@ -19,11 +20,14 @@
 //! Functions:
 //! - `backend`: return the desktop backend singleton.
 //! - `DesktopPlatform::info` / `caps`: identity and capabilities.
-//! - `DesktopPlatform::config_dir` / `cache_dir` / `data_dir` / `log_dir` / `temp_dir`: conventions.
+//! - `DesktopPlatform::install_dir` / `config_dir` / `cache_dir` / `data_dir` / `log_dir` /
+//!   `temp_dir`: directory conventions (all under `<install>/data`).
 //! - `DesktopPlatform::pick_file` / `pick_folder` / `save_file`: rfd dialogs.
 //! - `DesktopPlatform::exit_process`: terminate the process.
 
-use super::super::{APP_DIR_NAME, LOG_DIR_SUFFIX};
+use super::super::{
+    APP_DIR_NAME, CACHE_DIR_SUFFIX, DATA_DIR_SUFFIX, LOG_DIR_SUFFIX, TEMP_DIR_SUFFIX,
+};
 use super::super::{FileRequest, PlatformBackend, PlatformCaps, PlatformInfo};
 use std::path::PathBuf;
 
@@ -114,58 +118,59 @@ impl PlatformBackend for DesktopPlatform {
     }
 
     /// 所属模块：platform / 桌面后端 / 存储
-    /// 功能：返回配置目录：Windows 用 `%APPDATA%`，其他平台用 XDG/HOME。
+    /// 功能：返回安装目录：可执行文件（瘦启动器）所在目录。
     /// 输入：`self`。
     /// 输出/副作用：目录路径或 `None`；不创建目录。
     /// 复杂度：时间 O(路径长度)，空间 O(路径长度)。
     ///
     /// Module: platform / desktop backend / storage
-    /// Purpose: Return the config directory: `%APPDATA%` on Windows, XDG/HOME elsewhere.
+    /// Purpose: Return the install directory: the directory of the executable (thin launcher).
+    /// Inputs: `self`.
+    /// Outputs / side effects: the path or `None`; nothing is created.
+    /// Complexity: O(path length) time and space.
+    fn install_dir(&self) -> Option<PathBuf> {
+        std::env::current_exe().ok()?.parent().map(PathBuf::from)
+    }
+
+    /// 所属模块：platform / 桌面后端 / 存储
+    /// 功能：返回配置目录：`<安装目录>/data`，确保设置与工程数据始终随安装目录迁移。
+    /// 输入：`self`。
+    /// 输出/副作用：目录路径或 `None`；不创建目录。
+    /// 复杂度：时间 O(路径长度)，空间 O(路径长度)。
+    ///
+    /// Module: platform / desktop backend / storage
+    /// Purpose: Return the config directory: `<install>/data`, keeping settings and project data with
+    /// the installation.
     /// Inputs: `self`.
     /// Outputs / side effects: the path or `None`; nothing is created.
     /// Complexity: O(path length) time and space.
     fn config_dir(&self) -> Option<PathBuf> {
-        #[cfg(target_os = "windows")]
-        let base = std::env::var_os("APPDATA").map(PathBuf::from);
-        #[cfg(not(target_os = "windows"))]
-        let base = std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")));
-        base.map(|base| base.join(APP_DIR_NAME))
+        self.install_dir().map(|base| base.join(DATA_DIR_SUFFIX))
     }
 
     /// 所属模块：platform / 桌面后端 / 存储
-    /// 功能：返回缓存目录：Windows 用 `%LOCALAPPDATA%`，其他平台用 XDG/HOME 缓存目录。
+    /// 功能：返回缓存目录：`<安装目录>/data/cache`。
     /// 输入：`self`。
     /// 输出/副作用：目录路径或 `None`；不创建目录。
     /// 复杂度：时间 O(路径长度)，空间 O(路径长度)。
     ///
     /// Module: platform / desktop backend / storage
-    /// Purpose: Return the cache directory: `%LOCALAPPDATA%` on Windows, the XDG/HOME cache
-    /// directory elsewhere.
+    /// Purpose: Return the cache directory: `<install>/data/cache`.
     /// Inputs: `self`.
     /// Outputs / side effects: the path or `None`; nothing is created.
     /// Complexity: O(path length) time and space.
     fn cache_dir(&self) -> Option<PathBuf> {
-        #[cfg(target_os = "windows")]
-        let base = std::env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("APPDATA").map(PathBuf::from));
-        #[cfg(not(target_os = "windows"))]
-        let base = std::env::var_os("XDG_CACHE_HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")));
-        base.map(|base| base.join(APP_DIR_NAME))
+        self.config_dir().map(|base| base.join(CACHE_DIR_SUFFIX))
     }
 
     /// 所属模块：platform / 桌面后端 / 存储
-    /// 功能：桌面平台的数据目录与配置目录相同。
+    /// 功能：桌面平台的数据目录与配置目录相同（`<安装目录>/data`）。
     /// 输入：`self`。
     /// 输出/副作用：目录路径或 `None`；不创建目录。
     /// 复杂度：时间 O(路径长度)，空间 O(路径长度)。
     ///
     /// Module: platform / desktop backend / storage
-    /// Purpose: On desktop the data directory equals the config directory.
+    /// Purpose: On desktop the data directory equals the config directory (`<install>/data`).
     /// Inputs: `self`.
     /// Outputs / side effects: the path or `None`; nothing is created.
     /// Complexity: O(path length) time and space.
@@ -174,41 +179,39 @@ impl PlatformBackend for DesktopPlatform {
     }
 
     /// 所属模块：platform / 桌面后端 / 存储
-    /// 功能：返回日志目录：Windows 用本地应用数据目录，其他平台用系统临时目录。
+    /// 功能：返回日志目录：`<安装目录>/data/logs`，无法定位安装目录时退回系统临时目录。
     /// 输入：`self`。
     /// 输出/副作用：目录路径；不创建目录。
     /// 复杂度：时间 O(路径长度)，空间 O(路径长度)。
     ///
     /// Module: platform / desktop backend / storage
-    /// Purpose: Return the log directory: local app data on Windows, the temp directory elsewhere.
+    /// Purpose: Return the log directory: `<install>/data/logs`, falling back to the system temp
+    /// directory when the install directory cannot be resolved.
     /// Inputs: `self`.
     /// Outputs / side effects: the path; nothing is created.
     /// Complexity: O(path length) time and space.
     fn log_dir(&self) -> PathBuf {
-        #[cfg(target_os = "windows")]
-        {
-            if let Some(base) = std::env::var_os("LOCALAPPDATA") {
-                if !base.to_string_lossy().trim().is_empty() {
-                    return PathBuf::from(base).join(APP_DIR_NAME).join(LOG_DIR_SUFFIX);
-                }
-            }
-        }
-        std::env::temp_dir().join(APP_DIR_NAME).join(LOG_DIR_SUFFIX)
+        self.install_dir()
+            .map(|base| base.join(DATA_DIR_SUFFIX).join(LOG_DIR_SUFFIX))
+            .unwrap_or_else(|| std::env::temp_dir().join(APP_DIR_NAME).join(LOG_DIR_SUFFIX))
     }
 
     /// 所属模块：platform / 桌面后端 / 存储
-    /// 功能：返回系统临时目录。
+    /// 功能：返回应用临时目录：`<安装目录>/data/temp`，保证运行期数据不落到用户目录。
     /// 输入：`self`。
     /// 输出/副作用：目录路径；不创建目录。
     /// 复杂度：时间 O(路径长度)，空间 O(路径长度)。
     ///
     /// Module: platform / desktop backend / storage
-    /// Purpose: Return the system temp directory.
+    /// Purpose: Return the app temp directory `<install>/data/temp` so runtime data never lands in the
+    /// user profile.
     /// Inputs: `self`.
     /// Outputs / side effects: the path; nothing is created.
     /// Complexity: O(path length) time and space.
     fn temp_dir(&self) -> PathBuf {
-        std::env::temp_dir()
+        self.install_dir()
+            .map(|base| base.join(DATA_DIR_SUFFIX).join(TEMP_DIR_SUFFIX))
+            .unwrap_or_else(std::env::temp_dir)
     }
 
     /// 所属模块：platform / 桌面后端 / 对话框

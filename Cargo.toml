@@ -1,6 +1,14 @@
 [workspace]
 resolver = "3"
-members = ["tools/vst2-fixture", "platforms/android"]
+members = [
+    "crates/surfing-ai-data",
+    "launcher",
+    "tools/vst2-fixture",
+    "platforms/android",
+]
+# 默认构建根库、AI 资料 DLL 与瘦启动器，保证 `cargo build` 后可以直接运行 exe。
+# Build the root library, AI-data DLL and thin launcher by default so `cargo build` yields a runnable exe.
+default-members = [".", "crates/surfing-ai-data", "launcher"]
 
 [package]
 name = "surfing-studio"
@@ -13,10 +21,10 @@ license = "GPL-3.0-only"
 [lib]
 name = "surfing_studio"
 path = "src/lib.rs"
-
-[[bin]]
-name = "surfing-studio"
-path = "src/main.rs"
+# cdylib：安装包内的 `surfing_studio.dll`，承载全部业务逻辑；rlib：安卓入口与单元测试链接。
+# cdylib: the `surfing_studio.dll` shipped next to the launcher, carrying all business logic;
+# rlib: linked by the Android entry and by unit tests.
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 cpal = "0.18"
@@ -73,6 +81,9 @@ ureq = { version = "2.12", default-features = false, features = ["tls"] }
 # Use the glow renderer; wgpu's staging-buffer path panics on large UI meshes.
 eframe = { version = "0.34", features = ["glow"] }
 rfd = "0.17"
+# 运行时按需加载同目录的 `surfing_ai_data.dll`（AI 资料存储 DLL）。
+# The runtime loads `surfing_ai_data.dll` (AI library storage DLL) from the install directory.
+libloading = "0.8"
 
 # 安卓平台：winit 只能通过 NativeActivity 运行，`accesskit` 与 native-activity 互斥，
 # 因此关闭默认特性并显式选择 OpenGL ES（glow）渲染路径。
