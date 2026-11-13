@@ -50,6 +50,8 @@ use vst3_host::PluginWindow;
 
 mod agent_library;
 mod ai;
+mod ai_data;
+mod ai_transfer;
 mod autosave;
 mod backup;
 mod edit;
@@ -344,6 +346,9 @@ pub struct SurfingApp {
     /// 主页 Agent 栏的界面状态：下拉展开、搜索、编辑草稿与删除确认。
     /// UI state of the home Agent column: submenu, search, drafts and delete confirmation.
     pub agent_library: AiLibraryUi,
+    /// 后台导入/导出智能体或技能的通道。
+    /// Background channel that imports/exports agents or skills.
+    ai_transfer: Option<ai_transfer::AiTransferTask>,
     /// 后台读取 AI 附件的通道。
     /// Background channel that reads AI attachments.
     ai_attach_rx: Option<Receiver<Result<AiAttachment, String>>>,
@@ -1298,6 +1303,7 @@ impl SurfingApp {
             side_panel: Some(SidePanel::Inspector),
             ai_chat: AiChatState::default(),
             agent_library: AiLibraryUi::default(),
+            ai_transfer: None,
             ai_attach_rx: None,
             pending_plugin_params: Vec::new(),
             menu_bar_visible: false,
@@ -1783,6 +1789,7 @@ impl SurfingApp {
         self.poll_export_dialog();
         self.poll_ai_chat();
         self.poll_ai_attachment();
+        self.poll_ai_transfer();
         if self.ai_chat.pending.is_some() {
             // 流式输出期间保持较高刷新率，让思考过程与写入步骤实时可见。
             // Keep a higher refresh rate while streaming so reasoning and write steps appear live.

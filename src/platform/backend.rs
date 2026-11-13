@@ -6,7 +6,8 @@
 //!
 //! 函数清单：
 //! - `PlatformBackend::info` / `caps`：后端标识与能力。
-//! - `PlatformBackend::config_dir` / `cache_dir` / `data_dir` / `log_dir` / `temp_dir`：存储目录。
+//! - `PlatformBackend::install_dir` / `config_dir` / `cache_dir` / `data_dir` / `log_dir` /
+//!   `temp_dir`：存储目录。
 //! - `PlatformBackend::pick_file` / `pick_folder` / `save_file`：文件对话框。
 //! - `PlatformBackend::exit_process`：确定性退出。
 //!
@@ -18,7 +19,8 @@
 //!
 //! Functions:
 //! - `PlatformBackend::info` / `caps`: backend identity and capabilities.
-//! - `PlatformBackend::config_dir` / `cache_dir` / `data_dir` / `log_dir` / `temp_dir`: storage.
+//! - `PlatformBackend::install_dir` / `config_dir` / `cache_dir` / `data_dir` / `log_dir` /
+//!   `temp_dir`: storage.
 //! - `PlatformBackend::pick_file` / `pick_folder` / `save_file`: file dialogs.
 //! - `PlatformBackend::exit_process`: deterministic exit.
 
@@ -187,6 +189,22 @@ pub trait PlatformBackend: Send + Sync {
     /// Outputs / side effects: the descriptor; no state change.
     /// Complexity: O(1) time and space.
     fn caps(&self) -> PlatformCaps;
+
+    /// 所属模块：platform / 后端接口 / 存储
+    /// 功能：返回软件安装目录；桌面端为可执行文件所在目录，安卓端为应用私有数据目录。
+    /// 输入：`self`。
+    /// 输出/副作用：目录路径或 `None`；不创建目录。
+    /// 复杂度：时间 O(路径长度)，空间 O(路径长度)。
+    ///
+    /// Module: platform / backend interface / storage
+    /// Purpose: Return the install directory; the executable directory on desktop and the private
+    /// app data directory on Android.
+    /// Inputs: `self`.
+    /// Outputs / side effects: the path or `None`; nothing is created.
+    /// Complexity: O(path length) time and space.
+    fn install_dir(&self) -> Option<PathBuf> {
+        self.data_dir()
+    }
 
     /// 所属模块：platform / 后端接口 / 存储
     /// 功能：返回用户配置目录。

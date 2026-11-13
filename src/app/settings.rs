@@ -659,6 +659,10 @@ impl AppSettings {
         // 资料库可能被手工编辑或来自旧版本；迁移并统一去重、丢弃空 id 与裁剪名称。
         // The library may be hand-edited or come from an older build; migrate and normalise it.
         settings.ai.library.migrate();
+        // 新版本以安装目录 `data/ai` 下的分类文件为准；首次运行会把当前资料释放为默认文件。
+        // New builds treat the categorized files under `<install>/data/ai` as the source of truth; the
+        // first run releases the current library as the default files.
+        settings.ai.library = super::ai_data::load(settings.ai.library.clone());
         settings
     }
 
@@ -684,6 +688,10 @@ impl AppSettings {
         if let Ok(text) = serde_json::to_string_pretty(self) {
             let _ = std::fs::write(path, text);
         }
+        // 智能体 / 技能同时写入安装目录的分类 JSON + Markdown，保证文件形式始终最新。
+        // Agents and skills are also written to the install directory as categorized JSON + Markdown,
+        // keeping the file form up to date.
+        super::ai_data::save(&self.ai.library);
     }
 
     /// 所属模块：app / 全局设置

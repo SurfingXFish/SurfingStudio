@@ -276,7 +276,7 @@ fn recovery_target_path(project_path: Option<&Path>, title: &str, window_id: u64
             .unwrap_or_else(|| "project".to_string());
         return path.with_file_name(format!("{stem}.{RECOVERY_SUFFIX}.sfsd"));
     }
-    std::env::temp_dir()
+    crate::platform::temp_dir()
         .join(RECOVERY_DIR_NAME)
         .join(format!("{}-{window_id}.sfsd", sanitize_file_name(title)))
 }
@@ -616,12 +616,12 @@ impl SurfingApp {
 mod tests {
     use super::*;
 
-    /// 覆盖：从未保存的工程把恢复文件写入临时目录，并用窗口编号区分。
-    /// Covers: never-saved projects put the recovery file in the temp directory, keyed by window id.
+    /// 覆盖：从未保存的工程把恢复文件写入应用临时目录，并用窗口编号区分。
+    /// Covers: never-saved projects put the recovery file in the app temp directory, keyed by window id.
     #[test]
     fn unsaved_projects_use_the_temp_directory() {
         let target = recovery_target_path(None, "我的 工程", 7);
-        assert!(target.starts_with(std::env::temp_dir().join(RECOVERY_DIR_NAME)));
+        assert!(target.starts_with(crate::platform::temp_dir().join(RECOVERY_DIR_NAME)));
         assert!(
             target
                 .file_name()

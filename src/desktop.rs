@@ -1,52 +1,51 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-
-//! 所属模块：main / 二进制入口
+//! 所属模块：desktop / 桌面运行时入口
 //! 文件用途：
-//! - 创建 eframe 根窗口并安装未处理异常兜底；业务逻辑全部在 `surfing_studio` 库中。
+//! - 由瘦启动器通过 `surfing_studio_run` 调用，创建 eframe 根窗口并安装未处理异常兜底。
 //! - 初始化诊断日志，并在所有退出路径上写尾帧后直接结束进程。
 //! - `--decode-log <文件>`：把二进制 `.sflog` 解码为同目录 `.txt` 后退出（不创建窗口）。
 //!
 //! 函数清单：
+//! - `describe_address`：把崩溃地址描述为“模块名+偏移”。
 //! - `terminate_on_unhandled_exception`：记录异常并直接终止进程。
-//! - `native_options`：按启动设置选择 OpenGL 兼容渲染器或 wgpu（DirectX 12 / Vulkan）。
 //! - `decode_log_command`：处理 `--decode-log` 命令行模式。
-//! - `main`：初始化日志、安装异常过滤器、创建根窗口并在退出时兜底终止进程。
+//! - `app_icon` / `native_options`：窗口图标与渲染器选择。
+//! - `run_desktop`：初始化日志、安装异常过滤器、创建根窗口并在退出时兜底终止进程。
 //!
-//! Module: main / binary entry
+//! Module: desktop / desktop runtime entry
 //! Purpose:
-//! - Create the eframe root window and install the unhandled-exception fallback; all business logic
-//!   lives in the `surfing_studio` library.
+//! - Called by the thin launcher through `surfing_studio_run`; creates the eframe root window and
+//!   installs the unhandled-exception fallback.
 //! - Initialize the diagnostic log and end the process right after writing the footer on every exit
 //!   path.
 //! - `--decode-log <file>`: decode a binary `.sflog` into a `.txt` next to it and exit (no window).
 //!
 //! Functions:
+//! - `describe_address`: describe a crash address as "module+offset".
 //! - `terminate_on_unhandled_exception`: log the exception and terminate the process.
-//! - `native_options`: pick the OpenGL-compatible renderer or wgpu (DirectX 12 / Vulkan) from the
-//!   startup settings.
 //! - `decode_log_command`: handle the `--decode-log` command-line mode.
-//! - `main`: initialize logging, install the exception filter, create the root window and terminate
-//!   as a fallback.
+//! - `app_icon` / `native_options`: window icon and renderer selection.
+//! - `run_desktop`: initialize logging, install the exception filter, create the root window and
+//!   terminate as a fallback.
 
 #[cfg(not(target_os = "android"))]
 use std::path::PathBuf;
 
 #[cfg(not(target_os = "android"))]
-use surfing_studio::WindowHost;
+use crate::WindowHost;
 #[cfg(not(target_os = "android"))]
-use surfing_studio::app::{GpuRenderApi, GpuRenderStartup, gpu_render_startup};
+use crate::app::{GpuRenderApi, GpuRenderStartup, gpu_render_startup};
 #[cfg(not(target_os = "android"))]
-use surfing_studio::audio::gpu::{GpuApi, GpuRuntime};
+use crate::audio::gpu::{GpuApi, GpuRuntime};
 #[cfg(not(target_os = "android"))]
-use surfing_studio::diag;
+use crate::diag;
 
-/// 所属模块：main / 崩溃定位
+/// 所属模块：desktop / 崩溃定位
 /// 功能：把一个地址描述成“模块名+偏移”，用于在没有调试器时定位崩溃位置。
 /// 输入：`address`：代码地址。
 /// 输出/副作用：返回字符串；不修改状态。
 /// 复杂度：时间 O(路径长度)，空间 O(路径长度)。
 ///
-/// Module: main / crash location
+/// Module: desktop / crash location
 /// Purpose: Describe an address as "module+offset" so a crash can be located without a debugger.
 /// Inputs: `address`: code address.
 /// Outputs / side effects: the description; no state change.
@@ -77,13 +76,13 @@ unsafe fn describe_address(address: usize) -> String {
     format!("{name}+0x{:X}", address.saturating_sub(module as usize))
 }
 
-/// 所属模块：main / 退出兜底
+/// 所属模块：desktop / 退出兜底
 /// 功能：未处理异常（含插件内部的原生/.NET 异常）发生时记录 FATAL、崩溃地址与调用栈，并立即结束进程。
 /// 输入：`info`：Windows 异常信息；可能为空指针。
 /// 输出/副作用：写诊断日志尾帧并调用 `TerminateProcess`；正常情况下不会返回。
 /// 复杂度：时间 O(调用栈深度)，空间 O(调用栈深度)。
 ///
-/// Module: main / exit fallback
+/// Module: desktop / exit fallback
 /// Purpose: Log a FATAL record with the fault address and call stack, then terminate immediately on
 /// an unhandled exception (including native/.NET exceptions raised inside plugins).
 /// Inputs: `info`: Windows exception information; may be null.
@@ -126,10 +125,10 @@ unsafe extern "system" fn terminate_on_unhandled_exception(
                     "app.crash",
                     "unhandled_exception",
                     &[
-                        ("exception_code", &code),
+                        ("exception_code", code.as_str()),
                         ("phase", "native"),
-                        ("fault", &fault),
-                        ("stack", &stack),
+                        ("fault", fault.as_str()),
+                        ("stack", stack.as_str()),
                     ],
                 );
             }
@@ -144,13 +143,13 @@ unsafe extern "system" fn terminate_on_unhandled_exception(
     }
 }
 
-/// 所属模块：main / 日志解码
+/// 所属模块：desktop / 日志解码
 /// 功能：处理 `--decode-log <文件>`：把二进制日志解码为同目录 `.txt` 后退出。
 /// 输入：`args`：完整命令行参数（含程序名）。
 /// 输出/副作用：匹配时写 `.txt` 并结束进程（成功 0，失败 2）；不匹配时返回 `false`。
 /// 复杂度：时间 O(日志大小)，空间 O(日志大小)。
 ///
-/// Module: main / log decoding
+/// Module: desktop / log decoding
 /// Purpose: Handle `--decode-log <file>`: decode a binary log into a `.txt` next to it, then exit.
 /// Inputs: `args`: full command line (including the program name).
 /// Outputs / side effects: writes the `.txt` and exits (0 on success, 2 on failure); returns `false`
@@ -183,13 +182,13 @@ const APP_ICON_RGBA: &[u8] = include_bytes!("../assets/icon-256.rgba");
 #[cfg(not(target_os = "android"))]
 const APP_ICON_SIZE: u32 = 256;
 
-/// 所属模块：main / 窗口创建
+/// 所属模块：desktop / 窗口创建
 /// 功能：构造窗口图标数据；资源长度与声明尺寸不符时返回 `None`，让系统使用默认图标。
 /// 输入：无。
 /// 输出/副作用：返回 `IconData`；不修改全局状态。
 /// 复杂度：时间 O(图标字节数)，空间 O(图标字节数)。
 ///
-/// Module: main / window creation
+/// Module: desktop / window creation
 /// Purpose: Build the window icon; returns `None` when the asset size does not match the declared
 /// dimensions so the OS falls back to its default icon.
 /// Inputs: none.
@@ -205,14 +204,14 @@ fn app_icon() -> Option<eframe::egui::IconData> {
     })
 }
 
-/// 所属模块：main / 窗口创建
+/// 所属模块：desktop / 窗口创建
 /// 功能：按设置选择渲染器：开启 GPU 加速、选择 DirectX 12 / Vulkan 且该 API 有可用 GPU 时使用
 /// wgpu，否则使用 OpenGL 兼容路径。
 /// 输入：`startup`：启动阶段读取的 GPU 渲染偏好。
 /// 输出/副作用：返回 eframe 原生选项与是否使用 wgpu；可能枚举 GPU 设备，不创建窗口。
 /// 复杂度：时间 O(GPU 设备数)（仅在开启加速时枚举），空间 O(设备数)。
 ///
-/// Module: main / window creation
+/// Module: desktop / window creation
 /// Purpose: Pick the renderer from the settings: wgpu when GPU acceleration is enabled, DirectX 12 /
 /// Vulkan is selected and that API has a usable GPU; OpenGL compatibility otherwise.
 /// Inputs: `startup`: the GPU preference read at startup.
@@ -268,29 +267,31 @@ fn native_options(startup: GpuRenderStartup) -> (eframe::NativeOptions, bool) {
     (options, true)
 }
 
-/// 所属模块：main / 安卓入口占位
-/// 功能：安卓的入口是 `platforms/android` 里的 `android_main`（NativeActivity 不会调用 `main`），
-/// 这里只保留一个空实现，让同一个包在安卓目标下也能通过编译检查。
+/// 所属模块：desktop / 安卓入口占位
+/// 功能：安卓的入口是 `platforms/android` 里的 `android_main`（NativeActivity 不会调用桌面入口），
+/// 这里保留一个空实现，让同一个库在安卓目标下也能通过编译检查。
 /// 输入：无。
 /// 输出/副作用：无。
 /// 复杂度：时间 O(1)，空间 O(1)。
 ///
-/// Module: main / Android entry placeholder
-/// Purpose: Android starts from `android_main` in `platforms/android` (NativeActivity never calls
-/// `main`); this stub only keeps the package compiling for the Android target.
+/// Module: desktop / Android entry placeholder
+/// Purpose: Android starts from `android_main` in `platforms/android` (NativeActivity never calls the
+/// desktop entry); this stub only keeps the library compiling for the Android target.
 /// Inputs: none.
 /// Outputs / side effects: none.
 /// Complexity: O(1) time and space.
 #[cfg(target_os = "android")]
-fn main() {}
+pub fn run_desktop() -> i32 {
+    0
+}
 
-/// 所属模块：main / 入口
+/// 所属模块：desktop / 入口
 /// 功能：初始化日志与异常兜底，创建 eframe 根窗口，并在所有退出路径上确定性地结束进程。
 /// 输入：无。
 /// 输出/副作用：创建窗口与音频设备；退出时写日志尾帧并终止进程。
 /// 复杂度：时间 O(启动)，空间 O(设置 + 工程)。
 ///
-/// Module: main / entry
+/// Module: desktop / entry
 /// Purpose: Initialize logging and the exception fallback, create the eframe root window and end the
 /// process deterministically on every exit path.
 /// Inputs: none.
@@ -298,14 +299,14 @@ fn main() {}
 /// exit.
 /// Complexity: O(startup) time and O(settings + project) space.
 #[cfg(not(target_os = "android"))]
-fn main() -> eframe::Result<()> {
+pub fn run_desktop() -> i32 {
     // 命令行解码模式先于日志初始化：解码旧日志时不能再创建新日志。
     // The command-line decoder runs before logging init: decoding an old log must not create a new one.
     let args: Vec<String> = std::env::args().collect();
     let _ = decode_log_command(&args);
     // 日志必须最先初始化：启动耗时、panic 与退出原因都要落在同一个文件里。
     // Logging is initialized first so startup timings, panics and the exit reason share one file.
-    diag::init(surfing_studio::version_label());
+    diag::init(crate::version_label());
     // 在创建任何窗口之前安装顶层异常过滤器：插件在自己的窗口过程或 .NET 消息循环中抛出的
     // 未处理异常不会留在“幽灵进程”里。
     // Install the top-level exception filter before any window exists, so an unhandled exception

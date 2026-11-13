@@ -159,6 +159,18 @@ impl SurfingApp {
                 if agent_primary_button(ui, "新建").clicked() {
                     self.begin_agent_library_draft(kind);
                 }
+                if kind != AiLibraryKind::Instrument && crate::platform::caps().native_file_dialog {
+                    ui.add_space(6.0);
+                    let busy = self.ai_transfer_active();
+                    ui.add_enabled_ui(!busy, |ui| {
+                        if agent_ghost_button(ui, "导出全部").clicked() {
+                            self.start_ai_export_all(kind);
+                        }
+                        if agent_ghost_button(ui, "导入").clicked() {
+                            self.start_ai_import(kind);
+                        }
+                    });
+                }
                 ui.add_space(6.0);
                 stat_pill(ui, count.to_string(), "条目");
                 ui.add_space(6.0);
@@ -428,6 +440,20 @@ impl SurfingApp {
             return;
         };
         let current_id = draft_id(draft);
+        let is_new = match draft {
+            AiLibraryDraft::Agent { original, .. }
+            | AiLibraryDraft::Basic { original, .. }
+            | AiLibraryDraft::Technique { original, .. }
+            | AiLibraryDraft::Instrument { original, .. } => original.is_none(),
+        };
+        let export_title = match draft {
+            AiLibraryDraft::Agent { entry, .. } => entry.name.clone(),
+            AiLibraryDraft::Basic { entry, .. } | AiLibraryDraft::Technique { entry, .. } => {
+                entry.title.clone()
+            }
+            AiLibraryDraft::Instrument { entry, .. } => entry.name.clone(),
+        };
+        let mut export = false;
         let mut save = false;
         let mut cancel = false;
         let mut ask_delete = false;
@@ -437,12 +463,6 @@ impl SurfingApp {
             .corner_radius(12)
             .inner_margin(egui::Margin::symmetric(18, 14))
             .show(ui, |ui| {
-                let is_new = match draft {
-                    AiLibraryDraft::Agent { original, .. }
-                    | AiLibraryDraft::Basic { original, .. }
-                    | AiLibraryDraft::Technique { original, .. }
-                    | AiLibraryDraft::Instrument { original, .. } => original.is_none(),
-                };
                 ui.label(
                     egui::RichText::new("WORKBENCH")
                         .size(8.5)
@@ -467,6 +487,11 @@ impl SurfingApp {
                         }
                         if agent_ghost_button(ui, "取消").clicked() {
                             cancel = true;
+                        }
+                        if !is_new && kind != AiLibraryKind::Instrument {
+                            if agent_ghost_button(ui, "导出").clicked() {
+                                export = true;
+                            }
                         }
                         if !is_new && agent_danger_button(ui, "删除").clicked() {
                             ask_delete = true;
@@ -657,6 +682,11 @@ impl SurfingApp {
         if cancel {
             self.agent_library.draft = None;
             self.agent_library.notice = None;
+        }
+        if export {
+            if let Some(id) = current_id.as_deref() {
+                self.start_ai_export_entry(kind, id, &export_title);
+            }
         }
         if ask_delete {
             if let Some(id) = current_id {

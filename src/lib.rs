@@ -39,12 +39,34 @@ pub mod ai;
 pub mod app;
 pub mod audio;
 pub mod core;
+pub mod desktop;
 pub mod diag;
 pub mod platform;
 pub mod plugin;
 pub mod ui;
 
 pub use app::{SurfingApp, WindowHost};
+
+/// 所属模块：库根 / 运行时 DLL 入口
+/// 功能：供瘦启动器（`surfing-studio.exe`）动态加载本 DLL 后调用的唯一入口；捕获展开以免
+/// panic 跨越 FFI 边界导致进程直接中止。
+/// 输入：无。
+/// 输出/副作用：启动桌面运行时；正常退出路径会直接结束进程，返回值为兜底退出码。
+/// 复杂度：时间 O(启动)，空间 O(设置 + 工程)。
+///
+/// Module: library root / runtime DLL entry
+/// Purpose: The only entry the thin launcher (`surfing-studio.exe`) calls after loading this DLL;
+/// panics are caught so they never unwind across the FFI boundary and abort the process.
+/// Inputs: none.
+/// Outputs / side effects: starts the desktop runtime; normal exit paths terminate the process, and
+/// the return value is a fallback exit code.
+/// Complexity: O(startup) time and O(settings + project) space.
+#[unsafe(no_mangle)]
+pub extern "C" fn surfing_studio_run() -> i32 {
+    // 瘦启动器只负责加载 DLL；所有 panic 必须在这里收敛，否则会触发跨 FFI 的未定义行为。
+    // The launcher only loads the DLL; panics must be contained here instead of unwinding across FFI.
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(desktop::run_desktop)).unwrap_or(1)
+}
 
 /// 所属模块：库根 / 版本
 /// 功能：返回面向用户、日志与安卓清单的版本号：把 Cargo 的 SemVer 预发布后缀
