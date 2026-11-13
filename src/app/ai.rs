@@ -13,7 +13,7 @@
 //! - `SurfingApp::poll_ai_chat` / `apply_ai_operation` / `finish_ai_task`：接收流式事件并逐步写入工程。
 //! - `SurfingApp::apply_ai_operation_runtime` / `flush_pending_plugin_params`：把 VST 参数写入运行时并在实例就绪后重试。
 //! - `SurfingApp::apply_ai_plan`：流式事件缺失时的一次性写入兜底。
-//! - `SurfingApp::attach_track_to_ai` / `attach_clip_to_ai` / `attach_clips_to_ai`：把轨道或片段复制为 AI 附件。
+//! - `SurfingApp::attach_track_to_ai` / `attach_clip_to_ai` / `attach_clips_to_ai` / `attach_clipboard_to_ai`：把轨道或片段复制为 AI 附件。
 //! - `SurfingApp::cancel_ai_message`：停止等待当前请求。
 //! - `SurfingApp::open_ai_attachment_dialog` / `poll_ai_attachment`：后台选择并读取附件。
 //! - `read_attachment`：把文本或 MIDI 文件转成附件文本。
@@ -263,6 +263,9 @@ pub struct AiChatState {
     /// 输入框显式选择加载的编曲技巧 id。
     /// Explicitly loaded technique ids.
     pub selected_techniques: Vec<String>,
+    /// 用户是否手动改过技能选择；为假时按智能体默认技能显示与发送。
+    /// Whether the user edited skill picks; when false the agent defaults apply.
+    pub skills_customized: bool,
     /// 只允许使用的乐器（内置 id / 名称 / VST 名称）；空表示不限制。
     /// Instruments the model may use; empty means unrestricted.
     pub usable_instruments: Vec<String>,
@@ -320,6 +323,7 @@ impl Default for AiChatState {
             agent: "light-music".into(),
             selected_skills: Vec::new(),
             selected_techniques: Vec::new(),
+            skills_customized: false,
             usable_instruments: Vec::new(),
             required_instruments: Vec::new(),
             usable_filter: String::new(),
@@ -359,6 +363,7 @@ impl AiChatState {
         self.input.clear();
         self.selected_skills.clear();
         self.selected_techniques.clear();
+        self.skills_customized = false;
         self.usable_instruments.clear();
         self.required_instruments.clear();
         self.usable_filter.clear();
@@ -411,6 +416,7 @@ impl AiChatState {
         self.input.clear();
         self.selected_skills.clear();
         self.selected_techniques.clear();
+        self.skills_customized = false;
         self.usable_instruments.clear();
         self.required_instruments.clear();
         self.usable_filter.clear();
@@ -564,6 +570,7 @@ impl AiChatState {
         self.agent = agent_id.to_string();
         self.selected_skills.clear();
         self.selected_techniques.clear();
+        self.skills_customized = false;
     }
 }
 
@@ -868,6 +875,7 @@ impl SurfingApp {
         let selection = AiPromptSelection {
             skill_ids: self.ai_chat.selected_skills.clone(),
             technique_ids: self.ai_chat.selected_techniques.clone(),
+            skills_customized: self.ai_chat.skills_customized,
             usable_instruments: self.ai_chat.usable_instruments.clone(),
             required_instruments: self.ai_chat.required_instruments.clone(),
         };
@@ -1749,6 +1757,62 @@ impl SurfingApp {
         }
     }
 
+    /// 所属模块：app / AI 编曲 / 剪贴板引用
+    /// 功能：把应用内剪贴板中的整轨、片段或音符粘贴成 AI 输入附件。
+    /// 输入：`self`。
+    /// 输出/副作用：可能追加附件、打开 AI 面板并更新状态栏；不修改工程。
+    /// 复杂度：时间 O(剪贴板音符数)，空间 O(附件文本)。
+    ///
+    /// Module: app / AI composition / clipboard reference
+    /// Purpose: Paste a whole track, clips or notes from the in-app clipboard into AI attachments.
+    /// Inputs: `self`.
+    /// Outputs / side effects: may append attachments, open the AI panel and update the status bar;
+    /// no project change.
+    /// Complexity: O(clipboard notes) time and O(attachment text) space.
+    pub fn attach_clipboard_to_ai(&mut self) -> bool {
+        let mut generated: Vec<(String, String)> = Vec::new();
+        match &self.clipboard {
+            Clipboard::Track(track) => {
+                generated.push((format!("轨道：{}", track.name), ai_track_reference(track)));
+            }
+            Clipboard::Clips(clips) => {
+                for (track_index, clip) in clips.iter().take(4) {
+                    let track = self.project.tracks.get(*track_index);
+                    let name = track
+                        .map(|track| format!("片段：{} / {}", track.name, clip.name))
+                        .unwrap_or_else(|| format!("片段：{}", clip.name));
+                    let text = track
+                        .map(|track| ai_clip_reference(track, clip))
+                        .unwrap_or_else(|| ai_clip_only_reference(clip));
+                    generated.push((name, text));
+                }
+            }
+            Clipboard::Notes(notes) => {
+                if notes.is_empty() {
+                    return false;
+                }
+                let mut text = String::from("音符引用（相对片段开头）：\n");
+                text.push_str("音高:相对拍:时值:力度 = ");
+                for note in notes.iter().take(AI_REFERENCE_NOTES) {
+                    text.push_str(&ai_note_text(note));
+                    text.push(' ');
+                }
+                generated.push(("音符".into(), text));
+            }
+            _ => return false,
+        }
+        if generated.is_empty() {
+            return false;
+        }
+        let count = generated.len();
+        for (name, text) in generated {
+            self.ai_chat.attachments.push(AiAttachment { name, text });
+        }
+        self.side_panel = Some(SidePanel::Ai);
+        self.status = format!("已从剪贴板添加 {count} 个 AI 引用");
+        true
+    }
+
     /// 所属模块：app / AI 编曲 / 附件
     /// 功能：在后台打开文件选择器并读取附件（文本 / Markdown / JSON / CSV / MIDI）。
     /// 输入：`self`。
@@ -2192,6 +2256,35 @@ fn ai_clip_reference(track: &Track, clip: &Clip) -> String {
     }
     if clip.notes.len() > AI_REFERENCE_NOTES {
         text.push_str("…（其余省略）");
+    }
+    text.push('\n');
+    text
+}
+
+/// 所属模块：app / AI 编曲 / 片段引用
+/// 功能：在没有所属轨道时生成一个片段的文本快照。
+/// 输入：`clip`：片段。
+/// 输出/副作用：附件文本；不修改片段。
+/// 复杂度：时间 O(片段音符数)，空间 O(文本长度)。
+///
+/// Module: app / AI composition / clip reference
+/// Purpose: Build a clip-only snapshot when the owner track is unavailable.
+/// Inputs: `clip`.
+/// Outputs / side effects: attachment text; the clip is unchanged.
+/// Complexity: O(clip notes) time and O(text length) space.
+fn ai_clip_only_reference(clip: &Clip) -> String {
+    let mut text = format!(
+        "片段引用：{}（id={}）\n范围：{:.2}~{:.2} 拍（长度 {:.2} 拍）\n音符：\n",
+        clip.name,
+        clip.id,
+        clip.start,
+        clip.end(),
+        clip.length
+    );
+    text.push_str("  音高:相对拍:时值:力度 = ");
+    for note in clip.notes.iter().take(AI_REFERENCE_NOTES) {
+        text.push_str(&ai_note_text(note));
+        text.push(' ');
     }
     text.push('\n');
     text

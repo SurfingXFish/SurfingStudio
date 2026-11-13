@@ -27,7 +27,7 @@
 //! - `InstrumentCategory` / `InstrumentPicker`: instrument window categories and target track.
 
 use crate::core::model::{
-    AutomationPoint, Clip, ControllerKind, EffectRef, Note, TemplateId, TrackId,
+    AutomationPoint, Clip, ControllerKind, EffectRef, Note, TemplateId, Track, TrackId,
 };
 use eframe::egui;
 use std::path::PathBuf;
@@ -140,6 +140,9 @@ pub struct AiLibraryUi {
     /// 等待确认删除的条目 id。
     /// Entry id awaiting delete confirmation.
     pub confirm_delete: Option<String>,
+    /// 乐器条目的「从乐器库选择」搜索文本。
+    /// Search text of the instrument picker inside an entry.
+    pub instrument_pick_filter: String,
     /// 新建后尚未保存的提示。
     /// Hint shown for a newly created entry that is not saved yet.
     pub notice: Option<String>,
@@ -147,23 +150,24 @@ pub struct AiLibraryUi {
 
 impl Default for AiLibraryUi {
     /// 所属模块：app / 界面状态 / Agent 资料库
-    /// 功能：默认展开下拉、无选择、无草稿。
+    /// 功能：默认收起下拉、无选择、无草稿。
     /// 输入：无。
     /// 输出/副作用：默认界面状态；不读盘。
     /// 复杂度：时间 O(1)，空间 O(1)。
     ///
     /// Module: app / UI state / Agent library
-    /// Purpose: Default state: submenu expanded, nothing selected and no draft.
+    /// Purpose: Default state: submenu collapsed, nothing selected and no draft.
     /// Inputs: none.
     /// Outputs / side effects: default UI state; no disk access.
     /// Complexity: O(1) time and space.
     fn default() -> Self {
         Self {
-            expanded: true,
+            expanded: false,
             search: String::new(),
             selected: None,
             draft: None,
             confirm_delete: None,
+            instrument_pick_filter: String::new(),
             notice: None,
         }
     }
@@ -293,6 +297,9 @@ pub enum Clipboard {
     /// (original track index, clip) so cross-track copies paste back to their
     /// own tracks.
     Clips(Vec<(usize, Clip)>),
+    /// 整条轨道副本；用于粘贴到 AI 输入框或其它需要轨道上下文的入口。
+    /// A whole-track copy, used when pasting into the AI composer or other track-aware targets.
+    Track(Track),
     Notes(Vec<Note>),
     ControllerPoints(Vec<AutomationPoint>),
     /// A whole controller child lane, copied from the arrangement header.

@@ -35,7 +35,9 @@
 use super::library::AiLibrary;
 use super::plan::{AiPluginInfo, AiPluginKind, pitch_name};
 use super::skills::instrument_catalog;
-use crate::core::model::{EffectRef, InstrumentRef, NativeEffectParam, Project, Track};
+use crate::core::model::{
+    ControllerKind, EffectRef, InstrumentRef, NativeEffectParam, Project, Track,
+};
 
 /// 每个片段最多写入提示词的音符数，避免长工程占满上下文。
 /// Maximum notes per clip included in the prompt so long projects do not fill the context.
@@ -71,6 +73,9 @@ pub struct AiPromptSelection {
     /// 额外加载的编曲技巧 id。
     /// Additional technique ids.
     pub technique_ids: Vec<String>,
+    /// 用户是否手动改过技能选择；为假时由智能体默认技能兜底。
+    /// Whether the user edited skill picks; when false the agent defaults apply.
+    pub skills_customized: bool,
     /// 只允许使用的乐器（id / 名称 / VST 名称）；空表示不限制。
     /// Instruments the model may use (ids/names/VST names); empty means unrestricted.
     pub usable_instruments: Vec<String>,
@@ -231,6 +236,18 @@ pub fn system_prompt(
         prompt.push_str("\n## 已连接插件参数\n");
         prompt.push_str(&plugin_param_context(plugin_params));
     }
+    prompt.push_str("\n## 参数与控制器操作要求\n");
+    prompt.push_str(
+        "用户要求“调音色/改参数/更亮/更暗/更多混响/更宽”时，必须实际输出参数操作，不能只回答建议。\n\
+         - VST 乐器：`set_plugin_params`，`slot` 用 instrument，`params` 使用“已连接插件参数”中的 index 与 0~1 值。示例：\
+           `{\"op\":\"set_plugin_params\",\"track\":\"Pad\",\"slot\":\"instrument\",\"params\":[{\"index\":0,\"value\":0.65}]}`。\n\
+         - VST 效果器：`set_plugin_params`，`slot` 用 effect，`effect` 填效果器槽位下标。示例：\
+           `{\"op\":\"set_plugin_params\",\"track\":\"Pad\",\"slot\":\"effect\",\"effect\":1,\"params\":[{\"index\":4,\"value\":0.3}]}`。\n\
+         - 内置乐器/效果器：分别用 `set_instrument_params` / `set_effect_params`，键名使用“乐器与效果器参数”中列出的键。\n\
+         - 用户要求渐强/渐弱/声像移动/延音踏板/弯音时，必须用 `set_controller`，不要用 `set_track` 代替。\
+           音量与声像 0.5 为中心/100%，延音 0/1 为 OFF/ON，弯音 0.5 为中心；`replace: true` 会替换整条子轨。\n\
+         - 参数序号只能来自清单；清单中没有的插件参数不要猜测。新挂载的插件若暂未列出参数，先完成挂载，下一轮再调参数。\n",
+    );
     prompt.push_str("\n## 可调用编曲技巧\n");
     prompt.push_str(&library.technique_index());
     if let Some(agent) = library.agent(agent_id).or_else(|| library.agents.first()) {
@@ -243,7 +260,11 @@ pub fn system_prompt(
             prompt.push_str(&agent.style);
             prompt.push('\n');
         }
-        let mut skill_ids = agent.default_skill_ids.clone();
+        let mut skill_ids = if selection.skills_customized {
+            Vec::new()
+        } else {
+            agent.default_skill_ids.clone()
+        };
         skill_ids.extend(selection.skill_ids.iter().cloned());
         let skill_text = library.load_basics(&skill_ids);
         if !skill_text.trim().is_empty() {
@@ -266,7 +287,11 @@ pub fn system_prompt(
             prompt.push_str(&instrument_text);
             prompt.push('\n');
         }
-        let mut technique_ids = agent.default_technique_ids.clone();
+        let mut technique_ids = if selection.skills_customized {
+            Vec::new()
+        } else {
+            agent.default_technique_ids.clone()
+        };
         technique_ids.extend(selection.technique_ids.iter().cloned());
         let (technique_text, loaded) = library.load_techniques(&technique_ids);
         if !loaded.is_empty() {
@@ -589,6 +614,16 @@ pub fn project_context(project: &Project) -> String {
                 .collect::<Vec<_>>()
                 .join("、");
             text.push_str(&format!("  效果器：{effects}\n"));
+        }
+        let controllers = ControllerKind::ALL
+            .iter()
+            .filter_map(|kind| {
+                let count = track.controllers.get(*kind).len();
+                (count > 0).then(|| format!("{}:{count} 点", kind.label()))
+            })
+            .collect::<Vec<_>>();
+        if !controllers.is_empty() {
+            text.push_str(&format!("  控制器子轨：{}\n", controllers.join("，")));
         }
         if track.is_group() {
             continue;

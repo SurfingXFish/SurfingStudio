@@ -2986,6 +2986,13 @@ impl SurfingApp {
                     self.attach_track_to_ai(track_index);
                     ui.close();
                 }
+                if theme::menu_button(ui, "复制轨道", "").clicked() {
+                    if let Some(track) = self.project.tracks.get(track_index) {
+                        self.clipboard = Clipboard::Track(track.clone());
+                        self.status = format!("已复制轨道「{}」", track.name);
+                    }
+                    ui.close();
+                }
                 let rendered = self
                     .project
                     .tracks

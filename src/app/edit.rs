@@ -1172,6 +1172,13 @@ impl SurfingApp {
             }
         }
         if clips.is_empty() {
+            // 没有片段/音符/控制器可复制时，Ctrl+C 复制当前整轨，供 AI 输入框粘贴。
+            // With no clips/notes/controllers, Ctrl+C copies the selected track for the AI composer.
+            if let Some(track) = self.project.tracks.get(self.selected_track) {
+                self.clipboard = Clipboard::Track(track.clone());
+                self.status = format!("已复制轨道「{}」", track.name);
+                return true;
+            }
             return false;
         }
         let count = clips.len();
@@ -1249,6 +1256,9 @@ impl SurfingApp {
         match self.clipboard.clone() {
             Clipboard::Empty => {
                 self.status = "剪贴板为空".into();
+            }
+            Clipboard::Track(_) => {
+                self.status = "轨道副本可粘贴到 AI 输入框".into();
             }
             Clipboard::ControllerLane { kind, points } => {
                 if self.project.tracks.is_empty() {

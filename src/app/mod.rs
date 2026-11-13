@@ -844,26 +844,25 @@ impl SurfingApp {
     }
 
     /// 所属模块：app / 插件生命周期
-    /// 功能：向本进程内由插件创建的可见顶层窗口发送 `WM_CLOSE`，并泵消息等待它们关闭。
-    /// 输入：`timeout`：最长等待时间。
-    /// 输出/副作用：关闭插件窗口；返回（已发送关闭请求的窗口数，是否全部关闭）。
-    /// 复杂度：时间 O(窗口数 × 等待迭代)，空间 O(窗口数)。
+    /// 功能：向本进程内由插件创建的可见顶层窗口发送 `WM_CLOSE`，不等待其处理完成。
+    /// 输入：`_timeout`：保留参数（当前不再同步等待）。
+    /// 输出/副作用：投递关闭请求并返回（请求数，是否全部关闭）；不阻塞 UI。
+    /// 复杂度：时间 O(窗口数)，空间 O(窗口数)。
     ///
     /// Module: app / plugin lifecycle
     /// Purpose: Send `WM_CLOSE` to visible top-level windows created by plugins in this process and
-    /// pump messages until they close.
-    /// Inputs: `timeout`: maximum wait.
-    /// Outputs / side effects: closes plugin windows; returns (close requests sent, all closed).
-    /// Complexity: O(windows × wait iterations) time and O(windows) space.
+    /// return without waiting for it to be handled.
+    /// Inputs: `_timeout`: kept for API compatibility (no synchronous wait now).
+    /// Outputs / side effects: posts close requests and returns (requests, all closed) without
+    /// blocking the UI.
+    /// Complexity: O(windows) time and O(windows) space.
     #[cfg(target_os = "windows")]
-    fn close_plugin_owned_windows(&self, timeout: Duration) -> (usize, bool) {
+    fn close_plugin_owned_windows(&self, _timeout: Duration) -> (usize, bool) {
         use winapi::shared::minwindef::{BOOL, DWORD, LPARAM};
         use winapi::shared::windef::HWND;
         use winapi::um::winuser::{
-            DispatchMessageW, EnumWindows, GW_OWNER, GetWindow, GetWindowTextLengthW,
-            GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible, MSG, MWMO_INPUTAVAILABLE,
-            MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW, PostMessageW, QS_ALLINPUT,
-            TranslateMessage, WM_CLOSE,
+            EnumWindows, GW_OWNER, GetWindow, GetWindowTextLengthW, GetWindowTextW,
+            GetWindowThreadProcessId, IsWindowVisible, PostMessageW, WM_CLOSE,
         };
 
         unsafe fn title_of(hwnd: HWND) -> Option<String> {
@@ -942,36 +941,14 @@ impl SurfingApp {
             // Could not post a close request: treat as not closed so `terminate` cannot hang the UI.
             return (0, false);
         }
-        // 插件（尤其 WPF）需要本线程继续分发消息才能完成关闭。
-        // Plugins (notably WPF) need this thread to keep dispatching messages to finish closing.
-        let deadline = Instant::now() + timeout;
-        let mut remaining_count = state.1.len();
-        while Instant::now() < deadline {
-            unsafe {
-                MsgWaitForMultipleObjectsEx(
-                    0,
-                    std::ptr::null(),
-                    16,
-                    QS_ALLINPUT,
-                    MWMO_INPUTAVAILABLE,
-                );
-            }
-            let mut message: MSG = unsafe { std::mem::zeroed() };
-            while unsafe { PeekMessageW(&mut message, std::ptr::null_mut(), 0, 0, PM_REMOVE) } != 0
-            {
-                unsafe {
-                    TranslateMessage(&message);
-                    DispatchMessageW(&message);
-                }
-            }
-            let mut remaining: (DWORD, Vec<HWND>) = (pid, Vec::new());
-            unsafe { EnumWindows(Some(collect), &mut remaining as *mut _ as LPARAM) };
-            remaining_count = remaining.1.len();
-            if remaining_count == 0 {
-                break;
-            }
-        }
-        (requested, remaining_count == 0)
+        // 不在这里同步分发消息：VOCALOID6 等 WPF 编辑器的 WM_CLOSE 处理会阻塞
+        // `DispatchMessageW`，把工程窗口关闭拖成十几秒无响应。只投递关闭请求，让主消息循环
+        // 在 `Drop` 返回后继续处理；外部编辑进程随后由 `terminate_plugin_child_processes` 结束。
+        // Do not dispatch messages here: WPF editors such as VOCALOID6 can block `DispatchMessageW`
+        // inside WM_CLOSE and stall the project close for tens of seconds. Only post the close
+        // request; the main message loop handles it after `Drop`, and external editor processes are
+        // terminated by `terminate_plugin_child_processes`.
+        (requested, false)
     }
 
     /// 所属模块：app / 插件生命周期

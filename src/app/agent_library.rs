@@ -2,7 +2,7 @@
 //! 文件用途：
 //! - 绘制主页 Agent 栏的四个页面：智能体、基础乐理、编曲技巧与乐器资料。
 //! - 提供列表、搜索、新建、编辑、保存与删除；保存后写入全局设置并同步到所有窗口。
-//! - 支持从已扫描的 VST 插件快速创建乐器资料。
+//! - 支持从已扫描的 VST 插件或内置乐器库选择名称，也允许直接输入自定义名称。
 //!
 //! 函数清单：
 //! - `SurfingApp::ui_home_agents` / `ui_home_agent_basics` / `ui_home_agent_techniques` /
@@ -34,7 +34,7 @@
 //! - `agent_field` / `agent_body_field` / `agent_section_title` / `agent_primary_button`: widgets.
 
 use super::*;
-use crate::ai::library::{AiInstrumentDoc, AiSkillDoc, make_id, unique_id};
+use crate::ai::library::{AiInstrumentDoc, AiSkillDoc, unique_id};
 use crate::ai::{AiAgentProfile, AiLibrary};
 
 /// Agent 页左侧列表宽度（逻辑点）。
@@ -133,30 +133,6 @@ impl SurfingApp {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if agent_primary_button(ui, "新建").clicked() {
                     self.begin_agent_library_draft(kind);
-                }
-                if kind == AiLibraryKind::Instrument
-                    && crate::platform::caps().plugin_hosting
-                    && !self.plugin_cache.is_empty()
-                {
-                    let mut picked = None;
-                    ui.menu_button("从 VST 插件…", |ui| {
-                        egui::ScrollArea::vertical()
-                            .max_height(320.0)
-                            .show(ui, |ui| {
-                                for plugin in &self.plugin_cache {
-                                    if plugin.name.is_empty() {
-                                        continue;
-                                    }
-                                    if ui.button(&plugin.name).clicked() {
-                                        picked = Some(plugin.clone());
-                                        ui.close();
-                                    }
-                                }
-                            });
-                    });
-                    if let Some(plugin) = picked {
-                        self.begin_instrument_draft_from_plugin(&plugin);
-                    }
                 }
             });
         });
@@ -310,6 +286,42 @@ impl SurfingApp {
         kind: AiLibraryKind,
         library: &AiLibrary,
     ) {
+        // 乐器条目可在编辑器内从内置乐器 / 已扫描 VST 中选择，名称仍可直接编辑。
+        // Instrument entries can pick a built-in or scanned VST name inside the editor; the name
+        // field itself stays editable for custom names.
+        let mut instrument_options: Vec<AiInstrumentDoc> = library.instruments.clone();
+        if crate::platform::caps().plugin_hosting {
+            for plugin in &self.plugin_cache {
+                if plugin.name.is_empty()
+                    || instrument_options
+                        .iter()
+                        .any(|option| option.name == plugin.name)
+                {
+                    continue;
+                }
+                let catalogue = crate::plugin::lookup_catalog(&plugin.name);
+                instrument_options.push(AiInstrumentDoc {
+                    id: String::new(),
+                    name: plugin.name.clone(),
+                    aliases: plugin.name.clone(),
+                    category: if plugin.category.is_empty() {
+                        catalogue
+                            .map(|entry| entry.category.to_string())
+                            .unwrap_or_default()
+                    } else {
+                        plugin.category.clone()
+                    },
+                    range: String::new(),
+                    description: catalogue
+                        .map(|entry| entry.description.to_string())
+                        .unwrap_or_default(),
+                    usage: String::new(),
+                    techniques: String::new(),
+                    body: String::new(),
+                });
+            }
+        }
+        let mut pick_filter = self.agent_library.instrument_pick_filter.clone();
         let Some(draft) = self.agent_library.draft.as_mut() else {
             ui.add_space(40.0);
             ui.vertical_centered(|ui| {
@@ -418,7 +430,69 @@ impl SurfingApp {
                             agent_body_field(ui, "正文（Markdown）", 18, &mut entry.body);
                         }
                         AiLibraryDraft::Instrument { entry, .. } => {
-                            agent_field(ui, "名称", &mut entry.name);
+                            let mut picked: Option<usize> = None;
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new("从乐器库选择")
+                                        .size(10.5)
+                                        .color(theme::TEXT_DIM),
+                                );
+                                let response = ui.button("选择乐器…");
+                                egui::Popup::menu(&response)
+                                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                                    .show(|ui| {
+                                        ui.set_min_width(280.0);
+                                        ui.add(
+                                            egui::TextEdit::singleline(&mut pick_filter)
+                                                .hint_text("搜索内置乐器或 VST")
+                                                .desired_width(f32::INFINITY),
+                                        );
+                                        let needle = pick_filter.trim().to_lowercase();
+                                        egui::ScrollArea::vertical().max_height(320.0).show(
+                                            ui,
+                                            |ui| {
+                                                for (index, option) in
+                                                    instrument_options.iter().enumerate()
+                                                {
+                                                    let label = if option.category.is_empty() {
+                                                        option.name.clone()
+                                                    } else {
+                                                        format!(
+                                                            "{}（{}）",
+                                                            option.name, option.category
+                                                        )
+                                                    };
+                                                    if !needle.is_empty()
+                                                        && !label.to_lowercase().contains(&needle)
+                                                    {
+                                                        continue;
+                                                    }
+                                                    if ui.button(label).clicked() {
+                                                        picked = Some(index);
+                                                    }
+                                                }
+                                            },
+                                        );
+                                    });
+                            });
+                            if let Some(index) = picked {
+                                if let Some(option) = instrument_options.get(index) {
+                                    entry.name = option.name.clone();
+                                    entry.aliases = option.aliases.clone();
+                                    entry.category = option.category.clone();
+                                    entry.range = option.range.clone();
+                                    if entry.description.trim().is_empty() {
+                                        entry.description = option.description.clone();
+                                    }
+                                    if entry.usage.trim().is_empty() {
+                                        entry.usage = option.usage.clone();
+                                    }
+                                    if entry.techniques.trim().is_empty() {
+                                        entry.techniques = option.techniques.clone();
+                                    }
+                                }
+                            }
+                            agent_field(ui, "名称（可直接自定义）", &mut entry.name);
                             agent_field(ui, "别称 / 插件名（逗号分隔）", &mut entry.aliases);
                             agent_field(ui, "分类", &mut entry.category);
                             agent_field(ui, "音域", &mut entry.range);
@@ -429,6 +503,8 @@ impl SurfingApp {
                         }
                     });
             });
+
+        self.agent_library.instrument_pick_filter = pick_filter;
 
         if cancel {
             self.agent_library.draft = None;
@@ -712,67 +788,6 @@ impl SurfingApp {
         self.agent_library.draft = Some(draft);
         self.agent_library.notice = Some("尚未保存".into());
     }
-
-    /// 所属模块：app / 主页 / Agent 资料库
-    /// 功能：用已扫描的 VST 插件创建乐器资料草稿。
-    /// 输入：`plugin`：扫描记录。
-    /// 输出/副作用：设置草稿；不修改资料库。
-    /// 复杂度：时间 O(条目数 + 厂商说明长度)，空间 O(1)。
-    ///
-    /// Module: app / home / Agent library
-    /// Purpose: Create an instrument-note draft from a scanned VST plugin.
-    /// Inputs: `plugin`: scanned record.
-    /// Outputs / side effects: sets the draft; the library is unchanged.
-    /// Complexity: O(entries + catalogue text) time and O(1) space.
-    fn begin_instrument_draft_from_plugin(&mut self, plugin: &crate::plugin::ScannedPlugin) {
-        let library = &self.settings.ai.library;
-        let base = make_id(&plugin.name, "instrument");
-        let id = unique_id(&base, |candidate| {
-            library
-                .instruments
-                .iter()
-                .any(|instrument| instrument.id == candidate)
-        });
-        let catalogue = crate::plugin::lookup_catalog(&plugin.name);
-        let description = catalogue
-            .map(|entry| entry.description.to_string())
-            .unwrap_or_default();
-        let vendor = if plugin.vendor.is_empty() {
-            catalogue
-                .map(|entry| entry.vendor.to_string())
-                .unwrap_or_default()
-        } else {
-            plugin.vendor.clone()
-        };
-        let category = if plugin.category.is_empty() {
-            catalogue
-                .map(|entry| entry.category.to_string())
-                .unwrap_or_default()
-        } else {
-            plugin.category.clone()
-        };
-        let entry = AiInstrumentDoc {
-            id: id.clone(),
-            name: plugin.name.clone(),
-            aliases: plugin.name.clone(),
-            category,
-            range: String::new(),
-            description,
-            usage: String::new(),
-            techniques: String::new(),
-            body: if vendor.is_empty() {
-                String::new()
-            } else {
-                format!("厂商：{vendor}\n格式：{}", plugin.format.label())
-            },
-        };
-        self.agent_library.selected = Some(id);
-        self.agent_library.draft = Some(AiLibraryDraft::Instrument {
-            original: None,
-            entry,
-        });
-        self.agent_library.notice = Some("尚未保存".into());
-    }
 }
 
 /// 所属模块：app / 主页 / Agent 资料库
@@ -859,7 +874,7 @@ fn agent_list_row(
     let width = ui.available_width();
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 42.0), egui::Sense::click());
     let hovered = response.hovered();
-    let painter = ui.painter();
+    let painter = ui.painter().with_clip_rect(rect);
     if selected {
         painter.rect_filled(rect, egui::CornerRadius::from(5), theme::ACCENT_DARK);
     } else if hovered {
@@ -873,18 +888,38 @@ fn agent_list_row(
     painter.text(
         egui::pos2(rect.left() + 8.0, rect.top() + 12.0),
         egui::Align2::LEFT_CENTER,
-        title,
+        truncate_list_text(title, 36),
         egui::FontId::proportional(12.5),
         title_color,
     );
     painter.text(
         egui::pos2(rect.left() + 8.0, rect.top() + 28.0),
         egui::Align2::LEFT_CENTER,
-        subtitle,
+        truncate_list_text(subtitle, 42),
         egui::FontId::proportional(10.0),
         theme::TEXT_DIM,
     );
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// 所属模块：app / 主页 / Agent 资料库
+/// 功能：按字符数截断列表文字并附加省略号，避免副标题越过卡片边界。
+/// 输入：`text` 文本；`max` 最大字符数。
+/// 输出/副作用：截断文本；不修改输入。
+/// 复杂度：时间 O(字符数)，空间 O(字符数)。
+///
+/// Module: app / home / Agent library
+/// Purpose: Truncate list text by characters so subtitles never overflow the card.
+/// Inputs: `text`; `max`.
+/// Outputs / side effects: truncated text; the input is unchanged.
+/// Complexity: O(characters) time and space.
+fn truncate_list_text(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let mut result: String = text.chars().take(max.saturating_sub(1)).collect();
+    result.push('…');
+    result
 }
 
 /// 所属模块：app / 主页 / Agent 资料库

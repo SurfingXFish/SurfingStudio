@@ -656,9 +656,9 @@ impl AppSettings {
         if !matches!(settings.audio_output_channels, 0 | 2 | 6 | 8) {
             settings.audio_output_channels = 0;
         }
-        // 资料库可能被手工编辑或来自旧版本；加载后统一去重、丢弃空 id 并裁剪名称。
-        // The library may be hand-edited or come from an older build; normalise it after loading.
-        settings.ai.library.normalise();
+        // 资料库可能被手工编辑或来自旧版本；迁移并统一去重、丢弃空 id 与裁剪名称。
+        // The library may be hand-edited or come from an older build; migrate and normalise it.
+        settings.ai.library.migrate();
         settings
     }
 

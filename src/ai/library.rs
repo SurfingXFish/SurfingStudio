@@ -5,13 +5,14 @@
 //! - 为提示词提供按 id 解析、正文加载与技巧索引。
 //!
 //! 函数清单：
-//! - `AiLibrary::default` / `seeded`：内置资料库（智能体、基础、技巧、乐器）。
+//! - `AiLibrary::default` / `seeded` / `migrate`：内置资料库、旧版迁移（风格入智能体、乐器拆分）。
 //! - `AiLibrary::normalise`：清理空 id、去重并裁剪非法字段。
 //! - `AiLibrary::agent` / `basic` / `technique` / `instrument`：按 id 查询条目。
 //! - `AiLibrary::agent_skill_ids` / `agent_technique_ids` / `agent_instrument_ids`：智能体默认集合。
 //! - `AiLibrary::load_basics` / `load_techniques`：按 id 加载正文（带数量与长度上限）。
 //! - `AiLibrary::technique_index` / `instrument_notes`：提示词索引与乐器写作要点。
 //! - `AiAgentProfile::new` / `AiSkillDoc::new` / `AiInstrumentDoc::new`：空白条目。
+//! - `default_instrument_docs` / `instrument_tips`：每件内置乐器一条资料与分类技巧。
 //! - `make_id` / `unique_id`：由名称生成稳定 id。
 //!
 //! Module: ai / editable library
@@ -22,7 +23,7 @@
 //! - Resolve ids, load bodies and build the technique index for prompts.
 //!
 //! Functions:
-//! - `AiLibrary::default` / `seeded`: built-in library (agents, basics, techniques, instruments).
+//! - `AiLibrary::default` / `seeded` / `migrate`: built-in library and legacy migration.
 //! - `AiLibrary::normalise`: drop empty ids, de-duplicate and trim invalid fields.
 //! - `AiLibrary::agent` / `basic` / `technique` / `instrument`: look up an entry by id.
 //! - `AiLibrary::agent_skill_ids` / `agent_technique_ids` / `agent_instrument_ids`: agent defaults.
@@ -33,10 +34,12 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::skills::{
-    BRASS, FOLK_WORLD, GUITAR_BASS, INSTRUMENT_SKILLS, J_POP, LIGHT_MUSIC, MODERN_ARRANGEMENT,
-    MUSIC_THEORY, PERCUSSION, PIANO, STRINGS, SYNTH_ELECTRONIC, TECHNIQUE_SKILLS, WOODWINDS,
-};
+use super::skills::{J_POP, LIGHT_MUSIC, MODERN_ARRANGEMENT, MUSIC_THEORY, TECHNIQUE_SKILLS};
+use crate::core::model::bank_instruments;
+
+/// 当前资料库结构版本；旧版本在加载时自动迁移。
+/// Current library schema version; older versions migrate on load.
+pub const CURRENT_LIBRARY_VERSION: u32 = 3;
 
 /// 智能体加载基础技能的默认上限，避免一次塞入过多正文。
 /// Default cap on theory skills loaded for one agent.
@@ -218,6 +221,10 @@ impl AiInstrumentDoc {
 /// Editable library shared by the home Agent column and AI prompts.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AiLibrary {
+    /// 资料库结构版本，用于加载时迁移旧数据。
+    /// Library schema version used to migrate older data on load.
+    #[serde(default)]
+    pub version: u32,
     #[serde(default)]
     pub agents: Vec<AiAgentProfile>,
     /// 基础乐理技能。
@@ -267,8 +274,6 @@ impl AiLibrary {
         let basics = vec![
             skill_doc(&MUSIC_THEORY, "基础乐理、和声与节奏"),
             skill_doc(&MODERN_ARRANGEMENT, "段落表、能量曲线与现代和声"),
-            skill_doc(&LIGHT_MUSIC, "透明配器与旋律优先的轻音乐写法"),
-            skill_doc(&J_POP, "强 Hook、王道进行与副歌优先"),
         ];
         let techniques = TECHNIQUE_SKILLS
             .iter()
@@ -279,53 +284,31 @@ impl AiLibrary {
                 body: technique.body.to_string(),
             })
             .collect();
-        let instruments = INSTRUMENT_SKILLS
-            .iter()
-            .map(|skill| AiInstrumentDoc {
-                id: skill.id.to_string(),
-                name: skill.title.trim_start_matches("配器：").to_string(),
-                aliases: String::new(),
-                category: instrument_category(skill.id),
-                range: String::new(),
-                description: "音域、常见写法与配器禁忌".into(),
-                usage: String::new(),
-                techniques: String::new(),
-                body: skill.body.to_string(),
-            })
-            .collect::<Vec<_>>();
-        let instrument_ids = instruments
-            .iter()
-            .map(|instrument| instrument.id.clone())
-            .collect::<Vec<_>>();
+        let instruments = default_instrument_docs();
         let agents = vec![
             AiAgentProfile {
                 id: "light-music".into(),
                 name: "轻音乐创作".into(),
                 description: "旋律优先、和声柔和、配器透明".into(),
-                style: "写作时保持声部清晰，优先旋律与留白，避免过重的低频与堆叠。".into(),
-                default_skill_ids: vec![
-                    MUSIC_THEORY.id.into(),
-                    MODERN_ARRANGEMENT.id.into(),
-                    LIGHT_MUSIC.id.into(),
-                ],
+                // 风格正文属于智能体的“创作准则”，不再混在基础技能列表里。
+                // The style body is the agent's writing guideline, not a theory skill.
+                style: LIGHT_MUSIC.body.to_string(),
+                default_skill_ids: vec![MUSIC_THEORY.id.into(), MODERN_ARRANGEMENT.id.into()],
                 default_technique_ids: Vec::new(),
-                default_instrument_ids: instrument_ids.clone(),
+                default_instrument_ids: Vec::new(),
             },
             AiAgentProfile {
                 id: "j-pop".into(),
                 name: "J-Pop".into(),
                 description: "强 Hook、王道/丸サ进行、副歌优先、转调与高密度配器".into(),
-                style: "写作时先立 Hook，副歌优先，允许更满的配器，但主旋律始终清晰。".into(),
-                default_skill_ids: vec![
-                    MUSIC_THEORY.id.into(),
-                    MODERN_ARRANGEMENT.id.into(),
-                    J_POP.id.into(),
-                ],
+                style: J_POP.body.to_string(),
+                default_skill_ids: vec![MUSIC_THEORY.id.into(), MODERN_ARRANGEMENT.id.into()],
                 default_technique_ids: Vec::new(),
-                default_instrument_ids: instrument_ids,
+                default_instrument_ids: Vec::new(),
             },
         ];
         let mut library = Self {
+            version: CURRENT_LIBRARY_VERSION,
             agents,
             basics,
             techniques,
@@ -333,6 +316,77 @@ impl AiLibrary {
         };
         library.normalise();
         library
+    }
+
+    /// 所属模块：ai / 可编辑资料库
+    /// 功能：把旧版资料库迁移到当前结构：风格移入智能体创作准则、乐器拆分为单件资料。
+    /// 输入：`self`。
+    /// 输出/副作用：原地修改资料库并写入当前版本号；不访问文件。
+    /// 复杂度：时间 O(条目数 + 乐器数)，空间 O(乐器数)。
+    ///
+    /// Module: ai / editable library
+    /// Purpose: Migrate an older library: move styles into agent guidelines and split grouped
+    /// instruments into one entry per instrument.
+    /// Inputs: `self`.
+    /// Outputs / side effects: mutates the library and writes the current version; no file access.
+    /// Complexity: O(entries + instruments) time and O(instruments) space.
+    pub fn migrate(&mut self) {
+        if self.version >= CURRENT_LIBRARY_VERSION {
+            self.normalise();
+            return;
+        }
+        if self.version < 2 {
+            // 旧版把轻音乐 / J-Pop 风格放在基础技能中；迁移到智能体的创作准则。
+            // Older builds kept the light-music / J-Pop styles in basics; move them to guidelines.
+            for (agent_id, style) in [("light-music", &LIGHT_MUSIC), ("j-pop", &J_POP)] {
+                if let Some(agent) = self.agents.iter_mut().find(|agent| agent.id == agent_id) {
+                    if agent.style.trim().chars().count() < 200 {
+                        agent.style = style.body.to_string();
+                    }
+                    agent.default_skill_ids.retain(|id| id != style.id);
+                }
+            }
+            self.basics
+                .retain(|skill| skill.id != LIGHT_MUSIC.id && skill.id != J_POP.id);
+        }
+        if self.version < 3 {
+            // 旧版八条配器技能把多件乐器混在一条资料里；改为每件乐器一条资料。
+            // Older eight orchestration skills grouped several instruments; split them per instrument.
+            const OLD_IDS: [&str; 8] = [
+                "instrument-piano",
+                "instrument-guitar-bass",
+                "instrument-strings",
+                "instrument-woodwinds",
+                "instrument-brass",
+                "instrument-percussion",
+                "instrument-synth",
+                "instrument-folk-world",
+            ];
+            let had_grouped = self
+                .instruments
+                .iter()
+                .any(|instrument| OLD_IDS.contains(&instrument.id.as_str()));
+            if had_grouped {
+                self.instruments
+                    .retain(|instrument| !OLD_IDS.contains(&instrument.id.as_str()));
+                for instrument in default_instrument_docs() {
+                    if !self
+                        .instruments
+                        .iter()
+                        .any(|existing| existing.id == instrument.id)
+                    {
+                        self.instruments.push(instrument);
+                    }
+                }
+            }
+            for agent in &mut self.agents {
+                agent
+                    .default_instrument_ids
+                    .retain(|id| !OLD_IDS.contains(&id.as_str()));
+            }
+        }
+        self.version = CURRENT_LIBRARY_VERSION;
+        self.normalise();
     }
 
     /// 所属模块：ai / 可编辑资料库
@@ -649,37 +703,98 @@ fn skill_doc(skill: &super::skills::AiSkill, summary: &str) -> AiSkillDoc {
 }
 
 /// 所属模块：ai / 可编辑资料库
-/// 功能：返回配器技能的默认分类名。
-/// 输入：`id`：技能 id。
-/// 输出/副作用：分类文本；不修改状态。
+/// 功能：为每件内置乐器生成一条独立资料（内置合成器、鼓机与 128 件采样乐器）。
+/// 输入：无。
+/// 输出/副作用：乐器资料列表；不修改状态。
+/// 复杂度：时间 O(乐器数)，空间 O(乐器数)。
+///
+/// Module: ai / editable library
+/// Purpose: Build one entry per built-in instrument (synth, drum kit and the 128 sampled instruments).
+/// Inputs: none.
+/// Outputs / side effects: instrument notes; no state change.
+/// Complexity: O(instruments) time and space.
+fn default_instrument_docs() -> Vec<AiInstrumentDoc> {
+    let mut docs = vec![
+        AiInstrumentDoc {
+            id: "instrument-synth".into(),
+            name: "内置合成器".into(),
+            aliases: "synth".into(),
+            category: "合成器".into(),
+            range: "0-127".into(),
+            description: "内置复音合成器，可调波形、滤波与包络。".into(),
+            usage: "适合 Pad、Lead、Bass 与电子音色；也可作为临时试听音色。".into(),
+            techniques: "用滤波与包络塑造明暗；长音留出起音与释放，避免与钢琴/吉他同频段堆叠。"
+                .into(),
+            body: String::new(),
+        },
+        AiInstrumentDoc {
+            id: "instrument-drums".into(),
+            name: "内置鼓机".into(),
+            aliases: "drums".into(),
+            category: "打击乐".into(),
+            range: "36-50".into(),
+            description: "内置 808/909 风格鼓机，使用 GM 鼓键位。".into(),
+            usage: "用于节奏骨架；底鼓、军鼓、踩镲分层编写。".into(),
+            techniques:
+                "保持底鼓与贝斯的低频分工；踩镲用力度与固定偏移制造律动，避免每拍完全一致。".into(),
+            body: String::new(),
+        },
+    ];
+    for entry in bank_instruments() {
+        let range = format!("{}-{}", entry.range[0], entry.range[1]);
+        docs.push(AiInstrumentDoc {
+            id: format!("instrument-{}", entry.id.to_lowercase()),
+            name: entry.name.clone(),
+            aliases: entry.id.clone(),
+            category: entry.category.clone(),
+            range: range.clone(),
+            description: format!("{}采样乐器，音域 {range}。", entry.name),
+            usage: format!(
+                "作为{}声部使用；按音域分配旋律、和声或低音，必要时与相近音色叠加。",
+                entry.category
+            ),
+            techniques: instrument_tips(&entry.category).into(),
+            body: String::new(),
+        });
+    }
+    docs
+}
+
+/// 所属模块：ai / 可编辑资料库
+/// 功能：按分类返回单件乐器的通用写作技巧。
+/// 输入：`category`：乐器分类。
+/// 输出/副作用：技巧文本；不修改状态。
 /// 复杂度：时间 O(1)，空间 O(1)。
 ///
 /// Module: ai / editable library
-/// Purpose: Return the default category of an orchestration skill.
-/// Inputs: `id`: skill id.
-/// Outputs / side effects: category text; no state change.
+/// Purpose: Return generic writing tips for one instrument category.
+/// Inputs: `category`.
+/// Outputs / side effects: tip text; no state change.
 /// Complexity: O(1) time and space.
-fn instrument_category(id: &str) -> String {
-    let category = if id == PIANO.id {
-        "键盘"
-    } else if id == GUITAR_BASS.id {
-        "吉他贝斯"
-    } else if id == STRINGS.id {
-        "弦乐"
-    } else if id == WOODWINDS.id {
-        "木管"
-    } else if id == BRASS.id {
-        "铜管"
-    } else if id == PERCUSSION.id {
-        "打击乐"
-    } else if id == SYNTH_ELECTRONIC.id {
-        "合成器"
-    } else if id == FOLK_WORLD.id {
-        "民乐与世界"
+fn instrument_tips(category: &str) -> &'static str {
+    let category = category.to_lowercase();
+    if category.contains("钢琴") || category.contains("键") {
+        "旋律优先舒适音区；左手避免与贝斯抢根音，和弦排列保持中低频通透。"
+    } else if category.contains("吉他") {
+        "分解和弦注意换把与空弦共鸣；失真声部减少三音堆叠，留出中频给主旋律。"
+    } else if category.contains("贝斯") {
+        "根音与底鼓对齐，适当用经过音连接；避免与底鼓同时占满最低频段。"
+    } else if category.contains("提琴") || category.contains("弦") {
+        "长音注意弓法与换弦，连奏留出呼吸；分组写法比整组齐奏更有层次。"
+    } else if category.contains("管") || category.contains("笛") || category.contains("萨克斯")
+    {
+        "按乐句换气，避免超长连续音；高音区降低力度，和声保持三度/六度间距。"
+    } else if category.contains("铜") || category.contains("号") {
+        "重音与短促音型更出彩；避免长时间高音齐奏，和声低音交给低铜管。"
+    } else if category.contains("鼓") || category.contains("打击") {
+        "用力度层次与固定偏移做律动；主击与填充分开写，避免每小节同样密度。"
+    } else if category.contains("合成") || category.contains("电子") {
+        "用滤波与包络控制能量；Pad 留中频空位，Lead 与主旋律错开音区。"
+    } else if category.contains("民乐") || category.contains("世界") {
+        "保留乐器原有演奏法（滑音、揉弦、轮指）；不要用 Western 平均律和声硬套。"
     } else {
-        "其他"
-    };
-    category.to_string()
+        "按真实音域写作；长音留出呼吸，避免与同频段乐器同时堆叠。"
+    }
 }
 
 /// 所属模块：ai / 可编辑资料库
@@ -815,19 +930,49 @@ pub fn unique_id(base: &str, taken: impl Fn(&str) -> bool) -> String {
 mod tests {
     use super::*;
 
-    /// 覆盖：内置资料库包含两个智能体、四个基础技能与全部技巧/乐器。
-    /// Covers: the seeded library has two agents, four theory skills and every technique/instrument.
+    /// 覆盖：内置资料库包含两个智能体、两条基础技能、全部技巧与每件乐器一条资料。
+    /// Covers: two agents, two theory skills, every technique and one entry per instrument.
     #[test]
     fn seeded_library_has_builtin_entries() {
         let library = AiLibrary::seeded();
         assert_eq!(library.agents.len(), 2);
-        assert_eq!(library.basics.len(), 4);
+        assert_eq!(library.basics.len(), 2);
         assert_eq!(library.techniques.len(), TECHNIQUE_SKILLS.len());
-        assert_eq!(library.instruments.len(), INSTRUMENT_SKILLS.len());
+        assert_eq!(library.instruments.len(), bank_instruments().len() + 2);
         assert!(library.agent("light-music").is_some());
         assert!(library.basic("music-theory").is_some());
         assert!(library.technique("groove-pocket").is_some());
-        assert!(library.instrument("instrument-piano").is_some());
+        assert!(library.instrument("instrument-grandpiano").is_some());
+        assert!(library.instrument("instrument-synth").is_some());
+    }
+
+    /// 覆盖：旧版资料库迁移后风格进入智能体准则、分组乐器被拆成单件。
+    /// Covers: migration moves styles into agent guidelines and splits grouped instruments.
+    #[test]
+    fn migration_splits_styles_and_instruments() {
+        let mut library = AiLibrary::seeded();
+        library.version = 0;
+        library.basics.push(skill_doc(&LIGHT_MUSIC, "旧风格"));
+        library.agents[0].style = "短说明".into();
+        library.agents[0]
+            .default_skill_ids
+            .push("light-music".into());
+        library.instruments.push(AiInstrumentDoc {
+            id: "instrument-piano".into(),
+            name: "键盘与钢琴".into(),
+            ..AiInstrumentDoc::new("instrument-piano")
+        });
+        library.migrate();
+        assert_eq!(library.version, CURRENT_LIBRARY_VERSION);
+        assert!(library.basics.iter().all(|skill| skill.id != "light-music"));
+        assert!(library.agents[0].style.contains("轻音乐"));
+        assert!(
+            !library.agents[0]
+                .default_skill_ids
+                .contains(&"light-music".to_string())
+        );
+        assert!(library.instrument("instrument-piano").is_none());
+        assert!(library.instrument("instrument-grandpiano").is_some());
     }
 
     /// 覆盖：技巧按 id 加载正文，未知 id 会被说明。

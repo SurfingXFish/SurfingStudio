@@ -1934,15 +1934,23 @@ fn home_nav_item(ui: &mut egui::Ui, page: HomePage, selected: bool) -> egui::Res
         egui::FontId::proportional(12.5),
         color,
     );
-    // Agent 是下拉入口：右侧画一个向下的三角，提示还有子项。
-    // Agent is a dropdown entry: draw a downward triangle so the submenu is discoverable.
+    // Agent 是下拉入口：右侧画一个向下的折线，避免字体缺少 ▾ 时显示成方块。
+    // Agent is a dropdown entry: draw a chevron with lines so missing glyphs never show a box.
     if page == HomePage::Agents {
-        painter.text(
-            egui::pos2(rect.right() - 12.0, rect.center().y),
-            egui::Align2::RIGHT_CENTER,
-            "▾",
-            egui::FontId::proportional(10.0),
-            color,
+        let center = egui::pos2(rect.right() - 13.0, rect.center().y);
+        painter.line_segment(
+            [
+                egui::pos2(center.x - 3.5, center.y - 2.0),
+                egui::pos2(center.x, center.y + 1.5),
+            ],
+            egui::Stroke::new(1.2_f32, color),
+        );
+        painter.line_segment(
+            [
+                egui::pos2(center.x, center.y + 1.5),
+                egui::pos2(center.x + 3.5, center.y - 2.0),
+            ],
+            egui::Stroke::new(1.2_f32, color),
         );
     }
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
