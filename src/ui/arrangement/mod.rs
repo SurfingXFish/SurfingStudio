@@ -2982,6 +2982,10 @@ impl SurfingApp {
                     self.request_track_render();
                     ui.close();
                 }
+                if theme::menu_button(ui, "复制到 AI 输入", "").clicked() {
+                    self.attach_track_to_ai(track_index);
+                    ui.close();
+                }
                 let rendered = self
                     .project
                     .tracks
@@ -3061,6 +3065,14 @@ impl SurfingApp {
             // Offer merging for same-track multi-selection; audio clips cannot merge, so the entry
             // stays visible but disabled.
             if menu == ArrangementMenu::Lane {
+                if !self.selected_clips.is_empty() {
+                    ui.separator();
+                    if theme::menu_button(ui, "复制片段到 AI 输入", "").clicked() {
+                        let clips = self.selected_clips.clone();
+                        self.attach_clips_to_ai(&clips);
+                        ui.close();
+                    }
+                }
                 if let Some((track_index, indices)) = self.selected_same_track_clips() {
                     ui.separator();
                     let all_midi = self.project.tracks.get(track_index).is_some_and(|track| {

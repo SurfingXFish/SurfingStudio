@@ -9,6 +9,8 @@
 //! - `SurfingApp::open_home` / `open_studio`：请求显示主页窗口 / 回到最近工程窗口。
 //! - `SurfingApp::ui_home` / `ui_home_sidebar`：主页两栏布局与左侧菜单。
 //! - `SurfingApp::ui_home_projects` / `ui_home_templates` / `ui_home_plugins` / `ui_home_tips`：右侧内容页。
+//! - `SurfingApp::ui_home_agents` / `ui_home_agent_basics` / `ui_home_agent_techniques` /
+//!   `ui_home_agent_instruments`：Agent 栏四个资料管理页（实现在 `app/agent_library.rs`）。
 //! - `SurfingApp::ui_home_project_row` / `ui_home_project_details`：项目行与展开的工程信息/历史版本。
 //! - `SurfingApp::ui_home_project_delete_prompt` / `delete_home_project`：项目删除确认与移除。
 //! - `SurfingApp::request_home_project_info` / `poll_home_project_info`：后台读取工程摘要。
@@ -217,6 +219,10 @@ impl SurfingApp {
                     HomePage::Templates => self.ui_home_templates(ui),
                     HomePage::Plugins => self.ui_home_plugins(ui),
                     HomePage::Tips => self.ui_home_tips(ui),
+                    HomePage::Agents => self.ui_home_agents(ui),
+                    HomePage::AgentBasics => self.ui_home_agent_basics(ui),
+                    HomePage::AgentTechniques => self.ui_home_agent_techniques(ui),
+                    HomePage::AgentInstruments => self.ui_home_agent_instruments(ui),
                 }
             });
 
@@ -280,6 +286,36 @@ impl SurfingApp {
                 self.home_page = page;
             }
             ui.add_space(2.0);
+        }
+
+        // Agent 栏：点击主项切换页面并展开/收起「基础 / 技能 / 乐器」下拉。
+        // Agent column: clicking the main entry switches page and toggles the basics/techniques/
+        // instruments submenu.
+        let agent_selected = self.home_page.is_agent_section();
+        let agent_response = home_nav_item(ui, HomePage::Agents, agent_selected);
+        if agent_response.clicked() {
+            // 从其他页面进入 Agent 时自动展开；已在 Agent 栏时再次点击才收起/展开。
+            // Entering Agent from another page expands it; clicking again while inside toggles.
+            let was_inside = self.home_page.is_agent_section();
+            self.home_page = HomePage::Agents;
+            self.agent_library.expanded = if was_inside {
+                !self.agent_library.expanded
+            } else {
+                true
+            };
+        }
+        ui.add_space(2.0);
+        if self.agent_library.expanded {
+            for (page, label) in [
+                (HomePage::AgentBasics, "基础"),
+                (HomePage::AgentTechniques, "技能"),
+                (HomePage::AgentInstruments, "乐器"),
+            ] {
+                if home_sub_nav_item(ui, label, self.home_page == page).clicked() {
+                    self.home_page = page;
+                }
+                ui.add_space(1.0);
+            }
         }
 
         // 菜单下方留白，把设置图标压到侧栏最下方。
@@ -1795,7 +1831,55 @@ fn home_page_label(page: HomePage) -> &'static str {
         HomePage::Templates => "模板",
         HomePage::Plugins => "插件",
         HomePage::Tips => "提示",
+        HomePage::Agents => "Agent",
+        HomePage::AgentBasics => "基础",
+        HomePage::AgentTechniques => "技能",
+        HomePage::AgentInstruments => "乐器",
     }
+}
+
+/// 所属模块：app / 主页 / 侧栏
+/// 功能：绘制 Agent 下拉中的缩进子项（基础 / 技能 / 乐器）。
+/// 输入：
+/// - `ui`：侧栏绘制上下文；
+/// - `label`：子项名称；
+/// - `selected`：是否为当前页面。
+/// 输出/副作用：分配整行并绘制；点击由调用方处理。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: app / home page / sidebar
+/// Purpose: Draw an indented Agent submenu entry (basics / techniques / instruments).
+/// Inputs:
+/// - `ui`: sidebar paint context;
+/// - `label`: entry label;
+/// - `selected`: whether it is the active page.
+/// Outputs / side effects: allocates the row and paints; the caller handles clicks.
+/// Complexity: O(1) time and space.
+fn home_sub_nav_item(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Response {
+    let width = ui.available_width();
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 24.0), egui::Sense::click());
+    let hovered = response.hovered();
+    let painter = ui.painter();
+    if selected {
+        painter.rect_filled(rect, egui::CornerRadius::from(4), theme::ACCENT_DARK);
+    } else if hovered {
+        painter.rect_filled(rect, egui::CornerRadius::from(4), theme::PANEL_3);
+    }
+    let color = if selected {
+        egui::Color32::WHITE
+    } else if hovered {
+        theme::TEXT
+    } else {
+        theme::TEXT_DIM
+    };
+    painter.text(
+        egui::pos2(rect.left() + 44.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        egui::FontId::proportional(12.0),
+        color,
+    );
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// 所属模块：app / 主页 / 侧栏
@@ -1850,6 +1934,17 @@ fn home_nav_item(ui: &mut egui::Ui, page: HomePage, selected: bool) -> egui::Res
         egui::FontId::proportional(12.5),
         color,
     );
+    // Agent 是下拉入口：右侧画一个向下的三角，提示还有子项。
+    // Agent is a dropdown entry: draw a downward triangle so the submenu is discoverable.
+    if page == HomePage::Agents {
+        painter.text(
+            egui::pos2(rect.right() - 12.0, rect.center().y),
+            egui::Align2::RIGHT_CENTER,
+            "▾",
+            egui::FontId::proportional(10.0),
+            color,
+        );
+    }
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
@@ -1935,6 +2030,30 @@ fn home_nav_icon(painter: &egui::Painter, rect: egui::Rect, page: HomePage, colo
                 ],
                 stroke,
             );
+        }
+        HomePage::Agents
+        | HomePage::AgentBasics
+        | HomePage::AgentTechniques
+        | HomePage::AgentInstruments => {
+            // Agent 图标：一个头像轮廓 + 右侧三点，表示可管理的智能体资料。
+            // Agent icon: a head outline with three dots, representing managed agent assets.
+            painter.circle_stroke(egui::pos2(rect.left() + 5.0, rect.top() + 4.5), 3.0, stroke);
+            painter.add(egui::Shape::line(
+                vec![
+                    egui::pos2(rect.left() + 1.0, rect.bottom() - 1.5),
+                    egui::pos2(rect.left() + 3.5, rect.bottom() - 5.0),
+                    egui::pos2(rect.left() + 6.5, rect.bottom() - 5.0),
+                    egui::pos2(rect.left() + 9.0, rect.bottom() - 1.5),
+                ],
+                stroke,
+            ));
+            for row in 0..3 {
+                painter.circle_filled(
+                    egui::pos2(rect.right() - 2.0, rect.top() + 4.0 + row as f32 * 3.5),
+                    0.9,
+                    color,
+                );
+            }
         }
     }
 }

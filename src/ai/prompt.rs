@@ -1,31 +1,41 @@
 //! 所属模块：ai / 提示词
 //! 文件用途：
-//! - 拼接编曲智能体的系统提示词：输出协议、工程快照、附件、乐器清单与内置技能。
-//! - 把当前工程压缩成模型可读的文本（轨道、片段、音域与已有音符）。
+//! - 拼接编曲智能体的系统提示词：输出协议、工程快照、附件、乐器清单、可编辑资料库与技能。
+//! - 把当前工程压缩成模型可读的文本（轨道、片段、音域、已有音符与可调参数）。
 //!
 //! 函数清单：
 //! - `AiAttachment`：用户附加的文本/MIDI 内容。
+//! - `AiPromptSelection`：输入框选择的技能与可用/必须使用的乐器。
+//! - `AiPluginParamInfo` / `AiPluginParamEntry`：插件参数快照。
 //! - `system_prompt`：生成完整系统提示词。
-//! - `project_context`：生成当前工程摘要与已有音符。
+//! - `project_context`：生成当前工程摘要、已有音符与内置参数。
+//! - `instrument_constraints`：可用/必须使用的乐器约束。
+//! - `plugin_param_context`：插件参数清单。
 //! - `attachment_context`：生成附件摘要。
 //! - `note_line` / `format_note`：音符文本行。
 //!
 //! Module: ai / prompts
 //! Purpose:
 //! - Build the composition agent's system prompt: output contract, project snapshot, attachments,
-//!   instrument catalogue and embedded skills.
-//! - Compress the current project into model-readable text (tracks, clips, ranges and existing notes).
+//!   instrument catalogue, editable library and skills.
+//! - Compress the current project into model-readable text (tracks, clips, ranges, existing notes and
+//!   adjustable parameters).
 //!
 //! Functions:
 //! - `AiAttachment`: user-attached text/MIDI content.
+//! - `AiPromptSelection`: composer-selected skills and usable/required instruments.
+//! - `AiPluginParamInfo` / `AiPluginParamEntry`: plugin parameter snapshot.
 //! - `system_prompt`: build the full system prompt.
-//! - `project_context`: build the current project summary and existing notes.
+//! - `project_context`: build the project summary, existing notes and native parameters.
+//! - `instrument_constraints`: usable/required instrument rules.
+//! - `plugin_param_context`: plugin parameter catalogue.
 //! - `attachment_context`: build the attachment summary.
 //! - `note_line` / `format_note`: note text lines.
 
+use super::library::AiLibrary;
 use super::plan::{AiPluginInfo, AiPluginKind, pitch_name};
-use super::skills::{AiAgentKind, instrument_catalog, skill_prompt, technique_catalog};
-use crate::core::model::Project;
+use super::skills::instrument_catalog;
+use crate::core::model::{EffectRef, InstrumentRef, NativeEffectParam, Project, Track};
 
 /// 每个片段最多写入提示词的音符数，避免长工程占满上下文。
 /// Maximum notes per clip included in the prompt so long projects do not fill the context.
@@ -33,22 +43,81 @@ const NOTES_PER_CLIP: usize = 96;
 /// 全部轨道最多写入提示词的音符数。
 /// Maximum notes across all tracks included in the prompt.
 const NOTES_TOTAL: usize = 720;
+/// 插件参数清单最多列出的槽位数。
+/// Maximum plugin slots listed in the parameter catalogue.
+const MAX_PLUGIN_SLOTS: usize = 12;
+/// 每个插件槽位最多列出的参数数。
+/// Maximum parameters listed per plugin slot.
+const MAX_PLUGIN_PARAMS: usize = 32;
+/// 工程参数清单最多列出的轨道数。
+/// Maximum tracks listed in the native parameter catalogue.
+const MAX_PARAM_TRACKS: usize = 24;
 
-/// 用户附加的文本内容（MIDI 附件已转换为文本）。
-/// User-attached text content (MIDI attachments are converted to text).
+/// 用户附加的文本内容（MIDI 附件、轨道或片段复制已转换为文本）。
+/// User-attached text content (MIDI, track and clip copies are converted to text).
 #[derive(Clone, Debug)]
 pub struct AiAttachment {
     pub name: String,
     pub text: String,
 }
 
+/// 输入框中显式选择的技能与乐器约束。
+/// Skills and instrument constraints explicitly selected in the composer.
+#[derive(Clone, Debug, Default)]
+pub struct AiPromptSelection {
+    /// 额外加载的基础技能 id。
+    /// Additional theory-skill ids.
+    pub skill_ids: Vec<String>,
+    /// 额外加载的编曲技巧 id。
+    /// Additional technique ids.
+    pub technique_ids: Vec<String>,
+    /// 只允许使用的乐器（id / 名称 / VST 名称）；空表示不限制。
+    /// Instruments the model may use (ids/names/VST names); empty means unrestricted.
+    pub usable_instruments: Vec<String>,
+    /// 必须至少使用一次的乐器。
+    /// Instruments that must be used at least once.
+    pub required_instruments: Vec<String>,
+}
+
+/// 一个插件的可调参数快照。
+/// Adjustable-parameter snapshot of one plugin slot.
+#[derive(Clone, Debug, Default)]
+pub struct AiPluginParamInfo {
+    /// 轨道显示名。
+    /// Track display name.
+    pub track: String,
+    /// `instrument` 或 `effect`。
+    /// `instrument` or `effect`.
+    pub slot: String,
+    /// 效果器槽位下标（`slot = effect` 时有效）。
+    /// Effect-slot index (valid when `slot = effect`).
+    pub effect_index: Option<usize>,
+    /// 插件显示名。
+    /// Plugin display name.
+    pub plugin: String,
+    pub params: Vec<AiPluginParamEntry>,
+}
+
+/// 一个插件参数的快照（归一化 0~1）。
+/// Snapshot of one plugin parameter (normalized 0..=1).
+#[derive(Clone, Debug)]
+pub struct AiPluginParamEntry {
+    pub index: usize,
+    pub name: String,
+    pub value: f32,
+    pub display: String,
+}
+
 /// 所属模块：ai / 提示词
 /// 功能：生成完整的系统提示词：角色、输出 JSON 协议、工程快照、附件、乐器/插件清单与技能。
 /// 输入：
-/// - `agent`：编曲智能体（决定加载哪些技能）。
+/// - `library`：主页 Agent 栏维护的可编辑资料库。
+/// - `agent_id`：当前智能体 id；未知 id 回退到第一个智能体。
+/// - `selection`：输入框选择的技能与可用/必须使用的乐器。
 /// - `project`：当前工程（只读）。
-/// - `attachments`：用户附加的文本/MIDI。
+/// - `attachments`：用户附加的文本/MIDI/轨道或片段副本。
 /// - `plugins`：已安装 VST 插件清单（不含本机路径）。
+/// - `plugin_params`：插件参数快照。
 /// 输出/副作用：系统提示词；不修改工程。
 /// 复杂度：时间 O(工程大小 + 技能长度 + 附件长度 + 插件数)，空间 O(同)。
 ///
@@ -56,23 +125,29 @@ pub struct AiAttachment {
 /// Purpose: Build the full system prompt: role, JSON output contract, project snapshot, attachments,
 /// instrument/plugin catalogues and skills.
 /// Inputs:
-/// - `agent`: composition agent (decides which skills load).
+/// - `library`: editable library maintained by the home Agent column.
+/// - `agent_id`: current agent id; unknown ids fall back to the first agent.
+/// - `selection`: composer-selected skills and usable/required instruments.
 /// - `project`: current project (read-only).
-/// - `attachments`: user text/MIDI attachments.
+/// - `attachments`: user text/MIDI/track/clip copies.
 /// - `plugins`: installed VST catalogue (no local paths).
+/// - `plugin_params`: plugin parameter snapshots.
 /// Outputs / side effects: the system prompt; no project change.
 /// Complexity: O(project + skills + attachments + plugins) time and space.
 pub fn system_prompt(
-    agent: AiAgentKind,
+    library: &AiLibrary,
+    agent_id: &str,
+    selection: &AiPromptSelection,
     project: &Project,
     attachments: &[AiAttachment],
     plugins: &[AiPluginInfo],
+    plugin_params: &[AiPluginParamInfo],
 ) -> String {
     let mut prompt = String::new();
     prompt.push_str(
         "你是 SurfingStudio 内置的 AI 编曲助手。你可以通过结构化操作把 MIDI 直接写入当前工程，\
-         可以调用已安装的 VST 乐器/效果器，也可以在需要时先联网检索插件资料。\
-         你的回复要简洁、专业、可执行。\n\n",
+         可以调用已安装的 VST 乐器/效果器、调整乐器与效果器参数、写入控制器自动化，\
+         也可以在需要时先联网检索插件资料。你的回复要简洁、专业、可执行。\n\n",
     );
     prompt.push_str("## 输出协议（必须严格遵守）\n");
     prompt.push_str(
@@ -102,7 +177,12 @@ pub fn system_prompt(
          - `{\"op\":\"add_effect\",\"track\":\"钢琴\",\"effect\":\"reverb\"}`：添加内置效果器（reverb/delay/chorus/compressor/overdrive/distortion/fuzz/phaser）。\n\
          - `{\"op\":\"add_plugin_track\",\"name\":\"Pad\",\"plugin\":\"Serum\",\"program\":0,\"volume\":0.8}`：用已安装 VST 乐器新建轨道。\n\
          - `{\"op\":\"set_plugin_instrument\",\"track\":\"Pad\",\"plugin\":\"Serum\",\"program\":0}`：把已有轨道的乐器换成 VST。\n\
-         - `{\"op\":\"add_plugin_effect\",\"track\":\"Pad\",\"plugin\":\"Pro-Q 4\"}`：给轨道添加已安装 VST 效果器。\n\n",
+         - `{\"op\":\"add_plugin_effect\",\"track\":\"Pad\",\"plugin\":\"Pro-Q 4\"}`：给轨道添加已安装 VST 效果器。\n\
+         - `{\"op\":\"set_instrument_params\",\"track\":\"Pad\",\"params\":{\"cutoff\":4200,\"attack\":0.02,\"level\":0.8}}`：修改内置乐器参数（键名见“乐器与效果器参数”）。\n\
+         - `{\"op\":\"set_effect_params\",\"track\":\"Pad\",\"index\":0,\"enabled\":true,\"params\":{\"mix\":0.35,\"time\":0.5}}`：修改内置效果器参数或旁路；也可用 `effect` 名称代替 `index`。\n\
+         - `{\"op\":\"set_plugin_params\",\"track\":\"Pad\",\"slot\":\"instrument\",\"params\":[{\"index\":3,\"value\":0.42}]}`：按参数序号修改 VST 乐器参数（0~1）。\n\
+         - `{\"op\":\"set_plugin_params\",\"track\":\"Pad\",\"slot\":\"effect\",\"effect\":0,\"params\":[{\"index\":12,\"value\":0.6}]}`：修改 VST 效果器参数。\n\
+         - `{\"op\":\"set_controller\",\"track\":\"Pad\",\"controller\":\"volume\",\"points\":[{\"beat\":0,\"value\":0.8},{\"beat\":8,\"value\":0.5}],\"replace\":true}`：写入控制器子轨；控制器可为 volume / pan / sustain / pitch_bend，值 0~1。\n\n",
     );
     prompt.push_str("### 音符数组\n");
     prompt.push_str(
@@ -125,7 +205,11 @@ pub fn system_prompt(
          9. 遵循所选智能体的风格技能：轻音乐要通透、不要过重；J-Pop 可以更满、更强，但不要所有轨道同时抢主旋律。\n\
          10. 如果用户只是提问或讨论，`operations` 保持空数组，直接回答。\n\
          11. 只有确实需要插件资料时才使用 `research`；只有需要某个技巧的详细写法时才使用 `skills`。\n\
-         12. `operations` 会被边生成边执行：请把独立的轨道/片段操作写成多个对象，不要把整首歌塞进一个巨大对象。\n\n",
+         12. `operations` 会被边生成边执行：请把独立的轨道/片段操作写成多个对象，不要把整首歌塞进一个巨大对象。\n\
+         13. 用户指定“可以使用的乐器”时，只能使用该列表中的乐器；指定“必须使用的乐器”时，至少为每一件乐器建立\
+            一条轨道并写入内容。\n\
+         14. VST 参数只能使用“已连接插件参数”里出现的 index；新加的插件可能下一帧才可调参数。控制器自动化写入\
+            `set_controller`，不要用 `set_track` 冒充渐强/渐弱。\n\n",
     );
     prompt.push_str("## 当前工程\n");
     prompt.push_str(&project_context(project));
@@ -139,20 +223,320 @@ pub fn system_prompt(
     prompt.push_str(&instrument_catalog());
     prompt.push_str("\n## 已安装 VST 插件\n");
     prompt.push_str(&plugin_catalog(plugins));
+    prompt.push_str("\n## 乐器使用约束\n");
+    prompt.push_str(&instrument_constraints(selection));
+    prompt.push_str("\n## 乐器与效果器参数\n");
+    prompt.push_str(&parameter_context(project));
+    if !plugin_params.is_empty() {
+        prompt.push_str("\n## 已连接插件参数\n");
+        prompt.push_str(&plugin_param_context(plugin_params));
+    }
     prompt.push_str("\n## 可调用编曲技巧\n");
-    prompt.push_str(&technique_catalog());
-    prompt.push_str("\n## 本次智能体：");
-    prompt.push_str(agent.label());
-    prompt.push('（');
-    prompt.push_str(agent.description());
-    prompt.push_str("）\n");
-    prompt.push_str(&skill_prompt(agent));
+    prompt.push_str(&library.technique_index());
+    if let Some(agent) = library.agent(agent_id).or_else(|| library.agents.first()) {
+        prompt.push_str("\n## 本次智能体：");
+        prompt.push_str(&agent.name);
+        prompt.push('（');
+        prompt.push_str(&agent.description);
+        prompt.push_str("）\n");
+        if !agent.style.trim().is_empty() {
+            prompt.push_str(&agent.style);
+            prompt.push('\n');
+        }
+        let mut skill_ids = agent.default_skill_ids.clone();
+        skill_ids.extend(selection.skill_ids.iter().cloned());
+        let skill_text = library.load_basics(&skill_ids);
+        if !skill_text.trim().is_empty() {
+            prompt.push_str("## 本次加载的基础技能\n");
+            prompt.push_str(&skill_text);
+            prompt.push('\n');
+        }
+        let mut instrument_ids = agent.default_instrument_ids.clone();
+        instrument_ids.extend(instrument_ids_for(
+            library,
+            selection
+                .usable_instruments
+                .iter()
+                .chain(selection.required_instruments.iter())
+                .map(String::as_str),
+        ));
+        let instrument_text = library.instrument_notes(&instrument_ids);
+        if !instrument_text.trim().is_empty() {
+            prompt.push_str("\n## 乐器资料\n");
+            prompt.push_str(&instrument_text);
+            prompt.push('\n');
+        }
+        let mut technique_ids = agent.default_technique_ids.clone();
+        technique_ids.extend(selection.technique_ids.iter().cloned());
+        let (technique_text, loaded) = library.load_techniques(&technique_ids);
+        if !loaded.is_empty() {
+            prompt.push_str("\n## 本次已加载的技巧正文\n");
+            prompt.push_str(&technique_text);
+            prompt.push('\n');
+        }
+    }
     prompt.push_str(
         "\n\n再次强调：只输出 JSON 对象；`reply` 使用简体中文；不要在 JSON 里写注释。\
          已安装 VST 插件时，音色与效果优先使用清单中的 VST（`add_plugin_track` / `set_plugin_instrument` / \
          `add_plugin_effect`），并在 `reply` 中说明用了哪个插件。",
     );
     prompt
+}
+
+/// 所属模块：ai / 提示词
+/// 功能：把“可用/必须使用的乐器”写成硬约束。
+/// 输入：`selection`：输入框选择。
+/// 输出/副作用：约束文本；不修改选择。
+/// 复杂度：时间 O(选择数)，空间 O(选择数 × 名称长度)。
+///
+/// Module: ai / prompts
+/// Purpose: Render usable/required instrument selections as hard constraints.
+/// Inputs: `selection`: composer selection.
+/// Outputs / side effects: constraint text; the selection is unchanged.
+/// Complexity: O(selection) time and O(selection × name length) space.
+fn instrument_constraints(selection: &AiPromptSelection) -> String {
+    if selection.usable_instruments.is_empty() && selection.required_instruments.is_empty() {
+        return "用户没有限制乐器；仍须遵守“音色优先 VST”与乐器清单。\n".into();
+    }
+    let mut text = String::new();
+    if !selection.usable_instruments.is_empty() {
+        text.push_str("只允许使用以下乐器（id / 名称 / VST）：\n");
+        for instrument in &selection.usable_instruments {
+            text.push_str(&format!("- {instrument}\n"));
+        }
+    }
+    if !selection.required_instruments.is_empty() {
+        text.push_str("必须使用的乐器（至少各建立一条轨道并写入内容）：\n");
+        for instrument in &selection.required_instruments {
+            text.push_str(&format!("- {instrument}\n"));
+        }
+    }
+    text
+}
+
+/// 所属模块：ai / 提示词
+/// 功能：把用户选择映射到资料库中的乐器资料 id。
+/// 输入：`library` 资料库；`names` 选择项（id、名称或别称）。
+/// 输出/副作用：去重后的资料 id；不修改状态。
+/// 复杂度：时间 O(选择数 × 乐器数)，空间 O(资料数)。
+///
+/// Module: ai / prompts
+/// Purpose: Map composer selections to instrument-note ids in the library.
+/// Inputs: `library`; `names` (ids, names or aliases).
+/// Outputs / side effects: de-duplicated note ids; no state change.
+/// Complexity: O(selection × instruments) time and O(notes) space.
+fn instrument_ids_for<'a>(
+    library: &AiLibrary,
+    names: impl Iterator<Item = &'a str>,
+) -> Vec<String> {
+    let mut ids = Vec::new();
+    for name in names {
+        let lower = name.trim().to_lowercase();
+        if lower.is_empty() {
+            continue;
+        }
+        let found = library.instruments.iter().find(|instrument| {
+            instrument.id.to_lowercase() == lower
+                || instrument.name.to_lowercase() == lower
+                || instrument
+                    .aliases
+                    .split(',')
+                    .any(|alias| alias.trim().to_lowercase() == lower)
+        });
+        if let Some(instrument) = found {
+            if !ids.contains(&instrument.id) {
+                ids.push(instrument.id.clone());
+            }
+        }
+    }
+    ids
+}
+
+/// 所属模块：ai / 提示词
+/// 功能：列出各轨道内置乐器与内置效果器的可调参数及当前值。
+/// 输入：`project`：当前工程。
+/// 输出/副作用：参数清单文本；不修改工程。
+/// 复杂度：时间 O(轨道数 × 参数数)，空间 O(文本长度)。
+///
+/// Module: ai / prompts
+/// Purpose: List adjustable native instrument/effect parameters and their current values.
+/// Inputs: `project`.
+/// Outputs / side effects: parameter text; no project change.
+/// Complexity: O(tracks × parameters) time and O(text length) space.
+fn parameter_context(project: &Project) -> String {
+    let mut text = String::from(
+        "内置参数使用真实单位或归一化值；VST 参数使用下方“已连接插件参数”中的 index 与 0~1 值。\n",
+    );
+    if project.tracks.is_empty() {
+        text.push_str("当前没有轨道。\n");
+        return text;
+    }
+    for track in project.tracks.iter().take(MAX_PARAM_TRACKS) {
+        text.push_str(&format!(
+            "- 轨道「{}」乐器 {}：",
+            track.name,
+            track.instrument.label()
+        ));
+        text.push_str(&native_instrument_params(track));
+        text.push('\n');
+        for (index, effect) in track.effects.iter().enumerate() {
+            match effect {
+                EffectRef::Native(native) => {
+                    let params = native
+                        .kind
+                        .params()
+                        .iter()
+                        .map(|param| {
+                            format!(
+                                "{}={}",
+                                native_param_key(*param),
+                                native.settings.get(*param)
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    text.push_str(&format!(
+                        "  效果器[{index}] {}（{}）：{params}\n",
+                        native.kind.label(),
+                        if native.enabled { "启用" } else { "旁路" }
+                    ));
+                }
+                EffectRef::Plugin(plugin) => {
+                    text.push_str(&format!(
+                        "  效果器[{index}] {}（VST，参数见“已连接插件参数”）：{}\n",
+                        plugin.name,
+                        if plugin.enabled { "启用" } else { "旁路" }
+                    ));
+                }
+            }
+        }
+    }
+    text
+}
+
+/// 所属模块：ai / 提示词
+/// 功能：输出一个轨道内置乐器的参数键值。
+/// 输入：`track`：轨道。
+/// 输出/副作用：一行参数文本；不修改轨道。
+/// 复杂度：时间 O(参数数)，空间 O(文本长度)。
+///
+/// Module: ai / prompts
+/// Purpose: Render one track's native instrument parameters.
+/// Inputs: `track`.
+/// Outputs / side effects: one parameter line; the track is unchanged.
+/// Complexity: O(parameters) time and O(text length) space.
+fn native_instrument_params(track: &Track) -> String {
+    match &track.instrument {
+        InstrumentRef::Synth(synth) => format!(
+            "waveform={:?} attack={:.3}s decay={:.3}s sustain={:.2} release={:.3}s cutoff={:.0}Hz resonance={:.2} detune={:.3} octave={} level={:.2}",
+            synth.waveform,
+            synth.attack,
+            synth.decay,
+            synth.sustain,
+            synth.release,
+            synth.cutoff,
+            synth.resonance,
+            synth.detune,
+            synth.octave,
+            synth.level
+        ),
+        InstrumentRef::Drums(drums) => {
+            format!("level={:.2} tone={:.2}", drums.level, drums.tone)
+        }
+        InstrumentRef::Native(native) => format!(
+            "level={:.2} tone={:.2} attack={:.3}s release={:.3}s sustain={:.2} drive={:.2} vibrato={:.2}",
+            native.settings.level,
+            native.settings.tone,
+            native.settings.attack,
+            native.settings.release,
+            native.settings.sustain,
+            native.settings.drive,
+            native.settings.vibrato
+        ),
+        InstrumentRef::Sample(sample) => format!(
+            "level={:.2} tone={:.2} attack={:.3}s release={:.3}s velocity={:.2} neural={:.2}",
+            sample.settings.level,
+            sample.settings.tone,
+            sample.settings.attack,
+            sample.settings.release,
+            sample.settings.velocity,
+            sample.settings.neural
+        ),
+        InstrumentRef::Plugin(plugin) => {
+            format!("{}（VST，参数见“已连接插件参数”）", plugin.name)
+        }
+    }
+}
+
+/// 所属模块：ai / 提示词
+/// 功能：返回内置效果器参数在 JSON 中使用的键名。
+/// 输入：`param`：效果器参数。
+/// 输出/副作用：键名；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: ai / prompts
+/// Purpose: Return the JSON key of a native effect parameter.
+/// Inputs: `param`.
+/// Outputs / side effects: key text; no state change.
+/// Complexity: O(1) time and space.
+fn native_param_key(param: NativeEffectParam) -> &'static str {
+    match param {
+        NativeEffectParam::Drive => "drive",
+        NativeEffectParam::Tone => "tone",
+        NativeEffectParam::Mix => "mix",
+        NativeEffectParam::Rate => "rate",
+        NativeEffectParam::Depth => "depth",
+        NativeEffectParam::Time => "time",
+        NativeEffectParam::Feedback => "feedback",
+        NativeEffectParam::Threshold => "threshold",
+        NativeEffectParam::Ratio => "ratio",
+        NativeEffectParam::Attack => "attack",
+        NativeEffectParam::Release => "release",
+        NativeEffectParam::Level => "level",
+    }
+}
+
+/// 所属模块：ai / 提示词
+/// 功能：把插件参数快照写成索引、名称、当前值与显示值。
+/// 输入：`plugin_params`：插件参数快照。
+/// 输出/副作用：清单文本；不修改快照。
+/// 复杂度：时间 O(槽位数 × 参数数)，空间 O(文本长度)。
+///
+/// Module: ai / prompts
+/// Purpose: Render plugin parameter snapshots with index, name, current and display values.
+/// Inputs: `plugin_params`.
+/// Outputs / side effects: catalogue text; the snapshots are unchanged.
+/// Complexity: O(slots × parameters) time and O(text length) space.
+fn plugin_param_context(plugin_params: &[AiPluginParamInfo]) -> String {
+    let mut text = String::from(
+        "修改时使用 `set_plugin_params`：`slot` 为 instrument 或 effect，`effect` 为效果器槽位下标，\
+         `params` 为 `[{\"index\":参数序号,\"value\":0~1}]`。\n",
+    );
+    for slot in plugin_params.iter().take(MAX_PLUGIN_SLOTS) {
+        let position = slot
+            .effect_index
+            .map(|index| format!("效果器[{index}]"))
+            .unwrap_or_else(|| "乐器".into());
+        text.push_str(&format!(
+            "- 轨道「{}」{position} {}：\n",
+            slot.track, slot.plugin
+        ));
+        for param in slot.params.iter().take(MAX_PLUGIN_PARAMS) {
+            let suffix = if param.display.trim().is_empty() {
+                String::new()
+            } else {
+                format!("（{}）", param.display)
+            };
+            text.push_str(&format!(
+                "  [{}] {} = {:.3}{suffix}\n",
+                param.index, param.name, param.value
+            ));
+        }
+        if slot.params.len() > MAX_PLUGIN_PARAMS {
+            text.push_str("  …（参数过多，已省略）\n");
+        }
+    }
+    text
 }
 
 /// 所属模块：ai / 提示词
@@ -379,7 +763,16 @@ mod tests {
             velocity: 80,
         });
         project.tracks[index].clips.push(clip);
-        let prompt = system_prompt(AiAgentKind::LightMusic, &project, &[], &[]);
+        let library = AiLibrary::seeded();
+        let prompt = system_prompt(
+            &library,
+            "light-music",
+            &AiPromptSelection::default(),
+            &project,
+            &[],
+            &[],
+            &[],
+        );
         assert!(prompt.contains("\"operations\""));
         assert!(prompt.contains("速度 84 BPM"));
         assert!(prompt.contains("GrandPiano"));
@@ -395,10 +788,14 @@ mod tests {
             name: "melody.mid".into(),
             text: "0.00 C4 1.00 v90".into(),
         }];
+        let library = AiLibrary::seeded();
         let prompt = system_prompt(
-            AiAgentKind::LightMusic,
+            &library,
+            "light-music",
+            &AiPromptSelection::default(),
             &Project::default(),
             &attachments,
+            &[],
             &[],
         );
         assert!(prompt.contains("melody.mid"));
@@ -420,7 +817,16 @@ mod tests {
             kind: crate::ai::AiPluginKind::Instrument,
             has_midi_input: true,
         }];
-        let prompt = system_prompt(AiAgentKind::LightMusic, &Project::default(), &[], &plugins);
+        let library = AiLibrary::seeded();
+        let prompt = system_prompt(
+            &library,
+            "light-music",
+            &AiPromptSelection::default(),
+            &Project::default(),
+            &[],
+            &plugins,
+            &[],
+        );
         assert!(prompt.contains("Serum | Xfer Records"));
         assert!(prompt.contains("波表合成器"));
         assert!(prompt.contains("add_plugin_track"));

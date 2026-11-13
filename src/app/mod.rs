@@ -1,7 +1,7 @@
 //! 所属模块：app / 应用状态机
 //! 文件用途：
 //! - 定义 `SurfingApp` 的单一工程窗口状态与每帧编排顺序。
-//! - 聚合文件、编辑、历史、传输、插件、输入、面板、主页、全局设置、无边框窗口与浮动卷帘子模块。
+//! - 聚合文件、编辑、历史、传输、插件、输入、面板、主页、Agent 资料库、全局设置、无边框窗口与浮动卷帘子模块。
 //! - 每个窗口一个 `SurfingApp`：主页窗口与各工程窗口共享 `SharedServices`。
 //!
 //! 函数清单：
@@ -48,6 +48,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use vst3_host::PluginWindow;
 
+mod agent_library;
 mod ai;
 mod autosave;
 mod backup;
@@ -340,9 +341,15 @@ pub struct SurfingApp {
     /// AI 编曲对话状态：消息、输入、附件与后台通道。
     /// AI composition chat state: messages, input, attachments and the background channel.
     pub ai_chat: AiChatState,
+    /// 主页 Agent 栏的界面状态：下拉展开、搜索、编辑草稿与删除确认。
+    /// UI state of the home Agent column: submenu, search, drafts and delete confirmation.
+    pub agent_library: AiLibraryUi,
     /// 后台读取 AI 附件的通道。
     /// Background channel that reads AI attachments.
     ai_attach_rx: Option<Receiver<Result<AiAttachment, String>>>,
+    /// AI 写入但插件实例尚未就绪的参数，下一帧同步后重试。
+    /// AI-written plugin parameters whose instances are not ready yet; retried after the next sync.
+    pending_plugin_params: Vec<ai::PendingPluginParam>,
     /// 应用栏主菜单（文件 / 编辑 / VST 插件 / 帮助）是否展开；仅 UI 状态，不持久化。
     /// Whether the app bar main menu (file / edit / VST / help) is expanded; UI-only, never persisted.
     pub menu_bar_visible: bool,
@@ -1313,7 +1320,9 @@ impl SurfingApp {
             show_help: false,
             side_panel: Some(SidePanel::Inspector),
             ai_chat: AiChatState::default(),
+            agent_library: AiLibraryUi::default(),
             ai_attach_rx: None,
+            pending_plugin_params: Vec::new(),
             menu_bar_visible: false,
             browser: None,
             plugin_cache,
@@ -1869,6 +1878,10 @@ impl SurfingApp {
                 }
             }
         }
+        // AI 写入的 VST 参数可能在插件实例创建前到达；同步后每帧重试直到写入成功。
+        // AI-written VST parameters may arrive before the plugin instance exists; retry every frame
+        // after the sync until they land.
+        self.flush_pending_plugin_params();
 
         if self.ui_audio_loading {
             // Keep polling until the background decoder publishes its result;

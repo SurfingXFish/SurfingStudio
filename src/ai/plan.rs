@@ -6,7 +6,10 @@
 //!
 //! 函数清单：
 //! - `AiPlan::parse` / `AiPlan::apply`：解析模型输出并写入工程。
-//! - `AiOperation`：设置速度/拍号、清空、加轨、改轨、写片段、加内置/插件效果器。
+//! - `AiOperation`：设置速度/拍号、清空、加轨、改轨、写片段、加内置/插件效果器、改参数与控制器子轨。
+//! - `AiParamSet` / `AiControllerPoint`：VST 参数序号与值、控制器点位。
+//! - `apply_instrument_params` / `apply_native_effect_params` / `set_plugin_param_values`：参数写入。
+//! - `find_effect_index` / `controller_kind` / `native_effect_param` / `parse_waveform`：参数目标解析。
 //! - `AiPluginInfo` / `resolve_plugin`：已安装 VST 插件的清单与名称解析。
 //! - `AiNote`：`[音高, 起始拍, 时值, 力度]` 的自定义反序列化。
 //! - `AiApplySummary` / `summary_text`：写入结果摘要。
@@ -33,9 +36,10 @@
 //! - `find_track` / `track_key`: track lookup by name or id.
 
 use crate::core::model::{
-    Clip, EffectRef, InstrumentRef, NativeEffect, NativeEffectKind, NativeInstrument,
-    NativeInstrumentKind, Note, PluginFormat, PluginRef, Project, SampleInstrument, SynthSettings,
-    TrackKind, bank_instruments,
+    AutomationPoint, Clip, ControllerKind, EffectRef, InstrumentRef, NativeEffect,
+    NativeEffectKind, NativeEffectParam, NativeInstrument, NativeInstrumentKind, Note,
+    PluginFormat, PluginRef, Project, SampleInstrument, SynthSettings, Track, TrackKind, Waveform,
+    bank_instruments,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -282,6 +286,71 @@ pub enum AiOperation {
         #[serde(default)]
         program: Option<i32>,
     },
+    /// 修改轨道内置乐器参数（合成器 / 鼓机 / 原生 / 采样）。
+    /// Change a track's built-in instrument parameters (synth / drums / native / sampled).
+    SetInstrumentParams {
+        track: String,
+        #[serde(default)]
+        params: Value,
+    },
+    /// 修改内置效果器参数或旁路状态；`index` 与 `effect` 至少提供一个。
+    /// Change native-effect parameters or bypass; provide at least one of `index` and `effect`.
+    SetEffectParams {
+        track: String,
+        #[serde(default)]
+        effect: Option<String>,
+        #[serde(default)]
+        index: Option<usize>,
+        #[serde(default)]
+        enabled: Option<bool>,
+        #[serde(default)]
+        params: Value,
+    },
+    /// 修改 VST 乐器/效果器的归一化参数；`params` 使用参数序号与 0~1 值。
+    /// Change normalized VST instrument/effect parameters by index (0..=1 values).
+    SetPluginParams {
+        track: String,
+        /// `instrument` 或 `effect`。
+        /// `instrument` or `effect`.
+        slot: String,
+        /// 效果器槽位下标（`slot = effect` 时必填）。
+        /// Effect-slot index (required when `slot = effect`).
+        #[serde(default)]
+        effect: Option<usize>,
+        #[serde(default)]
+        params: Vec<AiParamSet>,
+    },
+    /// 写入控制器子轨自动化点位；`replace = true` 时替换整条子轨。
+    /// Write controller-lane automation points; `replace = true` replaces the whole lane.
+    SetController {
+        track: String,
+        /// `volume` / `pan` / `sustain` / `pitch_bend`。
+        controller: String,
+        #[serde(default)]
+        points: Vec<AiControllerPoint>,
+        #[serde(default)]
+        replace: Option<bool>,
+    },
+}
+
+/// 一个 VST 参数的归一化设置。
+/// One normalized VST parameter setting.
+#[derive(Clone, Copy, Debug, Deserialize)]
+pub struct AiParamSet {
+    pub index: usize,
+    pub value: f64,
+}
+
+/// 一个控制器自动化点位。
+/// One controller automation point.
+#[derive(Clone, Copy, Debug, Deserialize)]
+pub struct AiControllerPoint {
+    /// 绝对拍位置。
+    /// Absolute beat position.
+    pub beat: f64,
+    /// 归一化值 0~1。
+    /// Normalized value 0..=1.
+    pub value: f32,
 }
 
 impl AiOperation {
@@ -507,6 +576,145 @@ impl AiOperation {
                 summary.effects_added += 1;
                 summary.plugins_added += 1;
             }
+            AiOperation::SetInstrumentParams { track, params } => {
+                let index = find_track(project, track)?;
+                let target = &mut project.tracks[index];
+                if target.is_group() {
+                    return Err(format!("「{}」是组合轨道，没有乐器参数", target.name));
+                }
+                apply_instrument_params(&mut target.instrument, params)?;
+                target.bump_revision();
+                summary.params_changed += 1;
+            }
+            AiOperation::SetEffectParams {
+                track,
+                effect,
+                index,
+                enabled,
+                params,
+            } => {
+                let track_index = find_track(project, track)?;
+                let target = &mut project.tracks[track_index];
+                let effect_index = find_effect_index(target, effect.as_deref(), *index)?;
+                let slot = &mut target.effects[effect_index];
+                let mut changed = false;
+                if let Some(enabled) = enabled {
+                    match slot {
+                        EffectRef::Native(native) => native.enabled = *enabled,
+                        EffectRef::Plugin(plugin) => plugin.enabled = *enabled,
+                    }
+                    changed = true;
+                }
+                match slot {
+                    EffectRef::Native(native) => {
+                        if apply_native_effect_params(native, params)? > 0 {
+                            changed = true;
+                        }
+                    }
+                    EffectRef::Plugin(_) => {
+                        if params.as_object().is_some_and(|object| !object.is_empty()) {
+                            return Err(
+                                "VST 效果器参数请使用 set_plugin_params（按参数序号）".into()
+                            );
+                        }
+                    }
+                }
+                if !changed {
+                    return Err("没有可应用的效果器参数".into());
+                }
+                target.bump_revision();
+                summary.params_changed += 1;
+            }
+            AiOperation::SetPluginParams {
+                track,
+                slot,
+                effect,
+                params,
+            } => {
+                let track_index = find_track(project, track)?;
+                let target = &mut project.tracks[track_index];
+                let changed = match slot.trim().to_lowercase().as_str() {
+                    "instrument" => match &mut target.instrument {
+                        InstrumentRef::Plugin(plugin) => set_plugin_param_values(plugin, params)?,
+                        _ => {
+                            return Err(format!(
+                                "「{}」的乐器不是 VST；内置参数请使用 set_instrument_params",
+                                target.name
+                            ));
+                        }
+                    },
+                    "effect" => {
+                        let effect_index = effect.ok_or_else(|| {
+                            "slot = effect 时必须提供效果器槽位 index".to_string()
+                        })?;
+                        match target.effects.get_mut(effect_index) {
+                            Some(EffectRef::Plugin(plugin)) => {
+                                set_plugin_param_values(plugin, params)?
+                            }
+                            Some(EffectRef::Native(_)) => {
+                                return Err("该槽位是内置效果器，请使用 set_effect_params".into());
+                            }
+                            None => {
+                                return Err(format!(
+                                    "「{}」没有下标为 {effect_index} 的效果器",
+                                    target.name
+                                ));
+                            }
+                        }
+                    }
+                    _ => return Err("slot 必须是 instrument 或 effect".into()),
+                };
+                if changed == 0 {
+                    return Err("params 为空，没有可应用的插件参数".into());
+                }
+                target.bump_revision();
+                summary.params_changed += 1;
+            }
+            AiOperation::SetController {
+                track,
+                controller,
+                points,
+                replace,
+            } => {
+                let track_index = find_track(project, track)?;
+                let target = &mut project.tracks[track_index];
+                let kind = controller_kind(controller)?;
+                if !target.supports_controller(kind) {
+                    return Err(format!("「{}」不支持{}控制器", target.name, kind.label()));
+                }
+                for point in points {
+                    if !point.beat.is_finite() || point.beat < 0.0 {
+                        return Err("控制器点位必须是非负的有限拍位置".into());
+                    }
+                    if !point.value.is_finite() {
+                        return Err("控制器值必须是有限数字".into());
+                    }
+                }
+                let lane = target.controllers.get_mut(kind);
+                if replace.unwrap_or(false) {
+                    lane.clear();
+                }
+                let mut added = 0usize;
+                for point in points {
+                    let value = point.value.clamp(0.0, 1.0);
+                    lane.push(AutomationPoint {
+                        beat: point.beat,
+                        value,
+                    });
+                    added += 1;
+                }
+                lane.sort_by(|left, right| {
+                    left.beat
+                        .partial_cmp(&right.beat)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+                lane.dedup_by(|left, right| (left.beat - right.beat).abs() < 1e-9);
+                if !target.visible_controllers.contains(&kind) {
+                    target.visible_controllers.push(kind);
+                }
+                target.bump_revision();
+                summary.controllers_added += added;
+            }
         }
         Ok(())
     }
@@ -562,6 +770,23 @@ impl AiOperation {
             AiOperation::AddPluginEffect { track, plugin, .. } => {
                 format!("给「{track}」挂载 VST 效果器「{plugin}」")
             }
+            AiOperation::SetInstrumentParams { track, .. } => {
+                format!("调整「{track}」的乐器参数")
+            }
+            AiOperation::SetEffectParams { track, .. } => {
+                format!("调整「{track}」的效果器参数")
+            }
+            AiOperation::SetPluginParams { track, slot, .. } => {
+                let position = if slot == "effect" {
+                    "效果器"
+                } else {
+                    "乐器"
+                };
+                format!("调整「{track}」的 VST {position}参数")
+            }
+            AiOperation::SetController {
+                track, controller, ..
+            } => format!("写入「{track}」的 {controller} 控制器"),
         }
     }
 }
@@ -776,6 +1001,12 @@ pub struct AiApplySummary {
     pub notes_added: usize,
     pub effects_added: usize,
     pub plugins_added: usize,
+    /// 写入的控制器自动化点数。
+    /// Number of controller automation points written.
+    pub controllers_added: usize,
+    /// 调整过参数的乐器/效果器/插件数量。
+    /// Number of instruments/effects/plugins whose parameters changed.
+    pub params_changed: usize,
     pub cleared: bool,
     pub tempo: Option<f64>,
     pub time_signature: Option<(u8, u8)>,
@@ -821,6 +1052,12 @@ impl AiApplySummary {
         }
         if self.plugins_added > 0 {
             parts.push(format!("加载 {} 个 VST 插件", self.plugins_added));
+        }
+        if self.params_changed > 0 {
+            parts.push(format!("调整 {} 处参数", self.params_changed));
+        }
+        if self.controllers_added > 0 {
+            parts.push(format!("写入 {} 个控制器点", self.controllers_added));
         }
         if parts.is_empty() {
             "没有修改工程".into()
@@ -1012,6 +1249,289 @@ pub fn resolve_effect(name: &str) -> Option<NativeEffectKind> {
         _ => return None,
     };
     Some(kind)
+}
+
+/// 所属模块：ai / 编曲计划 / 参数
+/// 功能：按 JSON 键写入内置乐器参数；未知键会被忽略，全部未知时返回错误。
+/// 输入：`instrument` 乐器引用；`params` 参数对象（真实单位或归一化值）。
+/// 输出/副作用：修改乐器参数；不修改其他状态。
+/// 复杂度：时间 O(参数数)，空间 O(1)。
+///
+/// Module: ai / composition plan / parameters
+/// Purpose: Write built-in instrument parameters from a JSON object; unknown keys are ignored and an
+/// all-unknown object returns an error.
+/// Inputs: `instrument`; `params` (real units or normalized values).
+/// Outputs / side effects: mutates the instrument parameters only.
+/// Complexity: O(parameters) time and O(1) space.
+fn apply_instrument_params(instrument: &mut InstrumentRef, params: &Value) -> Result<(), String> {
+    let Some(map) = params.as_object() else {
+        return Err("params 必须是 JSON 对象".into());
+    };
+    if map.is_empty() {
+        return Err("params 为空".into());
+    }
+    let mut applied = 0usize;
+    match instrument {
+        InstrumentRef::Synth(synth) => {
+            for (key, value) in map {
+                match key.as_str() {
+                    "waveform" => {
+                        synth.waveform = parse_waveform(value)?;
+                    }
+                    "attack" => synth.attack = number(value, key)?.clamp(0.0, 10.0) as f32,
+                    "decay" => synth.decay = number(value, key)?.clamp(0.0, 10.0) as f32,
+                    "sustain" => synth.sustain = number(value, key)?.clamp(0.0, 1.0) as f32,
+                    "release" => synth.release = number(value, key)?.clamp(0.0, 10.0) as f32,
+                    "cutoff" => synth.cutoff = number(value, key)?.clamp(20.0, 20_000.0) as f32,
+                    "resonance" => synth.resonance = number(value, key)?.clamp(0.0, 1.0) as f32,
+                    "detune" => synth.detune = number(value, key)?.clamp(0.0, 1.0) as f32,
+                    "octave" => synth.octave = number(value, key)?.clamp(-4.0, 4.0) as i32,
+                    "level" => synth.level = number(value, key)?.clamp(0.0, 1.5) as f32,
+                    _ => continue,
+                }
+                applied += 1;
+            }
+        }
+        InstrumentRef::Drums(drums) => {
+            for (key, value) in map {
+                match key.as_str() {
+                    "level" => drums.level = number(value, key)?.clamp(0.0, 1.5) as f32,
+                    "tone" => drums.tone = number(value, key)?.clamp(0.0, 1.0) as f32,
+                    _ => continue,
+                }
+                applied += 1;
+            }
+        }
+        InstrumentRef::Native(native) => {
+            for (key, value) in map {
+                match key.as_str() {
+                    "level" => native.settings.level = number(value, key)?.clamp(0.0, 1.5) as f32,
+                    "tone" => native.settings.tone = number(value, key)?.clamp(0.0, 1.0) as f32,
+                    "attack" => {
+                        native.settings.attack = number(value, key)?.clamp(0.0, 10.0) as f32
+                    }
+                    "release" => {
+                        native.settings.release = number(value, key)?.clamp(0.0, 10.0) as f32
+                    }
+                    "sustain" => {
+                        native.settings.sustain = number(value, key)?.clamp(0.0, 1.0) as f32
+                    }
+                    "drive" => native.settings.drive = number(value, key)?.clamp(0.0, 1.0) as f32,
+                    "vibrato" => {
+                        native.settings.vibrato = number(value, key)?.clamp(0.0, 1.0) as f32
+                    }
+                    _ => continue,
+                }
+                applied += 1;
+            }
+        }
+        InstrumentRef::Sample(sample) => {
+            for (key, value) in map {
+                match key.as_str() {
+                    "level" => sample.settings.level = number(value, key)?.clamp(0.0, 1.5) as f32,
+                    "tone" => sample.settings.tone = number(value, key)?.clamp(0.0, 1.0) as f32,
+                    "attack" => {
+                        sample.settings.attack = number(value, key)?.clamp(0.0, 10.0) as f32
+                    }
+                    "release" => {
+                        sample.settings.release = number(value, key)?.clamp(0.0, 10.0) as f32
+                    }
+                    "velocity" => {
+                        sample.settings.velocity = number(value, key)?.clamp(0.0, 1.0) as f32
+                    }
+                    "neural" => sample.settings.neural = number(value, key)?.clamp(0.0, 1.0) as f32,
+                    _ => continue,
+                }
+                applied += 1;
+            }
+        }
+        InstrumentRef::Plugin(_) => {
+            return Err("VST 乐器参数请使用 set_plugin_params（按参数序号）".into());
+        }
+    }
+    if applied == 0 {
+        return Err("没有识别的内置乐器参数".into());
+    }
+    Ok(())
+}
+
+/// 所属模块：ai / 编曲计划 / 参数
+/// 功能：按 JSON 键写入内置效果器的归一化参数，返回写入数量。
+/// 输入：`native` 内置效果器；`params` 参数对象（0~1）。
+/// 输出/副作用：修改效果器参数；不修改其他状态。
+/// 复杂度：时间 O(参数数 × 该效果器参数数)，空间 O(1)。
+///
+/// Module: ai / composition plan / parameters
+/// Purpose: Write normalized native-effect parameters from a JSON object and return the count.
+/// Inputs: `native`; `params` (0..=1).
+/// Outputs / side effects: mutates the effect parameters only.
+/// Complexity: O(parameters × effect parameters) time and O(1) space.
+fn apply_native_effect_params(native: &mut NativeEffect, params: &Value) -> Result<usize, String> {
+    let Some(map) = params.as_object() else {
+        return Err("params 必须是 JSON 对象".into());
+    };
+    let mut applied = 0usize;
+    for (key, value) in map {
+        let Some(param) = native_effect_param(key) else {
+            return Err(format!(
+                "效果器「{}」没有参数 {key}；可用参数见提示词",
+                native.kind.label()
+            ));
+        };
+        if !native.kind.params().contains(&param) {
+            return Err(format!("效果器「{}」不支持参数 {key}", native.kind.label()));
+        }
+        let normalized = number(value, key)?.clamp(0.0, 1.0) as f32;
+        *native.settings.get_mut(param) = normalized;
+        applied += 1;
+    }
+    Ok(applied)
+}
+
+/// 所属模块：ai / 编曲计划 / 参数
+/// 功能：按参数序号写入 VST 的归一化参数，返回写入数量。
+/// 输入：`plugin` 插件引用；`params` 序号与 0~1 值。
+/// 输出/副作用：修改 `PluginRef::params`；不修改其他状态。
+/// 复杂度：时间 O(参数数 + 最大序号)，空间 O(最大序号)。
+///
+/// Module: ai / composition plan / parameters
+/// Purpose: Write normalized VST parameters by index and return how many values were applied.
+/// Inputs: `plugin`; `params` with indices and 0..=1 values.
+/// Outputs / side effects: mutates `PluginRef::params` only.
+/// Complexity: O(parameters + max index) time and O(max index) space.
+fn set_plugin_param_values(plugin: &mut PluginRef, params: &[AiParamSet]) -> Result<usize, String> {
+    for param in params {
+        if !param.value.is_finite() {
+            return Err("插件参数值必须是有限数字".into());
+        }
+        if param.index > 4096 {
+            return Err(format!("插件参数序号 {} 超出范围", param.index));
+        }
+        let value = param.value.clamp(0.0, 1.0) as f32;
+        if plugin.params.len() <= param.index {
+            plugin.params.resize(param.index + 1, 0.5);
+        }
+        plugin.params[param.index] = value;
+    }
+    Ok(params.len())
+}
+
+/// 所属模块：ai / 编曲计划 / 参数
+/// 功能：按名称或槽位下标定位轨道上的效果器。
+/// 输入：`track` 轨道；`effect` 效果器名（可空）；`index` 槽位下标（可空）。
+/// 输出/副作用：槽位下标或中文错误；不修改状态。
+/// 复杂度：时间 O(效果器数)，空间 O(1)。
+///
+/// Module: ai / composition plan / parameters
+/// Purpose: Locate an effect on a track by name or slot index.
+/// Inputs: `track`; `effect` (optional name); `index` (optional slot).
+/// Outputs / side effects: slot index or a Chinese error; no state change.
+/// Complexity: O(effects) time and O(1) space.
+fn find_effect_index(
+    track: &Track,
+    effect: Option<&str>,
+    index: Option<usize>,
+) -> Result<usize, String> {
+    if let Some(index) = index {
+        if index < track.effects.len() {
+            return Ok(index);
+        }
+        return Err(format!("「{}」没有下标为 {index} 的效果器", track.name));
+    }
+    let Some(name) = effect.map(str::trim).filter(|name| !name.is_empty()) else {
+        return Err("请提供效果器名称或槽位下标".into());
+    };
+    if let Some(kind) = resolve_effect(name) {
+        if let Some(index) = track
+            .effects
+            .iter()
+            .position(|slot| matches!(slot, EffectRef::Native(native) if native.kind == kind))
+        {
+            return Ok(index);
+        }
+    }
+    let lower = name.to_lowercase();
+    track
+        .effects
+        .iter()
+        .position(|slot| slot.label().to_lowercase().contains(&lower))
+        .ok_or_else(|| format!("「{}」没有找到效果器「{name}」", track.name))
+}
+
+/// 所属模块：ai / 编曲计划 / 参数
+/// 功能：把控制器 id 解析为控制器类型。
+/// 输入：`value`：`volume` / `pan` / `sustain` / `pitch_bend` 或中文名。
+/// 输出/副作用：控制器类型或中文错误；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: ai / composition plan / parameters
+/// Purpose: Resolve a controller id into its kind.
+/// Inputs: `value`: `volume` / `pan` / `sustain` / `pitch_bend` or Chinese names.
+/// Outputs / side effects: the controller kind or a Chinese error; no state change.
+/// Complexity: O(1) time and space.
+fn controller_kind(value: &str) -> Result<ControllerKind, String> {
+    match value.trim().to_lowercase().as_str() {
+        "volume" | "音量" => Ok(ControllerKind::Volume),
+        "pan" | "声像" => Ok(ControllerKind::Pan),
+        "sustain" | "延音" => Ok(ControllerKind::Sustain),
+        "pitch_bend" | "pitchbend" | "弯音" => Ok(ControllerKind::PitchBend),
+        other => Err(format!(
+            "不支持的控制器「{other}」；可用 volume / pan / sustain / pitch_bend"
+        )),
+    }
+}
+
+/// 所属模块：ai / 编曲计划 / 参数
+/// 功能：按 JSON 键解析内置效果器参数。
+/// 输入：`key`：参数键名。
+/// 输出/副作用：参数枚举或 `None`；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: ai / composition plan / parameters
+/// Purpose: Resolve a native-effect parameter key.
+/// Inputs: `key`.
+/// Outputs / side effects: the parameter or `None`; no state change.
+/// Complexity: O(1) time and space.
+fn native_effect_param(key: &str) -> Option<NativeEffectParam> {
+    match key {
+        "drive" => Some(NativeEffectParam::Drive),
+        "tone" => Some(NativeEffectParam::Tone),
+        "mix" => Some(NativeEffectParam::Mix),
+        "rate" => Some(NativeEffectParam::Rate),
+        "depth" => Some(NativeEffectParam::Depth),
+        "time" => Some(NativeEffectParam::Time),
+        "feedback" => Some(NativeEffectParam::Feedback),
+        "threshold" => Some(NativeEffectParam::Threshold),
+        "ratio" => Some(NativeEffectParam::Ratio),
+        "attack" => Some(NativeEffectParam::Attack),
+        "release" => Some(NativeEffectParam::Release),
+        "level" => Some(NativeEffectParam::Level),
+        _ => None,
+    }
+}
+
+/// 所属模块：ai / 编曲计划 / 参数
+/// 功能：解析合成器波形名称（英文 id 或中文名）。
+/// 输入：`value`：JSON 值。
+/// 输出/副作用：波形或中文错误；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: ai / composition plan / parameters
+/// Purpose: Resolve a synth waveform name (English id or Chinese label).
+/// Inputs: `value`: JSON value.
+/// Outputs / side effects: the waveform or a Chinese error; no state change.
+/// Complexity: O(1) time and space.
+fn parse_waveform(value: &Value) -> Result<Waveform, String> {
+    let Some(text) = value.as_str() else {
+        return Err("waveform 必须是字符串".into());
+    };
+    match text.trim().to_lowercase().as_str() {
+        "sine" | "正弦" => Ok(Waveform::Sine),
+        "saw" | "sawtooth" | "锯齿" => Ok(Waveform::Saw),
+        "square" | "方波" => Ok(Waveform::Square),
+        "triangle" | "三角" => Ok(Waveform::Triangle),
+        other => Err(format!("未知波形「{other}」")),
+    }
 }
 
 /// 所属模块：ai / 编曲计划 / 轨道查找
@@ -1234,5 +1754,70 @@ mod tests {
             .expect("plan");
         let mut project = Project::default();
         assert!(plan.apply(&mut project, &[]).is_err());
+    }
+
+    /// 覆盖：内置乐器/效果器参数与控制器子轨可以写入。
+    /// Covers: native instrument/effect parameters and controller lanes can be written.
+    #[test]
+    fn parameter_and_controller_operations_apply() {
+        let mut project = Project::empty();
+        let index = project.add_track(InstrumentRef::Synth(SynthSettings::default()));
+        project.tracks[index].name = "Synth".into();
+        let plan = AiPlan::parse(
+            r#"{"operations":[
+                {"op":"set_instrument_params","track":"Synth","params":{"cutoff":3200,"attack":0.02}},
+                {"op":"add_effect","track":"Synth","effect":"reverb"},
+                {"op":"set_effect_params","track":"Synth","index":0,"params":{"mix":0.4}},
+                {"op":"set_controller","track":"Synth","controller":"volume",
+                 "points":[{"beat":0,"value":0.4},{"beat":8,"value":0.9}],"replace":true}
+            ]}"#,
+        )
+        .expect("plan");
+        let summary = plan.apply(&mut project, &[]).expect("apply");
+        let InstrumentRef::Synth(synth) = &project.tracks[index].instrument else {
+            panic!("expected synth");
+        };
+        assert!((synth.cutoff - 3200.0).abs() < 1.0);
+        assert!((synth.attack - 0.02).abs() < 1e-6);
+        assert_eq!(project.tracks[index].controllers.volume.len(), 2);
+        assert!(
+            project.tracks[index]
+                .visible_controllers
+                .contains(&ControllerKind::Volume)
+        );
+        assert_eq!(summary.params_changed, 2);
+        assert_eq!(summary.controllers_added, 2);
+    }
+
+    /// 覆盖：VST 参数按序号写入，非法槽位被拒绝。
+    /// Covers: VST parameters are written by index and invalid slots are rejected.
+    #[test]
+    fn plugin_parameters_apply_by_index() {
+        let mut project = Project::empty();
+        let index = project.add_track(InstrumentRef::Synth(SynthSettings::default()));
+        project.tracks[index].name = "Pad".into();
+        project.tracks[index].instrument = InstrumentRef::Plugin(PluginRef::new(
+            PluginFormat::Vst3,
+            PathBuf::from("C:/plugins/Serum.vst3"),
+            "Serum".into(),
+        ));
+        let plan = AiPlan::parse(
+            r#"{"operations":[{"op":"set_plugin_params","track":"Pad","slot":"instrument",
+                "params":[{"index":1,"value":0.25},{"index":3,"value":0.75}]}]}"#,
+        )
+        .expect("plan");
+        let summary = plan.apply(&mut project, &[]).expect("apply");
+        let InstrumentRef::Plugin(plugin) = &project.tracks[index].instrument else {
+            panic!("expected plugin");
+        };
+        assert!((plugin.params[1] - 0.25).abs() < 1e-6);
+        assert!((plugin.params[3] - 0.75).abs() < 1e-6);
+        assert_eq!(summary.params_changed, 1);
+        let bad = AiPlan::parse(
+            r#"{"operations":[{"op":"set_plugin_params","track":"Pad","slot":"effect",
+                "effect":2,"params":[{"index":1,"value":0.5}]}]}"#,
+        )
+        .expect("plan");
+        assert!(bad.apply(&mut project, &[]).is_err());
     }
 }

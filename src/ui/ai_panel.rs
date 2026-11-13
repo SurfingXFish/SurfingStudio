@@ -6,7 +6,7 @@
 //!
 //! 函数清单：
 //! - `SurfingApp::ui_ai_panel` / `ui_ai_panel_main` / `ui_ai_task_rail`：两栏工作台、对话区与任务栏。
-//! - `SurfingApp::ui_ai_composer`：圆角输入区、附件、模型/智能体/推理选择与发送/停止。
+//! - `SurfingApp::ui_ai_composer`：圆角输入区、附件、技能/可用乐器/必须乐器多选菜单、模型/智能体/推理选择与发送/停止。
 //! - `ai_task_card` / `paint_task_status`：任务卡片与状态图标。
 //! - `paint_ai_message` / `paint_ai_live` / `paint_message_meta` / `paint_thinking_block` /
 //!   `paint_change_card` / `paint_ai_empty`：气泡、流式生成、任务信息、折叠思考、工程改动卡片与空状态。
@@ -26,7 +26,6 @@
 //!   `paint_change_card` / `paint_ai_empty`: bubbles, streaming state, metadata, collapsible
 //!   reasoning, change card and empty state.
 
-use crate::ai::skills::AiAgentKind;
 use crate::ai::{AiApplySummary, AiReasoning, AiRole, MODEL_PRESETS, find_preset};
 use crate::app::{AiLiveMessage, AiMessageMeta, AiTaskConflict, SurfingApp};
 use crate::ui::theme;
@@ -464,6 +463,57 @@ impl SurfingApp {
         let mut reasoning_changed = false;
         let send_shortcut =
             ui.input(|input| input.modifiers.ctrl && input.key_pressed(egui::Key::Enter));
+        // 智能体列表来自可编辑资料库；先克隆 id 与名称，避免绘制期间借用 settings。
+        // The agent list comes from the editable library; clone ids and names before painting.
+        let agents: Vec<(String, String)> = self
+            .settings
+            .ai
+            .library
+            .agents
+            .iter()
+            .map(|agent| (agent.id.clone(), agent.name.clone()))
+            .collect();
+        let mut selected_agent = self.ai_chat.agent.clone();
+        // 技能与乐器选题列表在绘制前克隆，避免在菜单闭包里借用 settings 与插件缓存。
+        // Clone skill and instrument choices before painting so the menu closures do not borrow
+        // settings or the plugin cache.
+        let basic_choices: Vec<(String, String)> = self
+            .settings
+            .ai
+            .library
+            .basics
+            .iter()
+            .map(|skill| (skill.id.clone(), skill.title.clone()))
+            .collect();
+        let technique_choices: Vec<(String, String)> = self
+            .settings
+            .ai
+            .library
+            .techniques
+            .iter()
+            .map(|skill| (skill.id.clone(), skill.title.clone()))
+            .collect();
+        let mut instrument_choices: Vec<(String, String)> = vec![
+            ("synth".into(), "内置合成器".into()),
+            ("drums".into(), "内置鼓机".into()),
+        ];
+        for entry in crate::core::model::bank_instruments() {
+            instrument_choices.push((entry.id.clone(), format!("{}（内置）", entry.name)));
+        }
+        if crate::platform::caps().plugin_hosting {
+            for plugin in &self.plugin_cache {
+                if !plugin.name.is_empty() {
+                    instrument_choices
+                        .push((plugin.name.clone(), format!("{}（VST）", plugin.name)));
+                }
+            }
+        }
+        let mut seen_instruments = std::collections::HashSet::new();
+        instrument_choices.retain(|(value, _)| seen_instruments.insert(value.clone()));
+        let selected_skill_count =
+            self.ai_chat.selected_skills.len() + self.ai_chat.selected_techniques.len();
+        let usable_count = self.ai_chat.usable_instruments.len();
+        let required_count = self.ai_chat.required_instruments.len();
         egui::Frame::NONE
             .fill(theme::PANEL_2)
             .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
@@ -510,6 +560,109 @@ impl SurfingApp {
                 );
 
                 ui.add_space(2.0);
+                // 技能 / 可用乐器 / 必须乐器：多选菜单，选择结果直接进入系统提示词。
+                // Skills / usable instruments / required instruments: multi-select menus whose picks
+                // go straight into the system prompt.
+                ui.horizontal_wrapped(|ui| {
+                    ui.menu_button(
+                        RichText::new(format!("技能 {selected_skill_count}")).size(9.0),
+                        |ui| {
+                            ui.set_min_width(240.0);
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.ai_chat.skill_filter)
+                                    .hint_text("搜索技能")
+                                    .desired_width(f32::INFINITY),
+                            );
+                            let filter = self.ai_chat.skill_filter.trim().to_lowercase();
+                            egui::ScrollArea::vertical()
+                                .max_height(280.0)
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        RichText::new("基础").size(9.5).color(theme::TEXT_DIM),
+                                    );
+                                    for (id, title) in &basic_choices {
+                                        if !filter.is_empty()
+                                            && !title.to_lowercase().contains(&filter)
+                                        {
+                                            continue;
+                                        }
+                                        let mut checked = self.ai_chat.selected_skills.contains(id);
+                                        if ui.checkbox(&mut checked, title).changed() {
+                                            toggle_choice(
+                                                &mut self.ai_chat.selected_skills,
+                                                id,
+                                                checked,
+                                            );
+                                        }
+                                    }
+                                    ui.separator();
+                                    ui.label(
+                                        RichText::new("技巧").size(9.5).color(theme::TEXT_DIM),
+                                    );
+                                    for (id, title) in &technique_choices {
+                                        if !filter.is_empty()
+                                            && !title.to_lowercase().contains(&filter)
+                                        {
+                                            continue;
+                                        }
+                                        let mut checked =
+                                            self.ai_chat.selected_techniques.contains(id);
+                                        if ui.checkbox(&mut checked, title).changed() {
+                                            toggle_choice(
+                                                &mut self.ai_chat.selected_techniques,
+                                                id,
+                                                checked,
+                                            );
+                                        }
+                                    }
+                                });
+                        },
+                    )
+                    .response
+                    .on_hover_text("选择本次加载的基础技能与编曲技巧");
+                    for (target, count, label) in [
+                        (true, usable_count, "可用乐器"),
+                        (false, required_count, "必须乐器"),
+                    ] {
+                        let menu = RichText::new(format!("{label} {count}")).size(9.0);
+                        ui.menu_button(menu, |ui| {
+                            ui.set_min_width(260.0);
+                            let filter_text = if target {
+                                &mut self.ai_chat.usable_filter
+                            } else {
+                                &mut self.ai_chat.required_filter
+                            };
+                            ui.add(
+                                egui::TextEdit::singleline(filter_text)
+                                    .hint_text("搜索乐器")
+                                    .desired_width(f32::INFINITY),
+                            );
+                            let needle = filter_text.trim().to_lowercase();
+                            let selected = if target {
+                                &mut self.ai_chat.usable_instruments
+                            } else {
+                                &mut self.ai_chat.required_instruments
+                            };
+                            egui::ScrollArea::vertical()
+                                .max_height(280.0)
+                                .show(ui, |ui| {
+                                    for (value, name) in &instrument_choices {
+                                        if !needle.is_empty()
+                                            && !name.to_lowercase().contains(&needle)
+                                        {
+                                            continue;
+                                        }
+                                        let mut checked = selected.contains(value);
+                                        if ui.checkbox(&mut checked, name).changed() {
+                                            toggle_choice(selected, value, checked);
+                                        }
+                                    }
+                                });
+                        });
+                    }
+                });
+
+                ui.add_space(2.0);
                 ui.horizontal(|ui| {
                     if ui
                         .add(
@@ -523,17 +676,21 @@ impl SurfingApp {
                     {
                         attach = true;
                     }
-                    let mut agent = self.ai_chat.agent;
+                    let agent_label = agents
+                        .iter()
+                        .find(|(id, _)| id == &selected_agent)
+                        .map(|(_, name)| name.as_str())
+                        .unwrap_or("智能体");
                     egui::ComboBox::from_id_salt("ai_agent")
                         .width(80.0)
-                        .selected_text(RichText::new(agent.label()).size(9.5))
+                        .selected_text(RichText::new(agent_label).size(9.5))
                         .show_ui(ui, |ui| {
-                            for entry in AiAgentKind::ALL {
-                                ui.selectable_value(&mut agent, entry, entry.label());
+                            for (id, name) in &agents {
+                                ui.selectable_value(&mut selected_agent, id.clone(), name);
                             }
                         });
-                    if agent != self.ai_chat.agent {
-                        self.ai_chat.agent = agent;
+                    if selected_agent != self.ai_chat.agent {
+                        self.ai_chat.select_agent(&selected_agent);
                     }
 
                     let mut preset_id = self.settings.ai.model_preset.clone();
@@ -1412,6 +1569,20 @@ fn change_rows(ui: &mut egui::Ui, summary: &AiApplySummary) {
             theme::ACCENT,
         );
     }
+    if summary.params_changed > 0 {
+        row(
+            "调整参数",
+            format!("{}", summary.params_changed),
+            theme::AMBER,
+        );
+    }
+    if summary.controllers_added > 0 {
+        row(
+            "控制器点",
+            format!("+{}", summary.controllers_added),
+            theme::GREEN,
+        );
+    }
     if summary.cleared {
         row("清空工程", "已清空".into(), theme::RED);
     }
@@ -1470,4 +1641,25 @@ fn paint_ai_empty(ui: &mut egui::Ui) -> Option<&'static str> {
         ui.add_space(6.0);
     }
     picked
+}
+
+/// 所属模块：ui / AI 编曲面板 / 输入区
+/// 功能：按勾选状态加入或移除一个选项 id。
+/// 输入：`items` 选项列表；`id` 目标；`checked` 是否选中。
+/// 输出/副作用：原地修改列表；不修改其他状态。
+/// 复杂度：时间 O(列表长度)，空间 O(1)。
+///
+/// Module: ui / AI composition panel / composer
+/// Purpose: Add or remove a choice id according to a checkbox.
+/// Inputs: `items`; `id`; `checked`.
+/// Outputs / side effects: mutates the list in place.
+/// Complexity: O(list length) time and O(1) space.
+fn toggle_choice(items: &mut Vec<String>, id: &str, checked: bool) {
+    if checked {
+        if !items.iter().any(|entry| entry == id) {
+            items.push(id.to_string());
+        }
+    } else {
+        items.retain(|entry| entry != id);
+    }
 }

@@ -2,7 +2,7 @@
 //! 文件用途：
 //! - 定义 AI 编曲的运行时框架（`AiRuntime` + `AiBackend` 后端）与模型预设。
 //! - 定义会话消息、请求、响应与错误文本；网络请求只在后台线程调用。
-//! - 聚合内置技能（md）、工程提示词、编曲计划、流式计划提取、MIDI 附件与联网检索子模块。
+//! - 聚合可编辑资料库（智能体/基础技能/技巧/乐器资料）、工程提示词、编曲计划、流式计划提取、MIDI 附件与联网检索子模块。
 //!
 //! 函数清单：
 //! - `AiProvider::id` / `label` / `protocol` / `default_base_url` / `default_model` / `preset`：服务商信息与预设。
@@ -28,6 +28,7 @@
 
 mod backend;
 mod backends;
+pub mod library;
 pub mod midi_file;
 pub mod plan;
 pub mod prompt;
@@ -36,12 +37,10 @@ pub mod skills;
 pub mod stream;
 
 pub use backend::{AiBackend, AiBackendInfo};
+pub use library::{AiAgentProfile, AiInstrumentDoc, AiLibrary, AiSkillDoc, make_id, unique_id};
 pub use plan::{AiApplySummary, AiOperation, AiPlan, AiPluginInfo, AiPluginKind};
 pub use search::AiSearchConfig;
-pub use skills::{
-    AiAgentKind, AiSkill, AiTechnique, agent_skills, instrument_catalog, load_techniques,
-    skill_catalog, technique_catalog,
-};
+pub use skills::{AiSkill, AiTechnique, instrument_catalog};
 pub use stream::PlanStream;
 
 use serde::Serialize;

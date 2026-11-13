@@ -245,6 +245,10 @@ pub struct AiSettings {
     /// Whether the AI may use the DeepSeek Search API to research plugin characteristics.
     #[serde(default = "default_true")]
     pub search_enabled: bool,
+    /// 主页 Agent 栏维护的智能体、基础乐理、编曲技巧与乐器资料。
+    /// Agents, theory skills, techniques and instrument notes maintained by the home Agent column.
+    #[serde(default)]
+    pub library: crate::ai::AiLibrary,
 }
 
 impl Default for AiSettings {
@@ -270,6 +274,7 @@ impl Default for AiSettings {
             timeout_seconds: DEFAULT_AI_TIMEOUT_SECONDS,
             reasoning: default_ai_reasoning(),
             search_enabled: true,
+            library: crate::ai::AiLibrary::default(),
         }
     }
 }
@@ -651,6 +656,9 @@ impl AppSettings {
         if !matches!(settings.audio_output_channels, 0 | 2 | 6 | 8) {
             settings.audio_output_channels = 0;
         }
+        // 资料库可能被手工编辑或来自旧版本；加载后统一去重、丢弃空 id 并裁剪名称。
+        // The library may be hand-edited or come from an older build; normalise it after loading.
+        settings.ai.library.normalise();
         settings
     }
 
