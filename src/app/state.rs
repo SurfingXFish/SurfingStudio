@@ -27,7 +27,7 @@
 //! - `InstrumentCategory` / `InstrumentPicker`: instrument window categories and target track.
 
 use crate::core::model::{
-    AutomationPoint, Clip, ControllerKind, EffectRef, Note, TemplateId, TrackId,
+    AutomationPoint, Clip, ControllerKind, EffectRef, Note, TemplateId, Track, TrackId,
 };
 use eframe::egui;
 use std::path::PathBuf;
@@ -74,6 +74,129 @@ pub enum HomePage {
     Templates,
     Plugins,
     Tips,
+    /// Agent 栏：管理编曲智能体。
+    /// Agent column: manage arrangement agents.
+    Agents,
+    /// Agent → 基础：管理乐理技能。
+    /// Agent → Basics: manage theory skills.
+    AgentBasics,
+    /// Agent → 技能：管理编曲技巧。
+    /// Agent → Techniques: manage arranging techniques.
+    AgentTechniques,
+    /// Agent → 乐器：管理乐器资料（含 VST）。
+    /// Agent → Instruments: manage instrument notes (including VST).
+    AgentInstruments,
+}
+
+impl HomePage {
+    /// 所属模块：app / 界面状态 / 主页
+    /// 功能：判断页面是否属于 Agent 栏（用于侧栏展开高亮）。
+    /// 输入：`self`。
+    /// 输出/副作用：布尔值；不修改状态。
+    /// 复杂度：时间 O(1)，空间 O(1)。
+    ///
+    /// Module: app / UI state / home
+    /// Purpose: Whether the page belongs to the Agent column (used for sidebar highlighting).
+    /// Inputs: `self`.
+    /// Outputs / side effects: a boolean; no state change.
+    /// Complexity: O(1) time and space.
+    pub fn is_agent_section(self) -> bool {
+        matches!(
+            self,
+            HomePage::Agents
+                | HomePage::AgentBasics
+                | HomePage::AgentTechniques
+                | HomePage::AgentInstruments
+        )
+    }
+}
+
+/// Agent 资料库编辑器的条目类型。
+/// Entry kind edited by the Agent library pages.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AiLibraryKind {
+    Agent,
+    Basic,
+    Technique,
+    Instrument,
+}
+
+/// 主页 Agent 栏的界面状态（不写入工程）。
+/// UI state of the home Agent column (never written into projects).
+#[derive(Clone, Debug)]
+pub struct AiLibraryUi {
+    /// 侧栏 Agent 下拉是否展开。
+    /// Whether the Agent submenu is expanded.
+    pub expanded: bool,
+    /// 列表搜索文本。
+    /// List search text.
+    pub search: String,
+    /// 正在编辑的条目 id。
+    /// Id of the entry being edited.
+    pub selected: Option<String>,
+    /// 编辑草稿；保存前不修改资料库。
+    /// Edit draft; the library is unchanged until saved.
+    pub draft: Option<AiLibraryDraft>,
+    /// 等待确认删除的条目 id。
+    /// Entry id awaiting delete confirmation.
+    pub confirm_delete: Option<String>,
+    /// 乐器条目的「从乐器库选择」搜索文本。
+    /// Search text of the instrument picker inside an entry.
+    pub instrument_pick_filter: String,
+    /// 乐器页的分类筛选（“全部”或分类名）。
+    /// Category filter on the instrument page ("全部" or a category name).
+    pub instrument_category_filter: String,
+    /// 新建后尚未保存的提示。
+    /// Hint shown for a newly created entry that is not saved yet.
+    pub notice: Option<String>,
+}
+
+impl Default for AiLibraryUi {
+    /// 所属模块：app / 界面状态 / Agent 资料库
+    /// 功能：默认收起下拉、无选择、无草稿。
+    /// 输入：无。
+    /// 输出/副作用：默认界面状态；不读盘。
+    /// 复杂度：时间 O(1)，空间 O(1)。
+    ///
+    /// Module: app / UI state / Agent library
+    /// Purpose: Default state: submenu collapsed, nothing selected and no draft.
+    /// Inputs: none.
+    /// Outputs / side effects: default UI state; no disk access.
+    /// Complexity: O(1) time and space.
+    fn default() -> Self {
+        Self {
+            expanded: false,
+            search: String::new(),
+            selected: None,
+            draft: None,
+            confirm_delete: None,
+            instrument_pick_filter: String::new(),
+            instrument_category_filter: "全部".into(),
+            notice: None,
+        }
+    }
+}
+
+/// Agent 资料库编辑草稿。
+/// Draft of an Agent-library entry.
+#[derive(Clone, Debug)]
+pub enum AiLibraryDraft {
+    Agent {
+        original: Option<String>,
+        entry: crate::ai::AiAgentProfile,
+    },
+    Basic {
+        original: Option<String>,
+        entry: crate::ai::AiSkillDoc,
+    },
+    Technique {
+        original: Option<String>,
+        entry: crate::ai::AiSkillDoc,
+    },
+    Instrument {
+        original: Option<String>,
+        entry: crate::ai::AiInstrumentDoc,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -178,6 +301,9 @@ pub enum Clipboard {
     /// (original track index, clip) so cross-track copies paste back to their
     /// own tracks.
     Clips(Vec<(usize, Clip)>),
+    /// 整条轨道副本；用于粘贴到 AI 输入框或其它需要轨道上下文的入口。
+    /// A whole-track copy, used when pasting into the AI composer or other track-aware targets.
+    Track(Track),
     Notes(Vec<Note>),
     ControllerPoints(Vec<AutomationPoint>),
     /// A whole controller child lane, copied from the arrangement header.

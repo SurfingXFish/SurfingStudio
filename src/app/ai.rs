@@ -9,12 +9,15 @@
 //! - `SurfingApp::toggle_ai_panel` / `open_ai_settings` / `close_side_panel`：右侧面板切换。
 //! - `SurfingApp::send_ai_message`：收集上下文、插件清单与检索配置，启动后台流式线程。
 //! - `run_ai_worker`：流式补全 → 联网检索/技巧加载（如模型请求）→ 继续流式补全。
-//! - `SurfingApp::ai_plugin_catalog`：已安装 VST 插件清单（含离线说明）。
+//! - `SurfingApp::ai_plugin_catalog` / `ai_plugin_param_catalog`：已安装 VST 清单与参数快照。
 //! - `SurfingApp::poll_ai_chat` / `apply_ai_operation` / `finish_ai_task`：接收流式事件并逐步写入工程。
+//! - `SurfingApp::apply_ai_operation_runtime` / `flush_pending_plugin_params`：把 VST 参数写入运行时并在实例就绪后重试。
 //! - `SurfingApp::apply_ai_plan`：流式事件缺失时的一次性写入兜底。
+//! - `SurfingApp::attach_track_to_ai` / `attach_clip_to_ai` / `attach_clips_to_ai` / `attach_clipboard_to_ai`：把轨道或片段复制为 AI 附件。
 //! - `SurfingApp::cancel_ai_message`：停止等待当前请求。
 //! - `SurfingApp::open_ai_attachment_dialog` / `poll_ai_attachment`：后台选择并读取附件。
 //! - `read_attachment`：把文本或 MIDI 文件转成附件文本。
+//! - `ai_track_reference` / `ai_clip_reference` / `ai_note_text`：轨道/片段文本快照。
 //!
 //! Module: app / AI composition
 //! Purpose:
@@ -27,21 +30,27 @@
 //! - `SurfingApp::toggle_ai_panel` / `open_ai_settings` / `close_side_panel`: right-panel switching.
 //! - `SurfingApp::send_ai_message`: collect context and start the streaming worker.
 //! - `run_ai_worker`: stream completions → research/technique loading → stream again.
-//! - `SurfingApp::ai_plugin_catalog`: installed VST catalogue (with offline descriptions).
+//! - `SurfingApp::ai_plugin_catalog` / `ai_plugin_param_catalog`: installed VST catalogue and parameters.
 //! - `SurfingApp::poll_ai_chat` / `apply_ai_operation` / `finish_ai_task`: consume events and write step by step.
+//! - `SurfingApp::apply_ai_operation_runtime` / `flush_pending_plugin_params`: push VST parameters into
+//!   runtimes and retry once the instance exists.
 //! - `SurfingApp::apply_ai_plan`: one-shot fallback when streaming events are missing.
+//! - `SurfingApp::attach_track_to_ai` / `attach_clip_to_ai` / `attach_clips_to_ai`: copy tracks/clips
+//!   into AI attachments.
 //! - `SurfingApp::cancel_ai_message`: stop waiting for the current request.
 //! - `SurfingApp::open_ai_attachment_dialog` / `poll_ai_attachment`: pick and read attachments.
 //! - `read_attachment`: turn a text or MIDI file into attachment text.
+//! - `ai_track_reference` / `ai_clip_reference` / `ai_note_text`: text snapshots of tracks/clips.
 
 use super::*;
 use crate::ai::midi_file;
-use crate::ai::prompt::{self, AiAttachment};
+use crate::ai::prompt::{
+    self, AiAttachment, AiPluginParamEntry, AiPluginParamInfo, AiPromptSelection,
+};
 use crate::ai::search::{self, AiSearchConfig};
-use crate::ai::skills::AiAgentKind;
 use crate::ai::{
-    AiApplySummary, AiMessage, AiOperation, AiPlan, AiPluginInfo, AiPluginKind, AiRequest, AiRole,
-    AiRuntime, AiStreamEvent, PlanStream, find_preset, load_techniques,
+    AiApplySummary, AiLibrary, AiMessage, AiOperation, AiPlan, AiPluginInfo, AiPluginKind,
+    AiRequest, AiRole, AiRuntime, AiStreamEvent, PlanStream, find_preset,
 };
 
 /// 对话历史最多发送给模型的条数，避免上下文无限增长。
@@ -56,6 +65,12 @@ const AI_MIDI_ATTACHMENT_LIMIT: usize = 4 * 1024 * 1024;
 /// 流式展示时思考文本的字节上限（超出后停止追加，避免界面被超长推理拖慢）。
 /// Byte cap for live reasoning text (stop appending beyond it so the UI stays responsive).
 const AI_LIVE_REASONING_LIMIT: usize = 96 * 1024;
+/// 提示词中最多列出的插件参数槽位数。
+/// Maximum plugin-parameter slots listed in the prompt.
+const AI_PLUGIN_PARAM_SLOTS: usize = 12;
+/// 每个插件槽位最多列出的参数数。
+/// Maximum parameters listed per plugin slot.
+const AI_PLUGIN_PARAMS_PER_SLOT: usize = 32;
 
 /// 一条对话消息（仅界面展示，不持久化）。
 /// One chat message (display only, never persisted).
@@ -122,6 +137,15 @@ pub struct AiMessageMeta {
 pub struct AiPending {
     pub request_id: u64,
     pub started: Instant,
+}
+
+/// 一个尚未写入插件运行时的参数（插件实例可能下一帧才创建）。
+/// A parameter not yet written into a plugin runtime (the instance may appear next frame).
+pub(super) struct PendingPluginParam {
+    pub track_id: TrackId,
+    pub slot: SlotKind,
+    pub index: usize,
+    pub value: f64,
 }
 
 /// 后台线程回传的事件：流式增量、逐个操作、最终结果或错误。
@@ -230,7 +254,33 @@ impl Default for AiLiveMessage {
 pub struct AiChatState {
     pub messages: Vec<AiChatMessage>,
     pub input: String,
-    pub agent: AiAgentKind,
+    /// 当前智能体 id；空或未知时按资料库第一个智能体处理。
+    /// Current agent id; empty/unknown ids resolve to the first library agent.
+    pub agent: String,
+    /// 输入框显式选择加载的基础技能 id（空表示跟随智能体默认）。
+    /// Explicitly loaded theory-skill ids (empty means the agent defaults).
+    pub selected_skills: Vec<String>,
+    /// 输入框显式选择加载的编曲技巧 id。
+    /// Explicitly loaded technique ids.
+    pub selected_techniques: Vec<String>,
+    /// 用户是否手动改过技能选择；为假时按智能体默认技能显示与发送。
+    /// Whether the user edited skill picks; when false the agent defaults apply.
+    pub skills_customized: bool,
+    /// 只允许使用的乐器（内置 id / 名称 / VST 名称）；空表示不限制。
+    /// Instruments the model may use; empty means unrestricted.
+    pub usable_instruments: Vec<String>,
+    /// 必须使用的乐器。
+    /// Instruments that must be used.
+    pub required_instruments: Vec<String>,
+    /// 「可用乐器」下拉的搜索文本（仅 UI）。
+    /// Search text of the usable-instrument menu (UI only).
+    pub usable_filter: String,
+    /// 「必须乐器」下拉的搜索文本（仅 UI）。
+    /// Search text of the required-instrument menu (UI only).
+    pub required_filter: String,
+    /// 「技能」下拉的搜索文本（仅 UI）。
+    /// Search text of the skill menu (UI only).
+    pub skill_filter: String,
     pub attachments: Vec<AiAttachment>,
     pub pending: Option<AiPending>,
     /// 正在流式生成的助手消息。
@@ -270,7 +320,15 @@ impl Default for AiChatState {
         Self {
             messages: Vec::new(),
             input: String::new(),
-            agent: AiAgentKind::LightMusic,
+            agent: "light-music".into(),
+            selected_skills: Vec::new(),
+            selected_techniques: Vec::new(),
+            skills_customized: false,
+            usable_instruments: Vec::new(),
+            required_instruments: Vec::new(),
+            usable_filter: String::new(),
+            required_filter: String::new(),
+            skill_filter: String::new(),
             attachments: Vec::new(),
             pending: None,
             live: None,
@@ -303,6 +361,14 @@ impl AiChatState {
         self.active_conversation = None;
         self.messages.clear();
         self.input.clear();
+        self.selected_skills.clear();
+        self.selected_techniques.clear();
+        self.skills_customized = false;
+        self.usable_instruments.clear();
+        self.required_instruments.clear();
+        self.usable_filter.clear();
+        self.required_filter.clear();
+        self.skill_filter.clear();
         self.attachments.clear();
         self.pending = None;
         self.live = None;
@@ -348,6 +414,14 @@ impl AiChatState {
         }
         self.attachments.clear();
         self.input.clear();
+        self.selected_skills.clear();
+        self.selected_techniques.clear();
+        self.skills_customized = false;
+        self.usable_instruments.clear();
+        self.required_instruments.clear();
+        self.usable_filter.clear();
+        self.required_filter.clear();
+        self.skill_filter.clear();
         self.conflict_prompt = None;
         self.edit_guard_dismissed = false;
     }
@@ -479,6 +553,24 @@ impl AiChatState {
             error: None,
         });
         self.active_conversation = Some(id);
+    }
+
+    /// 所属模块：app / AI 编曲 / 智能体
+    /// 功能：切换智能体并清空显式技能选择，让提示词回到该智能体的默认技能。
+    /// 输入：`agent_id`：资料库中的智能体 id。
+    /// 输出/副作用：修改 `agent` 与技能选择；不修改工程。
+    /// 复杂度：时间 O(1)，空间 O(1)。
+    ///
+    /// Module: app / AI composition / agent
+    /// Purpose: Switch the agent and clear explicit skill picks so the prompt uses its defaults.
+    /// Inputs: `agent_id`: library agent id.
+    /// Outputs / side effects: changes the agent and skill selections; no project change.
+    /// Complexity: O(1) time and space.
+    pub fn select_agent(&mut self, agent_id: &str) {
+        self.agent = agent_id.to_string();
+        self.selected_skills.clear();
+        self.selected_techniques.clear();
+        self.skills_customized = false;
     }
 }
 
@@ -649,6 +741,74 @@ impl SurfingApp {
         plugins
     }
 
+    /// 所属模块：app / AI 编曲 / 插件参数
+    /// 功能：收集已连接插件的参数快照（归一化值），供提示词给出可调 index。
+    /// 输入：`self`。
+    /// 输出/副作用：参数快照列表；不修改工程与运行时。
+    /// 复杂度：时间 O(轨道数 × 参数数)，空间 O(参数数)。
+    ///
+    /// Module: app / AI composition / plugin parameters
+    /// Purpose: Collect normalized parameter snapshots of connected plugins so the prompt can expose
+    /// adjustable indices.
+    /// Inputs: `self`.
+    /// Outputs / side effects: parameter snapshots; the project and runtimes are unchanged.
+    /// Complexity: O(tracks × parameters) time and O(parameters) space.
+    fn ai_plugin_param_catalog(&mut self) -> Vec<AiPluginParamInfo> {
+        if !crate::platform::caps().plugin_hosting {
+            return Vec::new();
+        }
+        let mut slots: Vec<(TrackId, String, String, Option<usize>)> = Vec::new();
+        for track in &self.project.tracks {
+            if matches!(track.instrument, InstrumentRef::Plugin(_)) {
+                slots.push((track.id, track.name.clone(), track.instrument.label(), None));
+            }
+            for (index, effect) in track.effects.iter().enumerate() {
+                if let Some(plugin) = effect.plugin() {
+                    slots.push((
+                        track.id,
+                        track.name.clone(),
+                        plugin.name.clone(),
+                        Some(index),
+                    ));
+                }
+            }
+        }
+        let mut catalog = Vec::new();
+        for (track_id, track_name, plugin_name, effect_index) in
+            slots.into_iter().take(AI_PLUGIN_PARAM_SLOTS)
+        {
+            let slot = effect_index
+                .map(SlotKind::Effect)
+                .unwrap_or(SlotKind::Instrument);
+            let params = self.cached_plugin_params(track_id, slot);
+            if params.is_empty() {
+                continue;
+            }
+            catalog.push(AiPluginParamInfo {
+                track: track_name,
+                slot: if effect_index.is_some() {
+                    "effect".into()
+                } else {
+                    "instrument".into()
+                },
+                effect_index,
+                plugin: plugin_name,
+                params: params
+                    .into_iter()
+                    .take(AI_PLUGIN_PARAMS_PER_SLOT)
+                    .enumerate()
+                    .map(|(index, param)| AiPluginParamEntry {
+                        index,
+                        name: param.name,
+                        value: param.value as f32,
+                        display: param.display,
+                    })
+                    .collect(),
+            });
+        }
+        catalog
+    }
+
     /// 所属模块：app / AI 编曲 / 发送
     /// 功能：收集系统提示词与历史消息，在后台线程请求一次补全；缺少密钥或自定义地址时只提示。
     /// 输入：`self`。
@@ -710,11 +870,23 @@ impl SurfingApp {
         });
         self.ai_chat.input.clear();
         let plugins = self.ai_plugin_catalog();
+        let plugin_params = self.ai_plugin_param_catalog();
+        let library = self.settings.ai.library.clone();
+        let selection = AiPromptSelection {
+            skill_ids: self.ai_chat.selected_skills.clone(),
+            technique_ids: self.ai_chat.selected_techniques.clone(),
+            skills_customized: self.ai_chat.skills_customized,
+            usable_instruments: self.ai_chat.usable_instruments.clone(),
+            required_instruments: self.ai_chat.required_instruments.clone(),
+        };
         let system = prompt::system_prompt(
-            self.ai_chat.agent,
+            &library,
+            &self.ai_chat.agent,
+            &selection,
             &self.project,
             &self.ai_chat.attachments,
             &plugins,
+            &plugin_params,
         );
         let mut messages = vec![AiMessage {
             role: AiRole::System,
@@ -764,7 +936,7 @@ impl SurfingApp {
             .name("ai-compose".into())
             .spawn(move || {
                 let events = tx.clone();
-                match run_ai_worker(request, search, request_id, tx) {
+                match run_ai_worker(request, search, library, request_id, tx) {
                     Ok(outcome) => {
                         let _ = events.send(AiWorkerEvent::Done {
                             request_id,
@@ -1083,6 +1255,7 @@ impl SurfingApp {
             .unwrap_or_default();
         match operation.apply(&mut self.project, &plugins, &mut summary) {
             Ok(()) => {
+                self.apply_ai_operation_runtime(&operation);
                 self.mark_dirty();
                 if let Some(live) = self.ai_chat.live.as_mut() {
                     live.summary = summary;
@@ -1099,6 +1272,111 @@ impl SurfingApp {
                 }
             }
         }
+    }
+
+    /// 所属模块：app / AI 编曲 / 插件参数
+    /// 功能：把 VST 参数操作立即推送到插件运行时；实例尚未就绪时排队到后续帧。
+    /// 输入：`operation`：刚写入工程的 AI 操作。
+    /// 输出/副作用：可能修改插件运行时、参数缓存或待处理队列；不修改工程内容。
+    /// 复杂度：时间 O(参数数)，空间 O(参数数)。
+    ///
+    /// Module: app / AI composition / plugin parameters
+    /// Purpose: Push a VST parameter operation into plugin runtimes; queue it for later frames when
+    /// the instance is not ready yet.
+    /// Inputs: `operation`: the AI operation just written into the project.
+    /// Outputs / side effects: may modify plugin runtimes, the parameter cache or the pending queue;
+    /// project content is unchanged.
+    /// Complexity: O(parameters) time and space.
+    fn apply_ai_operation_runtime(&mut self, operation: &AiOperation) {
+        let AiOperation::SetPluginParams {
+            track,
+            slot,
+            effect,
+            params,
+        } = operation
+        else {
+            return;
+        };
+        let Ok(track_index) = crate::ai::plan::find_track(&self.project, track) else {
+            return;
+        };
+        let track_id = self.project.tracks[track_index].id;
+        let slot_kind = match slot.trim().to_lowercase().as_str() {
+            "instrument" => SlotKind::Instrument,
+            "effect" => {
+                let Some(index) = effect else {
+                    return;
+                };
+                SlotKind::Effect(*index)
+            }
+            _ => return,
+        };
+        for param in params {
+            let pending = PendingPluginParam {
+                track_id,
+                slot: slot_kind,
+                index: param.index,
+                value: param.value.clamp(0.0, 1.0),
+            };
+            if !self.write_plugin_param_now(&pending) {
+                self.pending_plugin_params.push(pending);
+            }
+        }
+        self.invalidate_plugin_param_slot(track_id, slot_kind);
+    }
+
+    /// 所属模块：app / AI 编曲 / 插件参数
+    /// 功能：尝试把一个参数写入插件运行时；引擎锁忙或插件不存在时返回 `false`。
+    /// 输入：`pending`：待写入参数。
+    /// 输出/副作用：成功时调用插件 `setParamNormalized`；不修改工程。
+    /// 复杂度：时间 O(轨道数 + 效果器数)，空间 O(1)。
+    ///
+    /// Module: app / AI composition / plugin parameters
+    /// Purpose: Try to write one parameter into a plugin runtime; returns `false` while the engine is
+    /// busy or the plugin is missing.
+    /// Inputs: `pending`.
+    /// Outputs / side effects: calls the plugin's `setParamNormalized` on success; no project change.
+    /// Complexity: O(tracks + effects) time and O(1) space.
+    fn write_plugin_param_now(&self, pending: &PendingPluginParam) -> bool {
+        let Ok(mut engine) = self.engine.try_lock() else {
+            return false;
+        };
+        engine
+            .set_plugin_param(pending.track_id, pending.slot, pending.index, pending.value)
+            .is_ok()
+    }
+
+    /// 所属模块：app / AI 编曲 / 插件参数
+    /// 功能：每帧重试待写入的插件参数；轨道已被删除的参数直接丢弃。
+    /// 输入：`self`。
+    /// 输出/副作用：可能写入插件运行时并清空队列项；不修改工程。
+    /// 复杂度：时间 O(待处理数 × 轨道数)，空间 O(待处理数)。
+    ///
+    /// Module: app / AI composition / plugin parameters
+    /// Purpose: Retry pending plugin parameters every frame and drop entries whose track is gone.
+    /// Inputs: `self`.
+    /// Outputs / side effects: may write plugin runtimes and drain queue entries; no project change.
+    /// Complexity: O(pending × tracks) time and O(pending) space.
+    pub(super) fn flush_pending_plugin_params(&mut self) {
+        if self.pending_plugin_params.is_empty() {
+            return;
+        }
+        let pending = std::mem::take(&mut self.pending_plugin_params);
+        let mut remaining = Vec::new();
+        for param in pending {
+            if !self
+                .project
+                .tracks
+                .iter()
+                .any(|track| track.id == param.track_id)
+            {
+                continue;
+            }
+            if !self.write_plugin_param_now(&param) {
+                remaining.push(param);
+            }
+        }
+        self.pending_plugin_params = remaining;
     }
 
     /// 所属模块：app / AI 编曲 / 收尾
@@ -1390,6 +1668,151 @@ impl SurfingApp {
         self.ai_chat.conflict_prompt = None;
     }
 
+    /// 所属模块：app / AI 编曲 / 轨道引用
+    /// 功能：把一条轨道（乐器、效果器、控制器与片段摘要）复制为 AI 输入附件并打开面板。
+    /// 输入：`track_index`：轨道下标。
+    /// 输出/副作用：追加附件、打开 AI 面板并更新状态栏；不修改工程。
+    /// 复杂度：时间 O(轨道音符数)，空间 O(附件文本)。
+    ///
+    /// Module: app / AI composition / track reference
+    /// Purpose: Copy one track (instrument, effects, controllers and clip summary) into an AI
+    /// attachment and open the panel.
+    /// Inputs: `track_index`.
+    /// Outputs / side effects: appends an attachment, opens the AI panel and updates the status bar;
+    /// no project change.
+    /// Complexity: O(track notes) time and O(attachment text) space.
+    pub fn attach_track_to_ai(&mut self, track_index: usize) {
+        let Some(track) = self.project.tracks.get(track_index) else {
+            return;
+        };
+        let name = format!("轨道：{}", track.name);
+        let text = ai_track_reference(track);
+        self.ai_chat.attachments.push(AiAttachment { name, text });
+        self.side_panel = Some(SidePanel::Ai);
+        self.status = "已复制轨道到 AI 输入".into();
+    }
+
+    /// 所属模块：app / AI 编曲 / 片段引用
+    /// 功能：把一个 MIDI 片段复制为 AI 输入附件并打开面板。
+    /// 输入：`track_index` / `clip_index`：片段位置。
+    /// 输出/副作用：追加附件、打开 AI 面板并更新状态栏；不修改工程。
+    /// 复杂度：时间 O(片段音符数)，空间 O(附件文本)。
+    ///
+    /// Module: app / AI composition / clip reference
+    /// Purpose: Copy one MIDI clip into an AI attachment and open the panel.
+    /// Inputs: `track_index` / `clip_index`.
+    /// Outputs / side effects: appends an attachment, opens the AI panel and updates the status bar;
+    /// no project change.
+    /// Complexity: O(clip notes) time and O(attachment text) space.
+    pub fn attach_clip_to_ai(&mut self, track_index: usize, clip_index: usize) {
+        let Some(track) = self.project.tracks.get(track_index) else {
+            return;
+        };
+        let Some(clip) = track.clips.get(clip_index) else {
+            return;
+        };
+        if clip.is_audio() {
+            self.ai_chat.error = Some("音频片段暂不支持复制到 AI 输入".into());
+            return;
+        }
+        let name = format!("片段：{} / {}", track.name, clip.name);
+        let text = ai_clip_reference(track, clip);
+        self.ai_chat.attachments.push(AiAttachment { name, text });
+        self.side_panel = Some(SidePanel::Ai);
+        self.status = "已复制 MIDI 片段到 AI 输入".into();
+    }
+
+    /// 所属模块：app / AI 编曲 / 片段引用
+    /// 功能：把多选片段逐个复制为 AI 输入附件（最多 4 个）。
+    /// 输入：`clips`：`(轨道下标, 片段下标)` 列表。
+    /// 输出/副作用：追加附件、打开 AI 面板并更新状态栏；不修改工程。
+    /// 复杂度：时间 O(选中片段音符数)，空间 O(附件文本)。
+    ///
+    /// Module: app / AI composition / clip reference
+    /// Purpose: Copy several selected clips into AI attachments (at most four).
+    /// Inputs: `clips`: `(track index, clip index)` pairs.
+    /// Outputs / side effects: appends attachments, opens the AI panel and updates the status bar;
+    /// no project change.
+    /// Complexity: O(selected clip notes) time and O(attachment text) space.
+    pub fn attach_clips_to_ai(&mut self, clips: &[(usize, usize)]) {
+        let mut added = 0usize;
+        for (track_index, clip_index) in clips.iter().take(4) {
+            let Some(track) = self.project.tracks.get(*track_index) else {
+                continue;
+            };
+            let Some(clip) = track.clips.get(*clip_index) else {
+                continue;
+            };
+            if clip.is_audio() {
+                continue;
+            }
+            let name = format!("片段：{} / {}", track.name, clip.name);
+            let text = ai_clip_reference(track, clip);
+            self.ai_chat.attachments.push(AiAttachment { name, text });
+            added += 1;
+        }
+        if added > 0 {
+            self.side_panel = Some(SidePanel::Ai);
+            self.status = format!("已复制 {added} 个 MIDI 片段到 AI 输入");
+        }
+    }
+
+    /// 所属模块：app / AI 编曲 / 剪贴板引用
+    /// 功能：把应用内剪贴板中的整轨、片段或音符粘贴成 AI 输入附件。
+    /// 输入：`self`。
+    /// 输出/副作用：可能追加附件、打开 AI 面板并更新状态栏；不修改工程。
+    /// 复杂度：时间 O(剪贴板音符数)，空间 O(附件文本)。
+    ///
+    /// Module: app / AI composition / clipboard reference
+    /// Purpose: Paste a whole track, clips or notes from the in-app clipboard into AI attachments.
+    /// Inputs: `self`.
+    /// Outputs / side effects: may append attachments, open the AI panel and update the status bar;
+    /// no project change.
+    /// Complexity: O(clipboard notes) time and O(attachment text) space.
+    pub fn attach_clipboard_to_ai(&mut self) -> bool {
+        let mut generated: Vec<(String, String)> = Vec::new();
+        match &self.clipboard {
+            Clipboard::Track(track) => {
+                generated.push((format!("轨道：{}", track.name), ai_track_reference(track)));
+            }
+            Clipboard::Clips(clips) => {
+                for (track_index, clip) in clips.iter().take(4) {
+                    let track = self.project.tracks.get(*track_index);
+                    let name = track
+                        .map(|track| format!("片段：{} / {}", track.name, clip.name))
+                        .unwrap_or_else(|| format!("片段：{}", clip.name));
+                    let text = track
+                        .map(|track| ai_clip_reference(track, clip))
+                        .unwrap_or_else(|| ai_clip_only_reference(clip));
+                    generated.push((name, text));
+                }
+            }
+            Clipboard::Notes(notes) => {
+                if notes.is_empty() {
+                    return false;
+                }
+                let mut text = String::from("音符引用（相对片段开头）：\n");
+                text.push_str("音高:相对拍:时值:力度 = ");
+                for note in notes.iter().take(AI_REFERENCE_NOTES) {
+                    text.push_str(&ai_note_text(note));
+                    text.push(' ');
+                }
+                generated.push(("音符".into(), text));
+            }
+            _ => return false,
+        }
+        if generated.is_empty() {
+            return false;
+        }
+        let count = generated.len();
+        for (name, text) in generated {
+            self.ai_chat.attachments.push(AiAttachment { name, text });
+        }
+        self.side_panel = Some(SidePanel::Ai);
+        self.status = format!("已从剪贴板添加 {count} 个 AI 引用");
+        true
+    }
+
     /// 所属模块：app / AI 编曲 / 附件
     /// 功能：在后台打开文件选择器并读取附件（文本 / Markdown / JSON / CSV / MIDI）。
     /// 输入：`self`。
@@ -1472,7 +1895,8 @@ impl SurfingApp {
 /// 功能：执行一次完整的 AI 任务：首轮补全 → 如模型请求检索则联网搜索 → 再次补全；最多 3 轮。
 /// 输入：
 /// - `request`：模型、密钥、消息与采样参数；
-/// - `search_config`：联网搜索配置。
+/// - `search_config`：联网搜索配置；
+/// - `library`：可编辑资料库（按需加载技巧正文）。
 /// 输出/副作用：最终模型内容、截断标记与是否检索过；阻塞调用，必须在后台线程执行。
 /// 复杂度：时间 O(轮次 × 网络延迟)，空间 O(消息 + 搜索结果长度)。
 ///
@@ -1481,13 +1905,15 @@ impl SurfingApp {
 /// again, at most three rounds.
 /// Inputs:
 /// - `request`: model, key, messages and sampling parameters;
-/// - `search_config`: web-research configuration.
+/// - `search_config`: web-research configuration;
+/// - `library`: editable library (loads requested technique bodies).
 /// Outputs / side effects: final model content, truncation flag and whether research ran; blocking, so
 /// it must run on a worker thread.
 /// Complexity: O(rounds × network latency) time and O(messages + search results) space.
 fn run_ai_worker(
     mut request: AiRequest,
     search_config: AiSearchConfig,
+    library: AiLibrary,
     request_id: u64,
     events: Sender<AiWorkerEvent>,
 ) -> Result<AiWorkerOutcome, String> {
@@ -1598,7 +2024,7 @@ fn run_ai_worker(
                 request_id,
                 label: "正在加载编曲技巧…".into(),
             });
-            let (skill_text, newly_loaded) = load_techniques(&new_skills);
+            let (skill_text, newly_loaded) = library.load_techniques(&new_skills);
             if newly_loaded.is_empty() {
                 user_text.push_str("请求的技巧未找到；请参考技巧索引或直接基于已有知识继续。\n");
             } else {
@@ -1670,6 +2096,8 @@ fn summary_has_changes(summary: &AiApplySummary) -> bool {
         || summary.notes_added > 0
         || summary.effects_added > 0
         || summary.plugins_added > 0
+        || summary.params_changed > 0
+        || summary.controllers_added > 0
         || summary.cleared
         || summary.tempo.is_some()
         || summary.time_signature.is_some()
@@ -1697,6 +2125,190 @@ fn merge_reasoning(parts: &[String]) -> Option<String> {
         text.push_str("\n…（思考过程过长，已截断）");
     }
     Some(text)
+}
+
+/// 复制轨道/片段为 AI 附件时最多包含的音符数。
+/// Maximum notes included when copying a track/clip into an AI attachment.
+const AI_REFERENCE_NOTES: usize = 256;
+
+/// 所属模块：app / AI 编曲 / 轨道引用
+/// 功能：生成一条轨道的文本快照：乐器、音量/声像、效果器、控制器与片段音符。
+/// 输入：`track`：轨道。
+/// 输出/副作用：附件文本；不修改轨道。
+/// 复杂度：时间 O(轨道音符数)，空间 O(文本长度)。
+///
+/// Module: app / AI composition / track reference
+/// Purpose: Build a text snapshot of one track: instrument, volume/pan, effects, controllers and
+/// clip notes.
+/// Inputs: `track`.
+/// Outputs / side effects: attachment text; the track is unchanged.
+/// Complexity: O(track notes) time and O(text length) space.
+fn ai_track_reference(track: &Track) -> String {
+    let mut text = format!(
+        "轨道引用：{}（id={}）\n乐器：{}\n音量={:.2} 声像={:.2}{}{}\n",
+        track.name,
+        track.id,
+        track.instrument.label(),
+        track.volume,
+        track.pan,
+        if track.muted { " 静音" } else { "" },
+        if track.solo { " 独奏" } else { "" }
+    );
+    if !track.effects.is_empty() {
+        text.push_str("效果器链：\n");
+        for (index, effect) in track.effects.iter().enumerate() {
+            text.push_str(&format!(
+                "  [{index}] {}（{}）\n",
+                effect.label(),
+                if effect.enabled() { "启用" } else { "旁路" }
+            ));
+        }
+    }
+    let mut controller_lines = Vec::new();
+    for kind in ControllerKind::ALL {
+        let lane = track.controllers.get(kind);
+        if lane.is_empty() {
+            continue;
+        }
+        let points = lane
+            .iter()
+            .take(32)
+            .map(|point| format!("{:.2}={:.3}", point.beat, point.value))
+            .collect::<Vec<_>>()
+            .join(" ");
+        controller_lines.push(format!("{}（{} 点）：{points}", kind.label(), lane.len()));
+    }
+    if !controller_lines.is_empty() {
+        text.push_str("控制器子轨：\n");
+        for line in controller_lines {
+            text.push_str(&format!("  {line}\n"));
+        }
+    }
+    if track.clips.is_empty() {
+        text.push_str("片段：无\n");
+        return text;
+    }
+    text.push_str("片段：\n");
+    let mut written = 0usize;
+    for (index, clip) in track.clips.iter().enumerate() {
+        text.push_str(&format!(
+            "  [{}]「{}」{:.2}~{:.2} 拍\n",
+            index,
+            clip.name,
+            clip.start,
+            clip.end()
+        ));
+        if clip.is_audio() {
+            text.push_str("    音频片段（无 MIDI 音符）\n");
+            continue;
+        }
+        if written >= AI_REFERENCE_NOTES {
+            text.push_str("    …（已达音符上限）\n");
+            continue;
+        }
+        text.push_str("    音高:相对拍:时值:力度 = ");
+        for note in &clip.notes {
+            if written >= AI_REFERENCE_NOTES {
+                text.push_str("…");
+                break;
+            }
+            text.push_str(&ai_note_text(note));
+            text.push(' ');
+            written += 1;
+        }
+        text.push('\n');
+    }
+    text
+}
+
+/// 所属模块：app / AI 编曲 / 片段引用
+/// 功能：生成一个 MIDI 片段的文本快照（所属轨道、音色与音符）。
+/// 输入：`track` 所属轨道；`clip` 片段。
+/// 输出/副作用：附件文本；不修改输入。
+/// 复杂度：时间 O(片段音符数)，空间 O(文本长度)。
+///
+/// Module: app / AI composition / clip reference
+/// Purpose: Build a text snapshot of one MIDI clip (owner track, timbre and notes).
+/// Inputs: `track`; `clip`.
+/// Outputs / side effects: attachment text; the inputs are unchanged.
+/// Complexity: O(clip notes) time and O(text length) space.
+fn ai_clip_reference(track: &Track, clip: &Clip) -> String {
+    let mut text = format!(
+        "片段引用：{} / {}（id={}）\n所属轨道：{}（id={}）\n乐器：{}\n范围：{:.2}~{:.2} 拍（长度 {:.2} 拍）\n音符：\n",
+        track.name,
+        clip.name,
+        clip.id,
+        track.name,
+        track.id,
+        track.instrument.label(),
+        clip.start,
+        clip.end(),
+        clip.length
+    );
+    if clip.notes.is_empty() {
+        text.push_str("  （空片段）\n");
+        return text;
+    }
+    text.push_str("  音高:相对拍:时值:力度 = ");
+    for note in clip.notes.iter().take(AI_REFERENCE_NOTES) {
+        text.push_str(&ai_note_text(note));
+        text.push(' ');
+    }
+    if clip.notes.len() > AI_REFERENCE_NOTES {
+        text.push_str("…（其余省略）");
+    }
+    text.push('\n');
+    text
+}
+
+/// 所属模块：app / AI 编曲 / 片段引用
+/// 功能：在没有所属轨道时生成一个片段的文本快照。
+/// 输入：`clip`：片段。
+/// 输出/副作用：附件文本；不修改片段。
+/// 复杂度：时间 O(片段音符数)，空间 O(文本长度)。
+///
+/// Module: app / AI composition / clip reference
+/// Purpose: Build a clip-only snapshot when the owner track is unavailable.
+/// Inputs: `clip`.
+/// Outputs / side effects: attachment text; the clip is unchanged.
+/// Complexity: O(clip notes) time and O(text length) space.
+fn ai_clip_only_reference(clip: &Clip) -> String {
+    let mut text = format!(
+        "片段引用：{}（id={}）\n范围：{:.2}~{:.2} 拍（长度 {:.2} 拍）\n音符：\n",
+        clip.name,
+        clip.id,
+        clip.start,
+        clip.end(),
+        clip.length
+    );
+    text.push_str("  音高:相对拍:时值:力度 = ");
+    for note in clip.notes.iter().take(AI_REFERENCE_NOTES) {
+        text.push_str(&ai_note_text(note));
+        text.push(' ');
+    }
+    text.push('\n');
+    text
+}
+
+/// 所属模块：app / AI 编曲 / 片段引用
+/// 功能：把音符格式化为紧凑文本。
+/// 输入：`note`：音符。
+/// 输出/副作用：`C4:0.00:1.00:90` 形式文本；不修改音符。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: app / AI composition / clip reference
+/// Purpose: Format one note into compact text.
+/// Inputs: `note`.
+/// Outputs / side effects: text in `C4:0.00:1.00:90` form; the note is unchanged.
+/// Complexity: O(1) time and space.
+fn ai_note_text(note: &Note) -> String {
+    format!(
+        "{}:{:.2}:{:.2}:{}",
+        crate::ai::plan::pitch_name(note.pitch),
+        note.start,
+        note.length,
+        note.velocity
+    )
 }
 
 /// 所属模块：app / AI 编曲 / 附件读取

@@ -1,107 +1,23 @@
-//! 所属模块：ai / 内置技能
+//! 所属模块：ai / 内置技能素材
 //! 文件用途：
 //! - 以编译期内嵌的 Markdown 技能描述乐理、现代编曲、风格（轻音乐 / J-Pop）与各配器写法。
-//! - 以“索引 + 按需加载”的方式提供编曲技巧 skill（`techniques/*.md`），供模型自主调用。
-//! - 定义 AI 智能体（轻音乐创作、J-Pop）及其必选技能集合。
-//! - 生成给模型的乐器清单，确保计划只使用软件真实存在的音色。
+//! - 提供编曲技巧的初始内容（`techniques/*.md`）与内置采样音色清单；可编辑资料库在
+//!   `ai/library.rs` 中初始化与增删改。
 //!
 //! 函数清单：
-//! - `AiAgentKind::id` / `label` / `description` / `ALL`：智能体信息。
-//! - `AiSkill` / `skill_catalog` / `agent_skills`：技能条目与智能体技能集合。
-//! - `skill_prompt`：把一个智能体的全部技能拼成系统提示词片段。
-//! - `technique_catalog` / `load_techniques`：编曲技巧索引与按需加载。
 //! - `instrument_catalog`：内置采样音色库的 id / 中文名 / 音域清单。
 //!
-//! Module: ai / built-in skills
+//! Module: ai / built-in skill sources
 //! Purpose:
 //! - Embed Markdown skills describing theory, modern arrangement, styles (light music / J-Pop) and
 //!   instrument writing at compile time.
-//! - Offer arrangement techniques as an index plus on-demand bodies (`techniques/*.md`) the model
-//!   can request itself.
-//! - Define AI agents (light music, J-Pop) and their mandatory skill sets.
-//! - Build the instrument catalogue so plans only reference sounds the app really has.
+//! - Provide the initial technique bodies (`techniques/*.md`) and the built-in sample catalogue; the
+//!   editable library is seeded and managed in `ai/library.rs`.
 //!
 //! Functions:
-//! - `AiAgentKind::id` / `label` / `description` / `ALL`: agent data.
-//! - `AiSkill` / `skill_catalog` / `agent_skills`: skill entries and an agent's skill set.
-//! - `skill_prompt`: concatenate an agent's skills into a system-prompt section.
-//! - `technique_catalog` / `load_techniques`: technique index and on-demand loading.
 //! - `instrument_catalog`: ids, Chinese names and ranges of the built-in sample bank.
 
 use crate::core::model::bank_instruments;
-
-/// AI 智能体类型。
-/// AI agent kinds.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum AiAgentKind {
-    /// 轻音乐创作：旋律优先、和声柔和、配器透明的器乐写作。
-    /// Light-music composition: melody-first instrumental writing with soft harmony and transparent
-    /// orchestration.
-    #[default]
-    LightMusic,
-    /// J-Pop：强 Hook、王道进行/丸サ进行、副歌优先、转调与高密度配器。
-    /// J-Pop: strong hooks, royal-road / Marusa progressions, chorus-first form, modulations and dense
-    /// production.
-    JPop,
-}
-
-impl AiAgentKind {
-    pub const ALL: [AiAgentKind; 2] = [AiAgentKind::LightMusic, AiAgentKind::JPop];
-
-    /// 所属模块：ai / 智能体
-    /// 功能：返回持久化标识。
-    /// 输入：`self`。
-    /// 输出/副作用：静态字符串；不修改状态。
-    /// 复杂度：时间 O(1)，空间 O(1)。
-    ///
-    /// Module: ai / agent
-    /// Purpose: Return the persisted id.
-    /// Inputs: `self`.
-    /// Outputs / side effects: static text; no state change.
-    /// Complexity: O(1) time and space.
-    pub fn id(self) -> &'static str {
-        match self {
-            AiAgentKind::LightMusic => "light-music",
-            AiAgentKind::JPop => "j-pop",
-        }
-    }
-
-    /// 所属模块：ai / 智能体
-    /// 功能：返回下拉展示名称。
-    /// 输入：`self`。
-    /// 输出/副作用：静态文本；不修改状态。
-    /// 复杂度：时间 O(1)，空间 O(1)。
-    ///
-    /// Module: ai / agent
-    /// Purpose: Return the selector label.
-    /// Inputs: `self`.
-    /// Outputs / side effects: static text; no state change.
-    /// Complexity: O(1) time and space.
-    pub fn label(self) -> &'static str {
-        match self {
-            AiAgentKind::LightMusic => "轻音乐创作",
-            AiAgentKind::JPop => "J-Pop",
-        }
-    }
-
-    /// 所属模块：ai / 智能体
-    /// 功能：返回能力说明（用于下拉提示）。
-    /// 输入：`self`。
-    /// 输出/副作用：静态文本；不修改状态。
-    /// 复杂度：时间 O(1)，空间 O(1)。
-    ///
-    /// Module: ai / agent
-    /// Purpose: Return the capability description used by the selector tooltip.
-    /// Inputs: `self`.
-    /// Outputs / side effects: static text; no state change.
-    /// Complexity: O(1) time and space.
-    pub fn description(self) -> &'static str {
-        match self {
-            AiAgentKind::LightMusic => "旋律优先、和声柔和、配器透明的轻音乐编曲",
-            AiAgentKind::JPop => "强 Hook、王道/丸サ进行、副歌优先、转调与高密度配器",
-        }
-    }
-}
 
 /// 一段内置技能（Markdown）。
 /// One embedded skill (Markdown).
@@ -296,142 +212,6 @@ pub const TECHNIQUE_SKILLS: [AiTechnique; 14] = [
     },
 ];
 
-/// 所属模块：ai / 技巧索引
-/// 功能：生成常驻提示词的技巧索引（id、名称、一句话特点/用途）。
-/// 输入：无。
-/// 输出/副作用：索引文本；不修改状态。
-/// 复杂度：时间 O(技巧数)，空间 O(同)。
-///
-/// Module: ai / technique index
-/// Purpose: Build the always-present technique index (id, title, one-line use).
-/// Inputs: none.
-/// Outputs / side effects: index text; no state change.
-/// Complexity: O(techniques) time and space.
-pub fn technique_catalog() -> String {
-    let mut text = String::from(
-        "技巧 id | 名称 | 特点 / 适用情况\n\
-         需要具体写法时把 id 放进输出 JSON 的 `skills` 数组（最多 4 个），宿主加载后再次调用你。\n",
-    );
-    for technique in TECHNIQUE_SKILLS.iter() {
-        text.push_str(&format!(
-            "{} | {} | {}\n",
-            technique.id, technique.title, technique.summary
-        ));
-    }
-    text
-}
-
-/// 所属模块：ai / 技巧加载
-/// 功能：按 id 加载技巧正文，最多 4 个；未知 id 会被忽略并在文本中说明。
-/// 输入：`ids`：模型请求的技巧 id。
-/// 输出/副作用：拼接的正文与已加载 id；不修改状态。
-/// 复杂度：时间 O(请求数 × 技巧数)，空间 O(正文长度)。
-///
-/// Module: ai / technique loading
-/// Purpose: Load technique bodies by id, at most four; unknown ids are reported.
-/// Inputs: `ids`: technique ids requested by the model.
-/// Outputs / side effects: concatenated bodies and loaded ids; no state change.
-/// Complexity: O(requested × techniques) time and O(body length) space.
-pub fn load_techniques(ids: &[String]) -> (String, Vec<String>) {
-    let mut text = String::new();
-    let mut loaded = Vec::new();
-    let mut unknown = Vec::new();
-    for id in ids {
-        if loaded.len() >= 4 {
-            break;
-        }
-        let key = id.trim().to_lowercase();
-        if key.is_empty() || loaded.iter().any(|entry| entry == &key) {
-            continue;
-        }
-        if let Some(technique) = TECHNIQUE_SKILLS
-            .iter()
-            .find(|technique| technique.id == key)
-        {
-            text.push_str(&format!(
-                "\n\n# 技巧：{}（{}）\n{}",
-                technique.title, technique.id, technique.body
-            ));
-            loaded.push(key);
-        } else {
-            unknown.push(id.clone());
-        }
-    }
-    if !unknown.is_empty() {
-        text.push_str(&format!(
-            "\n\n（未找到技巧：{}；可用 id 见技巧索引。）",
-            unknown.join("、")
-        ));
-    }
-    (text, loaded)
-}
-
-/// 所属模块：ai / 技能
-/// 功能：返回全部内置技能（乐理 + 风格 + 配器）。
-/// 输入：无。
-/// 输出/副作用：技能引用列表；不修改状态。
-/// 复杂度：时间 O(技能数)，空间 O(技能数)。
-///
-/// Module: ai / skills
-/// Purpose: Return every built-in skill (theory + style + instruments).
-/// Inputs: none.
-/// Outputs / side effects: skill references; no state change.
-/// Complexity: O(skills) time and space.
-pub fn skill_catalog() -> Vec<&'static AiSkill> {
-    let mut skills = vec![&MUSIC_THEORY, &MODERN_ARRANGEMENT, &LIGHT_MUSIC, &J_POP];
-    skills.extend(INSTRUMENT_SKILLS.iter());
-    skills
-}
-
-/// 所属模块：ai / 技能
-/// 功能：返回指定智能体必须加载的技能；乐理与配器是所有智能体的基础。
-/// 输入：`agent`：智能体类型。
-/// 输出/副作用：技能引用列表；不修改状态。
-/// 复杂度：时间 O(技能数)，空间 O(技能数)。
-///
-/// Module: ai / skills
-/// Purpose: Return the skills an agent must load; theory and instruments are mandatory for every agent.
-/// Inputs: `agent`: agent kind.
-/// Outputs / side effects: skill references; no state change.
-/// Complexity: O(skills) time and space.
-pub fn agent_skills(agent: AiAgentKind) -> Vec<&'static AiSkill> {
-    let style = match agent {
-        AiAgentKind::LightMusic => &LIGHT_MUSIC,
-        AiAgentKind::JPop => &J_POP,
-    };
-    let mut skills = vec![&MUSIC_THEORY, &MODERN_ARRANGEMENT, style];
-    skills.extend(INSTRUMENT_SKILLS.iter());
-    skills
-}
-
-/// 所属模块：ai / 技能
-/// 功能：把一个智能体的全部技能拼成系统提示词片段，附带来源说明。
-/// 输入：`agent`：智能体类型。
-/// 输出/副作用：Markdown 文本；不修改状态。
-/// 复杂度：时间 O(技能总长度)，空间 O(技能总长度)。
-///
-/// Module: ai / skills
-/// Purpose: Concatenate an agent's skills into a system-prompt section with source notes.
-/// Inputs: `agent`: agent kind.
-/// Outputs / side effects: Markdown text; no state change.
-/// Complexity: O(total skill length) time and space.
-pub fn skill_prompt(agent: AiAgentKind) -> String {
-    let mut text = String::from("以下是本次编曲必须遵循的内置技能，请完整阅读并在写作时执行。\n");
-    // 说明资料来源：技能由公开乐理与配器资料整理，模型不应再引用无法验证的具体曲目。
-    // Source note: the skills are compiled from public theory/orchestration references; the model must
-    // not cite unverifiable specific pieces.
-    text.push_str("技能内容整理自公开乐理、配器法与轻音乐风格资料，仅用于写作约束。\n");
-    for skill in agent_skills(agent) {
-        text.push_str("\n\n# 技能：");
-        text.push_str(skill.title);
-        text.push('（');
-        text.push_str(skill.id);
-        text.push_str("）\n");
-        text.push_str(skill.body);
-    }
-    text
-}
-
 /// 所属模块：ai / 音色清单
 /// 功能：生成内置采样音色库的 id / 中文名 / 音域清单，供模型选择乐器。
 /// 输入：无。
@@ -462,47 +242,16 @@ pub fn instrument_catalog() -> String {
 mod tests {
     use super::*;
 
-    /// 覆盖：轻音乐智能体包含乐理、风格与全部配器技能。
-    /// Covers: the light-music agent loads theory, style and every instrument skill.
+    /// 覆盖：内置技能正文非空。
+    /// Covers: every embedded skill has a non-empty body.
     #[test]
-    fn agent_skills_include_theory_and_instruments() {
-        let skills = agent_skills(AiAgentKind::LightMusic);
-        assert!(skills.iter().any(|skill| skill.id == "music-theory"));
-        assert!(skills.iter().any(|skill| skill.id == "light-music"));
-        assert!(skills.iter().any(|skill| skill.id == "modern-arrangement"));
-        assert_eq!(skills.len(), 3 + INSTRUMENT_SKILLS.len());
+    fn embedded_skill_bodies_are_present() {
         assert!(!MUSIC_THEORY.body.trim().is_empty());
         assert!(!LIGHT_MUSIC.body.trim().is_empty());
         assert!(!MODERN_ARRANGEMENT.body.trim().is_empty());
-    }
-
-    /// 覆盖：J-Pop 智能体加载乐理、现代编曲、J-Pop 风格与全部配器。
-    /// Covers: the J-Pop agent loads theory, modern arrangement, J-Pop style and every instrument.
-    #[test]
-    fn jpop_agent_skills_include_style_and_instruments() {
-        let skills = agent_skills(AiAgentKind::JPop);
-        assert!(skills.iter().any(|skill| skill.id == "j-pop"));
-        assert!(skills.iter().any(|skill| skill.id == "modern-arrangement"));
-        assert_eq!(skills.len(), 3 + INSTRUMENT_SKILLS.len());
         assert!(!J_POP.body.trim().is_empty());
-    }
-
-    /// 覆盖：技巧索引包含律动，按 id 加载正文时只加载请求项。
-    /// Covers: the technique index lists groove and loading only returns requested bodies.
-    #[test]
-    fn technique_index_and_loading() {
-        let index = technique_catalog();
-        assert!(index.contains("groove-pocket"));
-        assert!(index.contains("律动"));
-        let (text, loaded) = load_techniques(&[
-            "groove-pocket".to_string(),
-            "syncopation".to_string(),
-            "missing".to_string(),
-        ]);
-        assert!(text.contains("# 技巧：律动与 Pocket"));
-        assert!(text.contains("未找到技巧"));
-        assert_eq!(loaded, vec!["groove-pocket", "syncopation"]);
         assert!(!TECHNIQUE_SKILLS[0].body.trim().is_empty());
+        assert_eq!(INSTRUMENT_SKILLS.len(), 8);
     }
 
     /// 覆盖：音色清单包含大钢琴与民族乐器。
