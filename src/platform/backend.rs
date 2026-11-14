@@ -5,7 +5,8 @@
 //! - 后端只负责单一系统，不感知应用状态。
 //!
 //! 函数清单：
-//! - `PlatformBackend::info` / `caps`：后端标识与能力。
+//! - `PlatformBackend::info` / `caps` / `system_locale`：后端标识、能力与系统区域。
+//! - `locale_from_env`：从环境变量读取区域标识的通用实现。
 //! - `PlatformBackend::install_dir` / `config_dir` / `cache_dir` / `data_dir` / `log_dir` /
 //!   `temp_dir`：存储目录。
 //! - `PlatformBackend::pick_file` / `pick_folder` / `save_file`：文件对话框。
@@ -18,7 +19,8 @@
 //! - A backend covers exactly one OS and knows nothing about the application state.
 //!
 //! Functions:
-//! - `PlatformBackend::info` / `caps`: backend identity and capabilities.
+//! - `PlatformBackend::info` / `caps` / `system_locale`: backend identity, capabilities and locale.
+//! - `locale_from_env`: shared environment-variable locale reader.
 //! - `PlatformBackend::install_dir` / `config_dir` / `cache_dir` / `data_dir` / `log_dir` /
 //!   `temp_dir`: storage.
 //! - `PlatformBackend::pick_file` / `pick_folder` / `save_file`: file dialogs.
@@ -26,6 +28,26 @@
 
 use super::DialogParent;
 use std::path::{Path, PathBuf};
+
+/// 所属模块：platform / 后端接口 / 区域
+/// 功能：从 `LANGUAGE` / `LC_ALL` / `LC_MESSAGES` / `LANG` 读取区域标识；供没有系统 API 的后端使用。
+/// 输入：无。
+/// 输出/副作用：第一个非空环境变量；不修改状态。
+/// 复杂度：时间 O(环境变量数 × 文本长度)，空间 O(文本长度)。
+///
+/// Module: platform / backend interface / locale
+/// Purpose: Read the locale id from `LANGUAGE` / `LC_ALL` / `LC_MESSAGES` / `LANG` for backends
+/// without a system API.
+/// Inputs: none.
+/// Outputs / side effects: the first non-empty environment variable; no state change.
+/// Complexity: O(variables × text length) time and O(text length) space.
+pub(super) fn locale_from_env() -> Option<String> {
+    ["LANGUAGE", "LC_ALL", "LC_MESSAGES", "LANG"]
+        .iter()
+        .filter_map(|key| std::env::var(key).ok())
+        .map(|value| value.split(':').next().unwrap_or("").trim().to_string())
+        .find(|value| !value.is_empty())
+}
 
 /// 平台后端标识。
 /// Platform backend identity.
@@ -189,6 +211,21 @@ pub trait PlatformBackend: Send + Sync {
     /// Outputs / side effects: the descriptor; no state change.
     /// Complexity: O(1) time and space.
     fn caps(&self) -> PlatformCaps;
+
+    /// 所属模块：platform / 后端接口 / 区域
+    /// 功能：返回系统区域标识（如 `zh-CN`）；后端不提供时返回 `None`。
+    /// 输入：`self`。
+    /// 输出/副作用：区域标识；不修改状态。
+    /// 复杂度：时间 O(系统调用)，空间 O(区域名长度)。
+    ///
+    /// Module: platform / backend interface / locale
+    /// Purpose: Return the system locale id (e.g. `zh-CN`); `None` when the backend has none.
+    /// Inputs: `self`.
+    /// Outputs / side effects: the locale id; no state change.
+    /// Complexity: O(system call) time and O(locale length) space.
+    fn system_locale(&self) -> Option<String> {
+        None
+    }
 
     /// 所属模块：platform / 后端接口 / 存储
     /// 功能：返回软件安装目录；桌面端为可执行文件所在目录，安卓端为应用私有数据目录。

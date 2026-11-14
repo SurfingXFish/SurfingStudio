@@ -1,4 +1,4 @@
-﻿//! 所属模块：app / 全局设置
+//! 所属模块：app / 全局设置
 //! 文件用途：
 //! - 定义可持久化的全局设置：界面缩放、项目列表、存储、音频、控制器、渲染、插件与收藏。
 //! - 读写本机配置文件（`%APPDATA%/SurfingStudio/settings.json` 或对应平台目录）。
@@ -54,6 +54,7 @@
 //! - `settings_nav_item` / `settings_section` / `settings_hint` / `settings_field_label`: shared layout.
 //! - `settings_combo` / `settings_action_button` / `settings_switch`: consistently styled controls.
 
+use super::i18n::{self, t, t_args};
 use super::shortcuts::{Binding, ShortcutAction, ShortcutGroup};
 use super::*;
 use crate::audio::backend::{self, AudioOptions, AudioSystem};
@@ -165,27 +166,27 @@ impl SettingsPage {
     ];
 
     /// 所属模块：app / 全局设置
-    /// 功能：返回分类的中文名称。
+    /// 功能：返回分类的当前语言名称。
     /// 输入：`self`。
     /// 输出/副作用：静态文本；不修改状态。
     /// 复杂度：时间 O(1)，空间 O(1)。
     ///
     /// Module: app / global settings
-    /// Purpose: Return the Chinese label of a settings category.
+    /// Purpose: Return the settings-category label in the active language.
     /// Inputs: `self`.
     /// Outputs / side effects: static text; no state change.
     /// Complexity: O(1) time and space.
     pub fn label(self) -> &'static str {
         match self {
-            SettingsPage::Interface => "界面",
-            SettingsPage::Storage => "存储",
-            SettingsPage::Audio => "音频",
-            SettingsPage::Render => "渲染",
-            SettingsPage::Controller => "控制器",
+            SettingsPage::Interface => t("界面"),
+            SettingsPage::Storage => t("存储"),
+            SettingsPage::Audio => t("音频"),
+            SettingsPage::Render => t("渲染"),
+            SettingsPage::Controller => t("控制器"),
             SettingsPage::Ai => "AI",
-            SettingsPage::Plugins => "插件",
-            SettingsPage::Shortcuts => "快捷键",
-            SettingsPage::About => "软件信息",
+            SettingsPage::Plugins => t("插件"),
+            SettingsPage::Shortcuts => t("快捷键"),
+            SettingsPage::About => t("软件信息"),
         }
     }
 }
@@ -418,6 +419,10 @@ pub struct AppSettings {
     /// UI scale (1.0 = 100%).
     #[serde(default = "default_ui_scale")]
     pub ui_scale: f32,
+    /// 界面语言代码（`zh-CN` / `en-US`）；空字符串表示尚未选择。
+    /// UI language code (`zh-CN` / `en-US`); empty means the user has not chosen yet.
+    #[serde(default)]
+    pub language: String,
     /// 打开或保存过的工程路径，最新的在最前；主页按文件保存时间排序。
     /// Every opened or saved project path, newest first; the home page sorts by file mtime.
     #[serde(default)]
@@ -633,6 +638,13 @@ impl AppSettings {
         if !(1..=100).contains(&settings.backup_retention) {
             settings.backup_retention = DEFAULT_BACKUP_RETENTION;
         }
+        // 首次启动（没有语言记录）按系统语言选择；系统语言没有对应目录时使用英语。
+        // On first launch (no stored language) pick the system language; an unsupported system
+        // language falls back to English.
+        settings.language = i18n::normalize_code(&settings.language)
+            .unwrap_or_else(|| i18n::system_language())
+            .to_string();
+        i18n::set_language(&settings.language);
         settings.controller_latency_offset_ms =
             settings.controller_latency_offset_ms.clamp(-200.0, 200.0);
         // 未知或旧版音频系统标识统一归一到 `system`，避免下拉框显示与存储值不一致。
@@ -791,10 +803,10 @@ impl GpuRenderApi {
     /// Complexity: O(1) time and space.
     pub fn label(self) -> &'static str {
         match self {
-            GpuRenderApi::Auto => "自动（DirectX 12 / Vulkan）",
+            GpuRenderApi::Auto => t("自动（DirectX 12 / Vulkan）"),
             GpuRenderApi::DirectX12 => "DirectX 12",
             GpuRenderApi::Vulkan => "Vulkan",
-            GpuRenderApi::OpenGl => "OpenGL（兼容）",
+            GpuRenderApi::OpenGl => t("OpenGL（兼容）"),
         }
     }
 
@@ -983,6 +995,7 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             ui_scale: DEFAULT_UI_SCALE,
+            language: String::new(),
             recent_projects: Vec::new(),
             favorite_instruments: Vec::new(),
             favorite_effects: Vec::new(),
@@ -1097,7 +1110,7 @@ impl SurfingApp {
         ctx.show_viewport_immediate(
             viewport_id,
             egui::ViewportBuilder::default()
-                .with_title(SETTINGS_WINDOW_TITLE)
+                .with_title(t(SETTINGS_WINDOW_TITLE))
                 .with_inner_size([SETTINGS_WINDOW_W, SETTINGS_WINDOW_H])
                 .with_min_inner_size([SETTINGS_MIN_W, SETTINGS_MIN_H])
                 .with_resizable(true)
@@ -1236,9 +1249,9 @@ impl SurfingApp {
                             }
                             ui.add_space(12.0);
                             ui.label(
-                                egui::RichText::new(format!(
+                                egui::RichText::new(t_args(
                                     "SurfingStudio {} · 设置保存在用户配置目录",
-                                    env!("CARGO_PKG_VERSION")
+                                    &[env!("CARGO_PKG_VERSION")],
                                 ))
                                 .size(10.0)
                                 .color(theme::TEXT_FAINT),
@@ -1263,9 +1276,32 @@ impl SurfingApp {
     /// Outputs / side effects: edits and saves the UI scale, applied to every window immediately.
     /// Complexity: O(1) per frame.
     fn ui_settings_interface(&mut self, ui: &mut egui::Ui) {
-        settings_section(ui, "界面", |ui| {
+        settings_section(ui, t("界面语言"), |ui| {
             ui.horizontal(|ui| {
-                settings_field_label(ui, "界面缩放");
+                settings_field_label(ui, t("界面语言"));
+                let current = i18n::language_name(&self.settings.language)
+                    .unwrap_or_else(|| i18n::language_name(i18n::language()).unwrap_or_default());
+                let mut selected = self.settings.language.clone();
+                settings_combo(ui, "settings_language", current, |ui| {
+                    for info in i18n::LANGUAGES {
+                        ui.selectable_value(&mut selected, info.code.to_string(), info.native_name);
+                    }
+                });
+                if selected != self.settings.language {
+                    self.settings.language = selected;
+                    self.commit_settings();
+                    ui.ctx().request_repaint();
+                }
+            });
+            settings_hint(
+                ui,
+                t("语言文件中缺失的条目使用中文填充；系统语言没有对应语言文件时使用英语。"),
+            );
+        });
+
+        settings_section(ui, t("界面"), |ui| {
+            ui.horizontal(|ui| {
+                settings_field_label(ui, t("界面缩放"));
                 let mut scale = self.settings.ui_scale;
                 settings_combo(
                     ui,
@@ -1287,13 +1323,13 @@ impl SurfingApp {
                     ui.ctx().set_zoom_factor(scale);
                 }
             });
-            settings_hint(ui, "缩放会立即应用到所有窗口、浮动卷帘与插件窗口。");
+            settings_hint(ui, t("缩放会立即应用到所有窗口、浮动卷帘与插件窗口。"));
         });
 
-        settings_section(ui, "GPU 渲染", |ui| {
+        settings_section(ui, t("GPU 渲染"), |ui| {
             ui.horizontal(|ui| {
                 ui.label(
-                    egui::RichText::new("GPU 渲染加速")
+                    egui::RichText::new(t("GPU 渲染加速"))
                         .size(11.5)
                         .color(theme::TEXT),
                 );
@@ -1307,10 +1343,12 @@ impl SurfingApp {
             });
             settings_hint(
                 ui,
-                "开启后界面使用 wgpu 渲染后端（DirectX 12 / Vulkan）；关闭时使用 OpenGL 兼容路径。重启软件后生效。",
+                t(
+                    "开启后界面使用 wgpu 渲染后端（DirectX 12 / Vulkan）；关闭时使用 OpenGL 兼容路径。重启软件后生效。",
+                ),
             );
             ui.horizontal(|ui| {
-                settings_field_label(ui, "图形 API");
+                settings_field_label(ui, t("图形 API"));
                 let mut api = GpuRenderApi::from_id(&self.settings.gpu_render_api);
                 settings_combo(ui, "settings_gpu_render_api", api.label(), |ui| {
                     for option in GpuRenderApi::ALL {
@@ -1324,7 +1362,7 @@ impl SurfingApp {
             });
             settings_hint(
                 ui,
-                "DirectX 12 / Vulkan 走 GPU 加速路径；OpenGL 兼容路径不受显卡驱动限制。",
+                t("DirectX 12 / Vulkan 走 GPU 加速路径；OpenGL 兼容路径不受显卡驱动限制。"),
             );
         });
     }
@@ -1343,19 +1381,23 @@ impl SurfingApp {
     /// Complexity: O(1) per frame.
     fn ui_settings_storage(&mut self, ui: &mut egui::Ui) {
         let mut picker: Option<(SettingsFolderTarget, &'static str)> = None;
-        settings_section(ui, "自动保存", |ui| {
+        settings_section(ui, t("自动保存"), |ui| {
             ui.horizontal(|ui| {
-                settings_field_label(ui, "间隔");
+                settings_field_label(ui, t("间隔"));
                 let mut seconds = self.settings.autosave_seconds;
                 let label = if seconds == 0 {
-                    "关闭".to_string()
+                    t("关闭").to_string()
                 } else {
-                    format!("每 {seconds} 秒")
+                    t_args("每 {} 秒", &[&seconds.to_string()])
                 };
                 settings_combo(ui, "settings_autosave_interval", label, |ui| {
-                    ui.selectable_value(&mut seconds, 0, "关闭");
+                    ui.selectable_value(&mut seconds, 0, t("关闭"));
                     for option in AUTOSAVE_OPTIONS {
-                        ui.selectable_value(&mut seconds, option, format!("每 {option} 秒"));
+                        ui.selectable_value(
+                            &mut seconds,
+                            option,
+                            t_args("每 {} 秒", &[&option.to_string()]),
+                        );
                     }
                 });
                 if seconds != self.settings.autosave_seconds {
@@ -1363,30 +1405,30 @@ impl SurfingApp {
                     self.commit_settings();
                 }
             });
-            settings_hint(ui, "仅对已有文件路径且存在未保存修改的工程生效。");
+            settings_hint(ui, t("仅对已有文件路径且存在未保存修改的工程生效。"));
         });
 
-        settings_section(ui, "位置", |ui| {
+        settings_section(ui, t("位置"), |ui| {
             settings_path_value(
                 ui,
-                "缓存位置",
+                t("缓存位置"),
                 &self
                     .settings
                     .cache_dir
                     .clone()
                     .or_else(default_cache_dir)
                     .map(|path| path.display().to_string())
-                    .unwrap_or_else(|| "系统默认".into()),
+                    .unwrap_or_else(|| t("系统默认").into()),
                 true,
             );
             ui.horizontal(|ui| {
                 ui.add_space(SETTINGS_FIELD_W + 9.0);
-                if settings_action_button(ui, "更改缓存位置…", "选择一个文件夹作为缓存目录")
+                if settings_action_button(ui, t("更改缓存位置…"), t("选择一个文件夹作为缓存目录"))
                 {
-                    picker = Some((SettingsFolderTarget::CacheDir, "选择缓存目录"));
+                    picker = Some((SettingsFolderTarget::CacheDir, t("选择缓存目录")));
                 }
                 if self.settings.cache_dir.is_some()
-                    && settings_action_button(ui, "恢复默认", "使用系统默认缓存目录")
+                    && settings_action_button(ui, t("恢复默认"), t("使用系统默认缓存目录"))
                 {
                     self.settings.cache_dir = None;
                     self.commit_settings();
@@ -1394,43 +1436,43 @@ impl SurfingApp {
             });
             settings_hint(
                 ui,
-                "用于插件缓存等本机数据；更改后立即把当前插件缓存写入新目录。",
+                t("用于插件缓存等本机数据；更改后立即把当前插件缓存写入新目录。"),
             );
             ui.add_space(8.0);
             settings_path_value(
                 ui,
-                "默认存储地址",
+                t("默认存储地址"),
                 &self
                     .settings
                     .default_project_dir
                     .as_ref()
                     .map(|path| path.display().to_string())
-                    .unwrap_or_else(|| "未设置（使用上次位置）".into()),
+                    .unwrap_or_else(|| t("未设置（使用上次位置）").into()),
                 false,
             );
             ui.horizontal(|ui| {
                 ui.add_space(SETTINGS_FIELD_W + 9.0);
                 if settings_action_button(
                     ui,
-                    "更改默认存储地址…",
-                    "选择保存/打开对话框的默认起始目录",
+                    t("更改默认存储地址…"),
+                    t("选择保存/打开对话框的默认起始目录"),
                 ) {
-                    picker = Some((SettingsFolderTarget::ProjectDir, "选择默认存储目录"));
+                    picker = Some((SettingsFolderTarget::ProjectDir, t("选择默认存储目录")));
                 }
                 if self.settings.default_project_dir.is_some()
-                    && settings_action_button(ui, "清除", "不使用默认存储地址")
+                    && settings_action_button(ui, t("清除"), t("不使用默认存储地址"))
                 {
                     self.settings.default_project_dir = None;
                     self.commit_settings();
                 }
             });
-            settings_hint(ui, "保存对话框会从该目录开始；不会移动已有工程。");
+            settings_hint(ui, t("保存对话框会从该目录开始；不会移动已有工程。"));
         });
 
-        settings_section(ui, "历史版本", |ui| {
+        settings_section(ui, t("历史版本"), |ui| {
             ui.horizontal(|ui| {
                 ui.label(
-                    egui::RichText::new("保存时自动保留历史版本")
+                    egui::RichText::new(t("保存时自动保留历史版本"))
                         .size(11.5)
                         .color(theme::TEXT),
                 );
@@ -1444,18 +1486,22 @@ impl SurfingApp {
             });
             settings_hint(
                 ui,
-                "开启后每次保存前把现有文件复制到工程目录的 Backups 文件夹。",
+                t("开启后每次保存前把现有文件复制到工程目录的 Backups 文件夹。"),
             );
             ui.horizontal(|ui| {
-                settings_field_label(ui, "保留数量");
+                settings_field_label(ui, t("保留数量"));
                 let mut retention = self.settings.backup_retention;
                 settings_combo(
                     ui,
                     "settings_backup_retention",
-                    format!("{retention} 个"),
+                    t_args("{} 个", &[&retention.to_string()]),
                     |ui| {
                         for option in BACKUP_RETENTION_OPTIONS {
-                            ui.selectable_value(&mut retention, option, format!("{option} 个"));
+                            ui.selectable_value(
+                                &mut retention,
+                                option,
+                                t_args("{} 个", &[&option.to_string()]),
+                            );
                         }
                     },
                 );
@@ -1466,7 +1512,7 @@ impl SurfingApp {
             });
             settings_hint(
                 ui,
-                "超过保留数量的最旧版本会自动删除；主页项目下拉可查看历史版本。",
+                t("超过保留数量的最旧版本会自动删除；主页项目下拉可查看历史版本。"),
             );
         });
 
@@ -1494,9 +1540,9 @@ impl SurfingApp {
         let mut changed = false;
         let mut refresh = false;
 
-        settings_section(ui, "音频系统", |ui| {
+        settings_section(ui, t("音频系统"), |ui| {
             ui.horizontal(|ui| {
-                settings_field_label(ui, "音频系统");
+                settings_field_label(ui, t("音频系统"));
                 let mut selected = self.settings.audio_system.clone();
                 let current_label = system.label();
                 settings_combo(ui, "settings_audio_system", current_label, |ui| {
@@ -1504,7 +1550,7 @@ impl SurfingApp {
                         let label = if info.available {
                             info.system.label().to_string()
                         } else {
-                            format!("{}（不可用）", info.system.label())
+                            t_args("{}（不可用）", &[info.system.label()])
                         };
                         ui.add_enabled_ui(info.available, |ui| {
                             ui.selectable_value(&mut selected, info.system.id().to_string(), label);
@@ -1517,7 +1563,8 @@ impl SurfingApp {
                     self.commit_settings();
                     changed = true;
                 }
-                if settings_action_button(ui, "刷新设备", "重新枚举音频系统与设备") {
+                if settings_action_button(ui, t("刷新设备"), t("重新枚举音频系统与设备"))
+                {
                     refresh = true;
                 }
             });
@@ -1527,21 +1574,25 @@ impl SurfingApp {
             if system == AudioSystem::Asio {
                 settings_hint(
                     ui,
-                    "ASIO 直接加载本机注册的驱动；可在驱动自身的控制面板中调整缓冲。",
+                    t("ASIO 直接加载本机注册的驱动；可在驱动自身的控制面板中调整缓冲。"),
                 );
             }
         });
 
-        settings_section(ui, "输出", |ui| {
+        settings_section(ui, t("输出"), |ui| {
             ui.horizontal(|ui| {
-                settings_field_label(ui, "驱动 / 设备");
+                settings_field_label(ui, t("驱动 / 设备"));
                 let mut selected = self
                     .settings
                     .audio_output_device
                     .clone()
                     .unwrap_or_else(|| "系统默认设备".to_string());
                 settings_combo(ui, "settings_audio_output", selected.clone(), |ui| {
-                    ui.selectable_value(&mut selected, "系统默认设备".to_string(), "系统默认设备");
+                    ui.selectable_value(
+                        &mut selected,
+                        "系统默认设备".to_string(),
+                        t("系统默认设备"),
+                    );
                     for device in &outputs {
                         ui.selectable_value(&mut selected, device.clone(), device);
                     }
@@ -1554,7 +1605,7 @@ impl SurfingApp {
                 }
             });
             ui.horizontal(|ui| {
-                settings_field_label(ui, "采样率");
+                settings_field_label(ui, t("采样率"));
                 let mut rate = self.settings.audio_sample_rate;
                 settings_combo(ui, "settings_audio_rate", format!("{rate} Hz"), |ui| {
                     for option in SAMPLE_RATE_OPTIONS {
@@ -1567,13 +1618,22 @@ impl SurfingApp {
                     changed = true;
                 }
                 ui.add_space(16.0);
-                ui.label(egui::RichText::new("缓冲").size(11.5).color(theme::TEXT));
+                ui.label(egui::RichText::new(t("缓冲")).size(11.5).color(theme::TEXT));
                 let mut frames = self.settings.audio_buffer_frames;
-                settings_combo(ui, "settings_audio_buffer", format!("{frames} 帧"), |ui| {
-                    for option in BUFFER_FRAMES_OPTIONS {
-                        ui.selectable_value(&mut frames, option, format!("{option} 帧"));
-                    }
-                });
+                settings_combo(
+                    ui,
+                    "settings_audio_buffer",
+                    t_args("{} 帧", &[&frames.to_string()]),
+                    |ui| {
+                        for option in BUFFER_FRAMES_OPTIONS {
+                            ui.selectable_value(
+                                &mut frames,
+                                option,
+                                t_args("{} 帧", &[&option.to_string()]),
+                            );
+                        }
+                    },
+                );
                 if frames != self.settings.audio_buffer_frames {
                     self.settings.audio_buffer_frames = frames;
                     self.commit_settings();
@@ -1582,22 +1642,22 @@ impl SurfingApp {
             });
             settings_hint(
                 ui,
-                "缓冲越小延迟越低，但更依赖驱动稳定性；ASIO 驱动会按自身粒度取整。",
+                t("缓冲越小延迟越低，但更依赖驱动稳定性；ASIO 驱动会按自身粒度取整。"),
             );
             ui.horizontal(|ui| {
-                settings_field_label(ui, "输出声道");
+                settings_field_label(ui, t("输出声道"));
                 let mut channels = self.settings.audio_output_channels;
                 let label = match channels {
-                    2 => "立体声（2.0）".to_string(),
-                    6 => "环绕声（5.1）".to_string(),
-                    8 => "环绕声（7.1）".to_string(),
-                    _ => "跟随设备".to_string(),
+                    2 => t("立体声（2.0）").to_string(),
+                    6 => t("环绕声（5.1）").to_string(),
+                    8 => t("环绕声（7.1）").to_string(),
+                    _ => t("跟随设备").to_string(),
                 };
                 settings_combo(ui, "settings_audio_channels", label, |ui| {
-                    ui.selectable_value(&mut channels, 0, "跟随设备");
-                    ui.selectable_value(&mut channels, 2, "立体声（2.0）");
-                    ui.selectable_value(&mut channels, 6, "环绕声（5.1）");
-                    ui.selectable_value(&mut channels, 8, "环绕声（7.1）");
+                    ui.selectable_value(&mut channels, 0, t("跟随设备"));
+                    ui.selectable_value(&mut channels, 2, t("立体声（2.0）"));
+                    ui.selectable_value(&mut channels, 6, t("环绕声（5.1）"));
+                    ui.selectable_value(&mut channels, 8, t("环绕声（7.1）"));
                 });
                 if channels != self.settings.audio_output_channels {
                     self.settings.audio_output_channels = channels;
@@ -1607,13 +1667,15 @@ impl SurfingApp {
             });
             settings_hint(
                 ui,
-                "环绕声需要输出设备声明对应声道数；设备不支持时会自动退回立体声，工程仍按所选布局渲染并导出。",
+                t(
+                    "环绕声需要输出设备声明对应声道数；设备不支持时会自动退回立体声，工程仍按所选布局渲染并导出。",
+                ),
             );
         });
 
-        settings_section(ui, "启用的输入设备", |ui| {
+        settings_section(ui, t("启用的输入设备"), |ui| {
             if inputs.is_empty() {
-                settings_hint(ui, "当前音频系统没有可枚举的输入设备。");
+                settings_hint(ui, t("当前音频系统没有可枚举的输入设备。"));
             } else {
                 let mut selected = self
                     .settings
@@ -1621,9 +1683,9 @@ impl SurfingApp {
                     .clone()
                     .unwrap_or_else(|| "不启用".to_string());
                 ui.horizontal(|ui| {
-                    settings_field_label(ui, "输入设备");
+                    settings_field_label(ui, t("输入设备"));
                     settings_combo(ui, "settings_audio_input", selected.clone(), |ui| {
-                        ui.selectable_value(&mut selected, "不启用".to_string(), "不启用");
+                        ui.selectable_value(&mut selected, "不启用".to_string(), t("不启用"));
                         for device in &inputs {
                             ui.selectable_value(&mut selected, device.clone(), device);
                         }
@@ -1637,9 +1699,9 @@ impl SurfingApp {
             }
         });
 
-        settings_section(ui, "当前状态", |ui| {
+        settings_section(ui, t("当前状态"), |ui| {
             ui.label(
-                egui::RichText::new(&self.audio_status)
+                egui::RichText::new(super::i18n::t_owned(&self.audio_status))
                     .size(11.5)
                     .color(theme::TEXT),
             );
@@ -1647,14 +1709,14 @@ impl SurfingApp {
                 if ui
                     .add(
                         egui::Button::new(
-                            egui::RichText::new("应用音频设置")
+                            egui::RichText::new(t("应用音频设置"))
                                 .size(11.5)
                                 .color(egui::Color32::WHITE),
                         )
                         .fill(theme::ACCENT)
                         .min_size(egui::vec2(112.0, 26.0)),
                     )
-                    .on_hover_text("停止并重新打开输出设备")
+                    .on_hover_text(t("停止并重新打开输出设备"))
                     .clicked()
                 {
                     changed = true;
@@ -1697,10 +1759,10 @@ impl SurfingApp {
             .try_lock()
             .map(|engine| engine.gpu_realtime_active())
             .unwrap_or(false);
-        settings_section(ui, "GPU 音频渲染", |ui| {
+        settings_section(ui, t("GPU 音频渲染"), |ui| {
             ui.horizontal(|ui| {
                 ui.label(
-                    egui::RichText::new("使用 GPU 加速音频渲染")
+                    egui::RichText::new(t("使用 GPU 加速音频渲染"))
                         .size(11.5)
                         .color(theme::TEXT),
                 );
@@ -1712,10 +1774,10 @@ impl SurfingApp {
                     }
                 });
             });
-            settings_hint(ui, "离线导出时把主总线软限幅交给所选 GPU 计算。");
+            settings_hint(ui, t("离线导出时把主总线软限幅交给所选 GPU 计算。"));
             ui.horizontal(|ui| {
                 ui.label(
-                    egui::RichText::new("实时播放使用 GPU 软限幅")
+                    egui::RichText::new(t("实时播放使用 GPU 软限幅"))
                         .size(11.5)
                         .color(theme::TEXT),
                 );
@@ -1729,7 +1791,9 @@ impl SurfingApp {
             });
             settings_hint(
                 ui,
-                "实时路径在每块最多等待 1 ms；显卡未及时返回或不可用时立即回退 CPU，不会阻塞音频线程。",
+                t(
+                    "实时路径在每块最多等待 1 ms；显卡未及时返回或不可用时立即回退 CPU，不会阻塞音频线程。",
+                ),
             );
         });
 
@@ -1743,13 +1807,13 @@ impl SurfingApp {
             .or_else(|| devices.first())
             .cloned();
 
-        settings_section(ui, "设备与驱动", |ui| {
+        settings_section(ui, t("设备与驱动"), |ui| {
             ui.horizontal(|ui| {
                 settings_field_label(ui, "GPU");
                 let current_label = active
                     .as_ref()
                     .map(|device| format!("{}（{}）", device.family_name(), device.device_type))
-                    .unwrap_or_else(|| "未检测到 GPU".into());
+                    .unwrap_or_else(|| t("未检测到 GPU").into());
                 let mut pick: Option<String> = None;
                 settings_combo(ui, "settings_gpu_audio_device", current_label, |ui| {
                     let mut seen: Vec<&str> = Vec::new();
@@ -1769,7 +1833,7 @@ impl SurfingApp {
                         }
                     }
                 });
-                if settings_action_button(ui, "刷新设备", "重新枚举 GPU、驱动与图形 API")
+                if settings_action_button(ui, t("刷新设备"), t("重新枚举 GPU、驱动与图形 API"))
                 {
                     refresh = true;
                 }
@@ -1793,11 +1857,11 @@ impl SurfingApp {
                 }
             });
             ui.horizontal(|ui| {
-                settings_field_label(ui, "驱动");
+                settings_field_label(ui, t("驱动"));
                 let current_label = active
                     .as_ref()
                     .map(|device| device.driver_label())
-                    .unwrap_or_else(|| "自动".into());
+                    .unwrap_or_else(|| t("自动").into());
                 let mut pick: Option<String> = None;
                 settings_combo(ui, "settings_gpu_audio_driver", current_label, |ui| {
                     let mut seen: Vec<String> = Vec::new();
@@ -1839,11 +1903,11 @@ impl SurfingApp {
                 }
             });
             ui.horizontal(|ui| {
-                settings_field_label(ui, "图形 API");
+                settings_field_label(ui, t("图形 API"));
                 let current_label = active
                     .as_ref()
                     .map(|device| device.api.label())
-                    .unwrap_or("自动");
+                    .unwrap_or(t("自动"));
                 let mut pick = None;
                 settings_combo(ui, "settings_gpu_audio_api", current_label, |ui| {
                     let mut seen: Vec<crate::audio::gpu::GpuApi> = Vec::new();
@@ -1882,7 +1946,7 @@ impl SurfingApp {
             });
         });
 
-        settings_section(ui, "状态", |ui| match &catalog {
+        settings_section(ui, t("状态"), |ui| match &catalog {
             Ok(devices) if !devices.is_empty() => {
                 if let Some(device) = active.as_ref() {
                     ui.label(
@@ -1898,22 +1962,27 @@ impl SurfingApp {
                 }
                 settings_hint(
                     ui,
-                    "导出时按所选设备与 API 运行计算着色器；设备不可用时自动回退 CPU 并在状态栏提示。",
+                    t(
+                        "导出时按所选设备与 API 运行计算着色器；设备不可用时自动回退 CPU 并在状态栏提示。",
+                    ),
                 );
                 let realtime_label = if !self.settings.gpu_audio_realtime_enabled {
-                    "未启用"
+                    t("未启用")
                 } else if realtime_active {
                     "GPU"
                 } else {
-                    "CPU 回退"
+                    t("CPU 回退")
                 };
                 ui.label(
-                    egui::RichText::new(format!("实时限幅：{realtime_label}"))
+                    egui::RichText::new(t_args("实时限幅：{}", &[realtime_label]))
                         .size(11.0)
                         .color(theme::TEXT_DIM),
                 );
             }
-            Ok(_) => settings_hint(ui, "未检测到可用的 GPU 计算设备，导出会回退到 CPU 渲染。"),
+            Ok(_) => settings_hint(
+                ui,
+                t("未检测到可用的 GPU 计算设备，导出会回退到 CPU 渲染。"),
+            ),
             Err(error) => {
                 ui.label(egui::RichText::new(error).size(10.5).color(theme::RED));
             }
@@ -1949,9 +2018,9 @@ impl SurfingApp {
     fn ui_settings_controller(&mut self, ui: &mut egui::Ui) {
         let (inputs, outputs) = self.settings_midi_ports();
         let mut reconnect = false;
-        settings_section(ui, "延迟偏移", |ui| {
+        settings_section(ui, t("延迟偏移"), |ui| {
             ui.horizontal(|ui| {
-                settings_field_label(ui, "偏移");
+                settings_field_label(ui, t("偏移"));
                 let mut offset = self.settings.controller_latency_offset_ms;
                 ui.add_sized(
                     [260.0, 24.0],
@@ -1962,12 +2031,15 @@ impl SurfingApp {
                     self.commit_settings();
                 }
             });
-            settings_hint(ui, "正数延后控制器事件，负数提前；用于补偿设备输入延迟。");
+            settings_hint(
+                ui,
+                t("正数延后控制器事件，负数提前；用于补偿设备输入延迟。"),
+            );
         });
 
-        settings_section(ui, "MIDI 输入", |ui| {
+        settings_section(ui, t("MIDI 输入"), |ui| {
             if inputs.is_empty() {
-                settings_hint(ui, "未发现 MIDI 输入设备。");
+                settings_hint(ui, t("未发现 MIDI 输入设备。"));
             } else {
                 let auto_label = "自动（第一个可用端口）";
                 let mut selected = self
@@ -1976,9 +2048,9 @@ impl SurfingApp {
                     .clone()
                     .unwrap_or_else(|| auto_label.to_string());
                 ui.horizontal(|ui| {
-                    settings_field_label(ui, "默认设备");
+                    settings_field_label(ui, t("默认设备"));
                     settings_combo(ui, "settings_controller_input", selected.clone(), |ui| {
-                        ui.selectable_value(&mut selected, auto_label.to_string(), auto_label);
+                        ui.selectable_value(&mut selected, auto_label.to_string(), t(auto_label));
                         for port in &inputs {
                             ui.selectable_value(&mut selected, port.clone(), port);
                         }
@@ -1993,7 +2065,7 @@ impl SurfingApp {
 
                 ui.add_space(6.0);
                 ui.label(
-                    egui::RichText::new("启用的设备")
+                    egui::RichText::new(t("启用的设备"))
                         .size(11.0)
                         .color(theme::TEXT_DIM),
                 );
@@ -2017,19 +2089,21 @@ impl SurfingApp {
                 }
                 settings_hint(
                     ui,
-                    "默认设备负责控制当前选中轨道；勾选的设备可绑定到具体轨道，多点输入可同时录音。",
+                    t(
+                        "默认设备负责控制当前选中轨道；勾选的设备可绑定到具体轨道，多点输入可同时录音。",
+                    ),
                 );
             }
             ui.label(
-                egui::RichText::new(&self.midi_status)
+                egui::RichText::new(super::i18n::t_owned(&self.midi_status))
                     .size(10.5)
                     .color(theme::TEXT_DIM),
             );
         });
 
-        settings_section(ui, "启用的输出设备", |ui| {
+        settings_section(ui, t("启用的输出设备"), |ui| {
             if outputs.is_empty() {
-                settings_hint(ui, "未发现 MIDI 输出设备（当前版本不发送 MIDI 输出）。");
+                settings_hint(ui, t("未发现 MIDI 输出设备（当前版本不发送 MIDI 输出）。"));
             } else {
                 let mut selected = self
                     .settings
@@ -2037,9 +2111,9 @@ impl SurfingApp {
                     .clone()
                     .unwrap_or_else(|| "不启用".to_string());
                 ui.horizontal(|ui| {
-                    settings_field_label(ui, "输出端口");
+                    settings_field_label(ui, t("输出端口"));
                     settings_combo(ui, "settings_controller_output", selected.clone(), |ui| {
-                        ui.selectable_value(&mut selected, "不启用".to_string(), "不启用");
+                        ui.selectable_value(&mut selected, "不启用".to_string(), t("不启用"));
                         for port in &outputs {
                             ui.selectable_value(&mut selected, port.clone(), port);
                         }
@@ -2050,7 +2124,10 @@ impl SurfingApp {
                     self.settings.controller_output_device = mapped;
                     self.commit_settings();
                 }
-                settings_hint(ui, "记录启用的输出端口；后续版本用于外部同步与控制器反馈。");
+                settings_hint(
+                    ui,
+                    t("记录启用的输出端口；后续版本用于外部同步与控制器反馈。"),
+                );
             }
         });
 
@@ -2075,12 +2152,12 @@ impl SurfingApp {
     /// Complexity: O(providers + presets) per frame.
     fn ui_settings_ai(&mut self, ui: &mut egui::Ui) {
         let mut changed = false;
-        settings_section(ui, "模型", |ui| {
+        settings_section(ui, t("模型"), |ui| {
             ui.horizontal(|ui| {
-                settings_field_label(ui, "默认模型");
+                settings_field_label(ui, t("默认模型"));
                 let current = crate::ai::find_preset(&self.settings.ai.model_preset)
                     .map(|preset| preset.label)
-                    .unwrap_or("自定义");
+                    .unwrap_or(t("自定义"));
                 let mut preset = self.settings.ai.model_preset.clone();
                 settings_combo(ui, "settings_ai_preset", current.to_string(), |ui| {
                     for entry in crate::ai::MODEL_PRESETS {
@@ -2094,7 +2171,7 @@ impl SurfingApp {
             });
             settings_hint(
                 ui,
-                "对话输入框下方的“模型”下拉与此处同步；切换预设会使用对应服务商与模型。",
+                t("对话输入框下方的“模型”下拉与此处同步；切换预设会使用对应服务商与模型。"),
             );
         });
 
@@ -2119,10 +2196,10 @@ impl SurfingApp {
                     }
                     if ui
                         .add(
-                            egui::Button::new(egui::RichText::new("清除").size(10.5))
+                            egui::Button::new(egui::RichText::new(t("清除")).size(10.5))
                                 .min_size(egui::vec2(44.0, 22.0)),
                         )
-                        .on_hover_text("删除该服务商保存的 API Key")
+                        .on_hover_text(t("删除该服务商保存的 API Key"))
                         .clicked()
                     {
                         self.settings.ai.set_api_key(provider.id(), "");
@@ -2132,7 +2209,9 @@ impl SurfingApp {
             }
             settings_hint(
                 ui,
-                "密钥只写入本机设置文件（%APPDATA%\\SurfingStudio\\settings.json），不会写入工程，也不会随工程分享。",
+                t(
+                    "密钥只写入本机设置文件（%APPDATA%\\SurfingStudio\\settings.json），不会写入工程，也不会随工程分享。",
+                ),
             );
             settings_hint(
                 ui,
@@ -2140,7 +2219,7 @@ impl SurfingApp {
             );
         });
 
-        settings_section(ui, "自定义接口", |ui| {
+        settings_section(ui, t("自定义接口"), |ui| {
             ui.horizontal(|ui| {
                 settings_field_label(ui, "Base URL");
                 let mut url = self.settings.ai.custom_base_url.clone();
@@ -2157,12 +2236,12 @@ impl SurfingApp {
                 }
             });
             ui.horizontal(|ui| {
-                settings_field_label(ui, "模型名");
+                settings_field_label(ui, t("模型名"));
                 let mut model = self.settings.ai.custom_model.clone();
                 if ui
                     .add(
                         egui::TextEdit::singleline(&mut model)
-                            .hint_text("自定义模型 id")
+                            .hint_text(t("自定义模型 id"))
                             .desired_width(320.0),
                     )
                     .changed()
@@ -2173,13 +2252,13 @@ impl SurfingApp {
             });
             settings_hint(
                 ui,
-                "仅在选择“自定义”模型时使用；接口需兼容 OpenAI /chat/completions。",
+                t("仅在选择“自定义”模型时使用；接口需兼容 OpenAI /chat/completions。"),
             );
         });
 
-        settings_section(ui, "推理强度", |ui| {
+        settings_section(ui, t("推理强度"), |ui| {
             ui.horizontal(|ui| {
-                settings_field_label(ui, "推理");
+                settings_field_label(ui, t("推理"));
                 let current = crate::ai::AiReasoning::from_id(&self.settings.ai.reasoning);
                 let mut reasoning = current;
                 settings_combo(
@@ -2199,43 +2278,47 @@ impl SurfingApp {
             });
             settings_hint(
                 ui,
-                "关闭 = 不显示思考；低/中/高控制 DeepSeek 的 reasoning_effort。开启思考会增加等待时间与输出 token，但复杂编曲计划更稳。",
+                t(
+                    "关闭 = 不显示思考；低/中/高控制 DeepSeek 的 reasoning_effort。开启思考会增加等待时间与输出 token，但复杂编曲计划更稳。",
+                ),
             );
         });
 
-        settings_section(ui, "联网搜索", |ui| {
+        settings_section(ui, t("联网搜索"), |ui| {
             ui.horizontal(|ui| {
-                settings_field_label(ui, "插件检索");
+                settings_field_label(ui, t("插件检索"));
                 let mut enabled = self.settings.ai.search_enabled;
                 if settings_switch(ui, &mut enabled) {
                     self.settings.ai.search_enabled = enabled;
                     changed = true;
                 }
                 ui.label(
-                    egui::RichText::new("允许 AI 在不确定插件特点时联网检索")
+                    egui::RichText::new(t("允许 AI 在不确定插件特点时联网检索"))
                         .size(11.0)
                         .color(theme::TEXT),
                 );
             });
             settings_hint(
                 ui,
-                "使用 DeepSeek Search API（base https://api.deepseek.com/v1/tools/search），需要 DeepSeek API Key 并按次计费；没有 DeepSeek Key 时自动跳过检索。",
+                t(
+                    "使用 DeepSeek Search API（base https://api.deepseek.com/v1/tools/search），需要 DeepSeek API Key 并按次计费；没有 DeepSeek Key 时自动跳过检索。",
+                ),
             );
             settings_hint(
                 ui,
-                "检索词只包含插件名称/厂商，不会发送工程内容或本机路径。",
+                t("检索词只包含插件名称/厂商，不会发送工程内容或本机路径。"),
             );
         });
 
-        settings_section(ui, "采样参数", |ui| {
+        settings_section(ui, t("采样参数"), |ui| {
             ui.horizontal(|ui| {
-                settings_field_label(ui, "温度");
+                settings_field_label(ui, t("温度"));
                 let mut temperature = self.settings.ai.temperature;
                 ui.add_sized(
                     [260.0, 24.0],
                     egui::Slider::new(&mut temperature, 0.0..=2.0)
                         .fixed_decimals(2)
-                        .text("创意程度"),
+                        .text(t("创意程度")),
                 );
                 if (temperature - self.settings.ai.temperature).abs() > 0.001 {
                     self.settings.ai.temperature = temperature;
@@ -2243,7 +2326,7 @@ impl SurfingApp {
                 }
             });
             ui.horizontal(|ui| {
-                settings_field_label(ui, "最大输出");
+                settings_field_label(ui, t("最大输出"));
                 let mut tokens = self.settings.ai.max_tokens;
                 if ui
                     .add(
@@ -2259,7 +2342,7 @@ impl SurfingApp {
                 }
             });
             ui.horizontal(|ui| {
-                settings_field_label(ui, "超时");
+                settings_field_label(ui, t("超时"));
                 let mut seconds = self.settings.ai.timeout_seconds;
                 if ui
                     .add(
@@ -2276,7 +2359,7 @@ impl SurfingApp {
             });
             settings_hint(
                 ui,
-                "编曲计划可能包含大量音符；输出上限过低会导致 JSON 被截断。",
+                t("编曲计划可能包含大量音符；输出上限过低会导致 JSON 被截断。"),
             );
         });
 
@@ -2300,10 +2383,10 @@ impl SurfingApp {
         let mut add_path = false;
         let mut remove_path: Option<usize> = None;
         let mut rescan = false;
-        settings_section(ui, "扫描目录", |ui| {
+        settings_section(ui, t("扫描目录"), |ui| {
             ui.horizontal(|ui| {
                 let add_button = egui::Button::new(
-                    egui::RichText::new("添加文件夹…")
+                    egui::RichText::new(t("添加文件夹…"))
                         .size(11.0)
                         .color(theme::TEXT),
                 )
@@ -2312,13 +2395,13 @@ impl SurfingApp {
                 .min_size(egui::vec2(0.0, 24.0));
                 if ui
                     .add_enabled(self.folder_rx.is_none(), add_button)
-                    .on_hover_text("选择默认目录之外的 VST3 / VST2 插件文件夹")
+                    .on_hover_text(t("选择默认目录之外的 VST3 / VST2 插件文件夹"))
                     .clicked()
                 {
                     add_path = true;
                 }
                 let rescan_button = egui::Button::new(
-                    egui::RichText::new("重新扫描")
+                    egui::RichText::new(t("重新扫描"))
                         .size(11.0)
                         .color(theme::TEXT),
                 )
@@ -2327,7 +2410,7 @@ impl SurfingApp {
                 .min_size(egui::vec2(0.0, 24.0));
                 if ui
                     .add_enabled(!self.scanning, rescan_button)
-                    .on_hover_text("扫描默认目录与下方自定义路径")
+                    .on_hover_text(t("扫描默认目录与下方自定义路径"))
                     .clicked()
                 {
                     rescan = true;
@@ -2338,12 +2421,12 @@ impl SurfingApp {
             });
             settings_hint(
                 ui,
-                "系统默认的 VST3 / VST2 目录始终参与扫描，下面只列出额外目录。",
+                t("系统默认的 VST3 / VST2 目录始终参与扫描，下面只列出额外目录。"),
             );
             ui.add_space(6.0);
             if self.settings.custom_vst_paths.is_empty() {
                 ui.label(
-                    egui::RichText::new("尚未添加自定义扫描目录")
+                    egui::RichText::new(t("尚未添加自定义扫描目录"))
                         .size(10.5)
                         .color(theme::TEXT_FAINT),
                 );
@@ -2370,8 +2453,11 @@ impl SurfingApp {
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
-                                        if settings_action_button(ui, "移除", "从扫描目录中移除")
-                                        {
+                                        if settings_action_button(
+                                            ui,
+                                            t("移除"),
+                                            t("从扫描目录中移除"),
+                                        ) {
                                             remove_path = Some(index);
                                         }
                                     },
@@ -2383,7 +2469,7 @@ impl SurfingApp {
             }
         });
 
-        settings_section(ui, "插件列表", |ui| {
+        settings_section(ui, t("插件列表"), |ui| {
             let total = self.plugin_cache.len();
             let instruments = self
                 .plugin_cache
@@ -2396,16 +2482,21 @@ impl SurfingApp {
                 .filter(|plugin| plugin.kind == crate::plugin::PluginKind::Effect)
                 .count();
             ui.label(
-                egui::RichText::new(format!(
-                    "共 {total} 个：乐器 {instruments} · 效果器 {effects} · 未知 {}",
-                    total.saturating_sub(instruments + effects)
+                egui::RichText::new(t_args(
+                    "共 {} 个：乐器 {} · 效果器 {} · 未知 {}",
+                    &[
+                        &total.to_string(),
+                        &instruments.to_string(),
+                        &effects.to_string(),
+                        &total.saturating_sub(instruments + effects).to_string(),
+                    ],
                 ))
                 .size(10.5)
                 .color(theme::TEXT_FAINT),
             );
             ui.add_space(4.0);
             if total == 0 {
-                settings_hint(ui, "还没有插件记录，点击“重新扫描”开始扫描。");
+                settings_hint(ui, t("还没有插件记录，点击“重新扫描”开始扫描。"));
             } else {
                 let height = 260.0_f32.min(ui.available_height().max(120.0));
                 egui::ScrollArea::vertical()
@@ -2421,7 +2512,10 @@ impl SurfingApp {
         });
 
         if add_path && self.folder_rx.is_none() {
-            self.open_settings_folder_picker("选择 VST 插件文件夹", SettingsFolderTarget::VstPath);
+            self.open_settings_folder_picker(
+                t("选择 VST 插件文件夹"),
+                SettingsFolderTarget::VstPath,
+            );
         }
         if let Some(index) = remove_path {
             if index < self.settings.custom_vst_paths.len() {
@@ -2455,17 +2549,21 @@ impl SurfingApp {
         let mut record: Option<ShortcutAction> = None;
         let mut reset: Option<ShortcutAction> = None;
         let mut reset_all = false;
-        settings_section(ui, "快捷键", |ui| {
+        settings_section(ui, t("快捷键"), |ui| {
             settings_hint(
                 ui,
-                "点击右侧按键后按下新的组合键即可修改；Esc 取消，Delete / Backspace 清除绑定。",
+                t("点击右侧按键后按下新的组合键即可修改；Esc 取消，Delete / Backspace 清除绑定。"),
             );
             if let Some(hint) = &self.hotkey_hint {
                 ui.add_space(2.0);
-                ui.label(egui::RichText::new(hint).size(10.5).color(theme::ACCENT));
+                ui.label(
+                    egui::RichText::new(super::i18n::t_owned(hint))
+                        .size(10.5)
+                        .color(theme::ACCENT),
+                );
             }
             ui.add_space(6.0);
-            if settings_action_button(ui, "全部恢复默认", "恢复所有快捷键的默认绑定")
+            if settings_action_button(ui, t("全部恢复默认"), t("恢复所有快捷键的默认绑定"))
             {
                 reset_all = true;
             }
@@ -2491,13 +2589,17 @@ impl SurfingApp {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let customized = self.settings.shortcuts.contains_key(action.id());
                             if customized
-                                && settings_action_button(ui, "重置", "恢复此动作的默认快捷键")
+                                && settings_action_button(
+                                    ui,
+                                    t("重置"),
+                                    t("恢复此动作的默认快捷键"),
+                                )
                             {
                                 reset = Some(action);
                             }
                             let recording = self.hotkey_recording == Some(action);
                             let text = if recording {
-                                "请按新键…".to_string()
+                                t("请按新键…").to_string()
                             } else {
                                 self.settings.shortcut_label(action)
                             };
@@ -2522,7 +2624,7 @@ impl SurfingApp {
                             .min_size(egui::vec2(128.0, 22.0));
                             if ui
                                 .add(button)
-                                .on_hover_text("点击后按下新的快捷键")
+                                .on_hover_text(t("点击后按下新的快捷键"))
                                 .clicked()
                             {
                                 record = Some(action);
@@ -2538,13 +2640,13 @@ impl SurfingApp {
         }
         if let Some(action) = reset {
             self.settings.reset_shortcut(action);
-            self.hotkey_hint = Some(format!("「{}」已恢复默认", action.label()));
+            self.hotkey_hint = Some(t_args("「{}」已恢复默认", &[action.label()]));
             self.commit_settings();
         }
         if reset_all {
             self.settings.reset_all_shortcuts();
             self.hotkey_recording = None;
-            self.hotkey_hint = Some("全部快捷键已恢复默认".into());
+            self.hotkey_hint = Some(t("全部快捷键已恢复默认").into());
             self.commit_settings();
         }
     }
@@ -2584,33 +2686,32 @@ impl SurfingApp {
         let plain = !modifiers.alt && !modifiers.shift && !modifiers.command;
         if key == egui::Key::Escape && plain {
             self.hotkey_recording = None;
-            self.hotkey_hint = Some("已取消录制".into());
+            self.hotkey_hint = Some(t("已取消录制").into());
             return;
         }
         if (key == egui::Key::Delete || key == egui::Key::Backspace) && plain {
             self.settings.set_shortcut(action, &[]);
             self.hotkey_recording = None;
-            self.hotkey_hint = Some(format!("「{}」已清除绑定", action.label()));
+            self.hotkey_hint = Some(t_args("「{}」已清除绑定", &[action.label()]));
             self.commit_settings();
             return;
         }
         let binding = Binding::new(key, modifiers.command, modifiers.shift, modifiers.alt);
         if binding.text().contains("Unknown") {
-            self.hotkey_hint = Some("该按键不支持，请换一个组合键".into());
+            self.hotkey_hint = Some(t("该按键不支持，请换一个组合键").into());
             return;
         }
         if let Some(other) = self.settings.shortcut_conflict(action, binding) {
-            self.hotkey_hint = Some(format!(
+            self.hotkey_hint = Some(t_args(
                 "{} 已被「{}」使用，请换一个组合键",
-                binding.label(),
-                other.label()
+                &[&binding.label(), other.label()],
             ));
             return;
         }
         let label = binding.label();
         self.settings.set_shortcut(action, &[binding]);
         self.hotkey_recording = None;
-        self.hotkey_hint = Some(format!("「{}」已设为 {}", action.label(), label));
+        self.hotkey_hint = Some(t_args("「{}」已设为 {}", &[action.label(), &label]));
         self.commit_settings();
     }
 
@@ -2628,61 +2729,61 @@ impl SurfingApp {
     fn ui_settings_about(&mut self, ui: &mut egui::Ui) {
         settings_section(ui, "SurfingStudio", |ui| {
             ui.label(
-                egui::RichText::new(format!("版本 {}", env!("CARGO_PKG_VERSION")))
+                egui::RichText::new(t_args("版本 {}", &[env!("CARGO_PKG_VERSION")]))
                     .size(12.0)
                     .strong()
                     .color(theme::TEXT),
             );
             settings_hint(
                 ui,
-                "以 MIDI 为核心的轻量音乐工作站，内置合成器、鼓机与原生乐器。",
+                t("以 MIDI 为核心的轻量音乐工作站，内置合成器、鼓机与原生乐器。"),
             );
             ui.add_space(6.0);
             ui.label(
-                egui::RichText::new("插件：VST3 / VST2（原生编辑器、状态持久化）")
+                egui::RichText::new(t("插件：VST3 / VST2（原生编辑器、状态持久化）"))
                     .size(10.5)
                     .color(theme::TEXT_DIM),
             );
             ui.label(
-                egui::RichText::new("音频：系统默认 / WASAPI / ASIO，可配置采样率与缓冲")
+                egui::RichText::new(t("音频：系统默认 / WASAPI / ASIO，可配置采样率与缓冲"))
                     .size(10.5)
                     .color(theme::TEXT_DIM),
             );
             ui.label(
-                egui::RichText::new("工程：.sfsd（SFS2 分块容器），兼容导入 SoundBug .sndp")
+                egui::RichText::new(t("工程：.sfsd（SFS2 分块容器），兼容导入 SoundBug .sndp"))
                     .size(10.5)
                     .color(theme::TEXT_DIM),
             );
         });
 
-        settings_section(ui, "位置", |ui| {
+        settings_section(ui, t("位置"), |ui| {
             settings_path_value(
                 ui,
-                "配置文件",
+                t("配置文件"),
                 &settings_path()
                     .map(|path| path.display().to_string())
-                    .unwrap_or_else(|| "不可用".into()),
+                    .unwrap_or_else(|| t("不可用").into()),
                 false,
             );
             settings_path_value(
                 ui,
-                "插件缓存",
+                t("插件缓存"),
                 &self
                     .settings
                     .cache_dir
                     .clone()
                     .or_else(default_cache_dir)
                     .map(|path| path.join("plugin-cache.json").display().to_string())
-                    .unwrap_or_else(|| "系统默认".into()),
+                    .unwrap_or_else(|| t("系统默认").into()),
                 false,
             );
-            settings_path_value(ui, "历史版本", "工程目录 / Backups", false);
+            settings_path_value(ui, t("历史版本"), t("工程目录 / Backups"), false);
         });
 
-        settings_section(ui, "致谢", |ui| {
+        settings_section(ui, t("致谢"), |ui| {
             settings_hint(
                 ui,
-                "基于 egui / eframe、cpal、midir、vst3-host 与 Rust 社区生态构建。",
+                t("基于 egui / eframe、cpal、midir、vst3-host 与 Rust 社区生态构建。"),
             );
         });
     }
@@ -2714,7 +2815,7 @@ impl SurfingApp {
         // 对话框挂在设置窗口上：否则平台对话框会把主窗口带到前台，看起来像“跳回主页”。
         // Parent the dialog to the settings window; otherwise the platform dialog raises the main
         // window, which looks like jumping back to the home page.
-        let parent = crate::platform::parent_by_title(SETTINGS_WINDOW_TITLE)
+        let parent = crate::platform::parent_by_title(t(SETTINGS_WINDOW_TITLE))
             .or_else(|| self.dialog_parent());
         let title = title.to_string();
         std::thread::spawn(move || {
@@ -2912,7 +3013,7 @@ fn settings_title_bar(ui: &mut egui::Ui) -> bool {
     painter.text(
         egui::pos2(rect.left() + 16.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
-        "设置",
+        t("设置"),
         egui::FontId::proportional(14.5),
         theme::TEXT,
     );
@@ -2939,8 +3040,8 @@ fn settings_title_bar(ui: &mut egui::Ui) -> bool {
         egui::pos2(close_rect.left() - 2.0 - button_w, button_top),
         egui::vec2(button_w, button_h),
     );
-    let close = settings_title_button(ui, close_rect, ButtonIcon::Close, "关闭");
-    if settings_title_button(ui, minimize_rect, ButtonIcon::Minimize, "最小化") {
+    let close = settings_title_button(ui, close_rect, ButtonIcon::Close, t("关闭"));
+    if settings_title_button(ui, minimize_rect, ButtonIcon::Minimize, t("最小化")) {
         ui.ctx()
             .send_viewport_cmd(egui::ViewportCommand::Minimized(true));
     }

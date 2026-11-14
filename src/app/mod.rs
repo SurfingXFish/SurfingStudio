@@ -61,6 +61,7 @@ mod heartbeat;
 mod history;
 mod home;
 mod hotkeys;
+pub mod i18n;
 mod input;
 mod panels;
 mod plugins;
@@ -1143,18 +1144,18 @@ impl SurfingApp {
         start: ProjectStart,
     ) -> Self {
         let title = match &start {
-            ProjectStart::New => "新工程 - SurfingStudio".to_string(),
+            ProjectStart::New => format!("{} - SurfingStudio", i18n::t("新工程")),
             ProjectStart::Open(path) => {
                 let name = path
                     .file_stem()
                     .map(|stem| stem.to_string_lossy().to_string())
                     .filter(|stem| !stem.is_empty())
-                    .unwrap_or_else(|| "工程".into());
+                    .unwrap_or_else(|| i18n::t("工程").into());
                 format!("{name} - SurfingStudio")
             }
             ProjectStart::Template(template) => {
-                let name =
-                    crate::core::model::template::display_name(template).unwrap_or("模板工程");
+                let name = crate::core::model::template::display_name(template)
+                    .unwrap_or(i18n::t("模板工程"));
                 format!("{name} - SurfingStudio")
             }
         };
@@ -1382,9 +1383,9 @@ impl SurfingApp {
         };
         app.audio_status = app.shared.audio_status();
         app.status = if view == WorkspaceView::Home {
-            format!("SurfingStudio 已就绪 · {}", app.midi_status)
+            i18n::t_args("SurfingStudio 已就绪 · {}", &[&app.midi_status])
         } else {
-            "正在准备工程…".into()
+            i18n::t("正在准备工程…").into()
         };
         // 多窗口排查需要知道每个窗口的编号与角色。
         // Multi-window analysis needs the id and role of every window.
@@ -1432,6 +1433,10 @@ impl SurfingApp {
         {
             self.settings = settings;
             self.settings_generation = generation;
+            // 语言是全局展示状态：任一窗口改动后，其余窗口在同步设置时立即生效。
+            // The language is global presentation state: once one window changes it, the others apply
+            // it as soon as they sync settings.
+            i18n::set_language(&self.settings.language);
         }
         if let Some((plugins, fingerprints, generation)) = self
             .shared
@@ -1469,7 +1474,7 @@ impl SurfingApp {
         }
         let name = self.project.name.trim();
         if name.is_empty() {
-            "未命名工程".into()
+            i18n::t("未命名工程").into()
         } else {
             name.to_string()
         }
@@ -1546,6 +1551,7 @@ impl SurfingApp {
     /// the file.
     /// Complexity: O(settings size) time and space.
     pub(crate) fn commit_settings(&mut self) {
+        i18n::set_language(&self.settings.language);
         self.settings_generation = self.shared.write_settings(&self.settings);
     }
 
@@ -1757,7 +1763,7 @@ impl SurfingApp {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 if !self.close_prompt {
                     self.close_prompt = true;
-                    self.status = "工程有未保存的修改".into();
+                    self.status = i18n::t("工程有未保存的修改").into();
                 }
             } else {
                 // 正常关闭工程窗口：按插件生命周期先 detach 视图再销毁窗口，避免插件实例
@@ -1824,7 +1830,7 @@ impl SurfingApp {
         if !changed_tracks.is_empty() {
             // 插件实例已经按新参数发声，这里只刷新界面提示。
             // The plugin instance already plays the new values; only refresh the UI hint.
-            self.status = "插件参数已更新".into();
+            self.status = i18n::t("插件参数已更新").into();
         }
 
         if self.instrument_load_pending {
@@ -1847,9 +1853,9 @@ impl SurfingApp {
                 self.last_engine_sync = Instant::now();
                 if self.loading_message.is_some() {
                     if let Some(path) = &self.project_path {
-                        self.status = format!("已加载 {}", path.display());
+                        self.status = i18n::t_args("已加载 {}", &[&path.display().to_string()]);
                     }
-                    self.loading_message = Some("就绪".into());
+                    self.loading_message = Some(i18n::t("就绪").into());
                     self.loading_until = Some(Instant::now() + Duration::from_millis(200));
                 }
                 if self.pending_play {
@@ -1876,7 +1882,7 @@ impl SurfingApp {
             self.finish_recording();
         }
         if auto_stopped && !self.last_auto_stopped {
-            self.status = "已在最后一个 MIDI 片段结束后 2 小节自动停止".into();
+            self.status = i18n::t("已在最后一个 MIDI 片段结束后 2 小节自动停止").into();
         }
         self.last_auto_stopped = auto_stopped;
 
@@ -2030,7 +2036,7 @@ impl SurfingApp {
             }
         }
         if let Some(message) = self.loading_message.clone() {
-            egui::Window::new("加载")
+            egui::Window::new(i18n::t("加载"))
                 .title_bar(false)
                 .collapsible(false)
                 .resizable(false)

@@ -45,6 +45,7 @@
 //!   `plugin_detail_field` / `path_hash` / `project_display_name`: rows and names.
 //! - `template_card` / `example_card` / `template_family_filter` / `template_filter_chip`: template and example cards.
 
+use super::i18n::{t, t_args, t_owned};
 use super::panels::{icon_button, paint_gear, paint_studio_logo};
 use super::time_fmt;
 use super::*;
@@ -311,9 +312,9 @@ impl SurfingApp {
         ui.add_space(2.0);
         if self.agent_library.expanded {
             for (page, label) in [
-                (HomePage::AgentBasics, "基础"),
-                (HomePage::AgentTechniques, "技能"),
-                (HomePage::AgentInstruments, "乐器"),
+                (HomePage::AgentBasics, t("基础")),
+                (HomePage::AgentTechniques, t("技能")),
+                (HomePage::AgentInstruments, t("乐器")),
             ] {
                 if home_sub_nav_item(ui, label, self.home_page == page).clicked() {
                     self.home_page = page;
@@ -329,7 +330,7 @@ impl SurfingApp {
         if remaining > 0.0 {
             ui.add_space(remaining);
         }
-        if icon_button(ui, "设置", paint_gear).clicked() {
+        if icon_button(ui, t("设置"), paint_gear).clicked() {
             self.open_settings(ui.ctx());
         }
     }
@@ -352,23 +353,23 @@ impl SurfingApp {
         self.prune_missing_projects();
         ui.add_space(2.0);
         ui.label(
-            egui::RichText::new("项目")
+            egui::RichText::new(t("项目"))
                 .size(HOME_TITLE_SIZE)
                 .strong()
                 .color(theme::TEXT),
         );
         ui.label(
-            egui::RichText::new(
+            egui::RichText::new(t(
                 "按最近保存时间列出打开过的工程，点击展开可查看工程信息与历史版本。",
-            )
+            ))
             .size(10.5)
             .color(theme::TEXT_DIM),
         );
         if self.open_project_count > 0 {
             ui.label(
-                egui::RichText::new(format!(
+                egui::RichText::new(t_args(
                     "当前已打开 {} 个工程窗口，点击图标或“文件 → 主页”可随时返回",
-                    self.open_project_count
+                    &[&self.open_project_count.to_string()],
                 ))
                 .size(10.0)
                 .color(theme::TEXT_FAINT),
@@ -385,11 +386,11 @@ impl SurfingApp {
             ui.add_sized(
                 [search_width, 32.0],
                 egui::TextEdit::singleline(&mut self.home_search)
-                    .hint_text("搜索项目")
+                    .hint_text(t("搜索项目"))
                     .desired_width(search_width),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if theme::primary_button(ui, "新建项目")
+                if theme::primary_button(ui, t("新建项目"))
                     .on_hover_text(self.settings.shortcut_label(ShortcutAction::New))
                     .clicked()
                 {
@@ -397,11 +398,13 @@ impl SurfingApp {
                 }
                 if ui
                     .add(
-                        egui::Button::new(egui::RichText::new("打开项目").size(theme::FONT_BODY))
-                            .fill(theme::PANEL_2)
-                            .stroke(egui::Stroke::NONE)
-                            .corner_radius(8)
-                            .min_size(egui::vec2(84.0, theme::CONTROL_H)),
+                        egui::Button::new(
+                            egui::RichText::new(t("打开项目")).size(theme::FONT_BODY),
+                        )
+                        .fill(theme::PANEL_2)
+                        .stroke(egui::Stroke::NONE)
+                        .corner_radius(8)
+                        .min_size(egui::vec2(84.0, theme::CONTROL_H)),
                     )
                     .on_hover_text(self.settings.shortcut_label(ShortcutAction::Open))
                     .clicked()
@@ -412,7 +415,7 @@ impl SurfingApp {
                     .add_enabled(
                         self.can_resume_project,
                         egui::Button::new(
-                            egui::RichText::new("继续当前工程")
+                            egui::RichText::new(t("继续当前工程"))
                                 .size(theme::FONT_LABEL)
                                 .color(theme::TEXT_DIM),
                         )
@@ -420,9 +423,9 @@ impl SurfingApp {
                         .min_size(egui::vec2(0.0, theme::CONTROL_H)),
                     )
                     .on_hover_text(if self.can_resume_project {
-                        "返回最近使用的工程窗口"
+                        t("返回最近使用的工程窗口")
                     } else {
-                        "当前没有打开的工程窗口"
+                        t("当前没有打开的工程窗口")
                     })
                     .clicked()
                 {
@@ -465,16 +468,16 @@ impl SurfingApp {
             ui.vertical_centered(|ui| {
                 ui.label(
                     egui::RichText::new(if self.settings.recent_projects.is_empty() {
-                        "暂无项目"
+                        t("暂无项目")
                     } else {
-                        "没有匹配的项目"
+                        t("没有匹配的项目")
                     })
                     .size(13.0)
                     .color(theme::TEXT_DIM),
                 );
                 ui.add_space(4.0);
                 ui.label(
-                    egui::RichText::new("打开或新建工程后会自动出现在这里。")
+                    egui::RichText::new(t("打开或新建工程后会自动出现在这里。"))
                         .size(10.5)
                         .color(theme::TEXT_FAINT),
                 );
@@ -540,13 +543,13 @@ impl SurfingApp {
     fn backup_home_project(&mut self, path: &Path) {
         match super::backup::create_backup_now(path, self.settings.backup_retention) {
             Ok(Some(created)) => {
-                self.status = format!("已备份工程：{}", created.display());
+                self.status = t_args("已备份工程：{}", &[&created.display().to_string()]);
             }
             Ok(None) => {
-                self.status = "工程文件不存在，无法备份".into();
+                self.status = t("工程文件不存在，无法备份").into();
             }
             Err(error) => {
-                self.status = format!("备份失败：{error}");
+                self.status = t_args("备份失败：{}", &[&error]);
             }
         }
     }
@@ -582,14 +585,14 @@ impl SurfingApp {
             .show(ctx, |ui| {
                 ui.set_width(360.0);
                 ui.label(
-                    egui::RichText::new("删除项目")
+                    egui::RichText::new(t("删除项目"))
                         .size(14.0)
                         .strong()
                         .color(theme::TEXT),
                 );
                 ui.add_space(8.0);
                 ui.label(
-                    egui::RichText::new(format!("确定要删除「{name}」吗？"))
+                    egui::RichText::new(t_args("确定要删除「{}」吗？", &[&name]))
                         .size(12.0)
                         .color(theme::TEXT),
                 );
@@ -604,22 +607,22 @@ impl SurfingApp {
                 ui.add_space(8.0);
                 ui.checkbox(
                     &mut prompt.delete_file,
-                    egui::RichText::new("同时删除本地工程文件").size(12.0),
+                    egui::RichText::new(t("同时删除本地工程文件")).size(12.0),
                 );
                 ui.add_space(2.0);
                 ui.label(if prompt.delete_file {
-                    egui::RichText::new("本地文件删除后无法恢复")
+                    egui::RichText::new(t("本地文件删除后无法恢复"))
                         .size(10.0)
                         .color(theme::RED)
                 } else {
-                    egui::RichText::new("仅从项目列表移除，本地文件保留")
+                    egui::RichText::new(t("仅从项目列表移除，本地文件保留"))
                         .size(10.0)
                         .color(theme::TEXT_FAINT)
                 });
                 ui.add_space(12.0);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let delete = egui::Button::new(
-                        egui::RichText::new("删除")
+                        egui::RichText::new(t("删除"))
                             .size(12.0)
                             .color(egui::Color32::WHITE),
                     )
@@ -629,7 +632,7 @@ impl SurfingApp {
                     if ui.add(delete).clicked() {
                         decision = Some(true);
                     }
-                    let cancel = egui::Button::new(egui::RichText::new("取消").size(12.0))
+                    let cancel = egui::Button::new(egui::RichText::new(t("取消")).size(12.0))
                         .corner_radius(4)
                         .min_size(egui::vec2(76.0, 26.0));
                     if ui.add(cancel).clicked() {
@@ -677,7 +680,7 @@ impl SurfingApp {
                 // 文件已被外部删除时仍继续清理列表，避免条目残留。
                 // A file removed outside the app still clears the list entry.
                 if error.kind() != std::io::ErrorKind::NotFound {
-                    self.status = format!("删除本地文件失败：{error}");
+                    self.status = t_args("删除本地文件失败：{}", &[&error.to_string()]);
                     return;
                 }
             }
@@ -687,9 +690,9 @@ impl SurfingApp {
         self.home_project_info.remove(path);
         self.commit_settings();
         self.status = if delete_file {
-            "已删除项目并移除本地文件".into()
+            t("已删除项目并移除本地文件").into()
         } else {
-            "已从项目列表移除".into()
+            t("已从项目列表移除").into()
         };
     }
 
@@ -841,21 +844,23 @@ impl SurfingApp {
         // Context menu: back up a history version / delete the project (with confirmation).
         egui::Popup::context_menu(&response).show(|ui| {
             ui.set_min_width(160.0);
-            if theme::menu_button(ui, "备份", "").clicked() {
+            if theme::menu_button(ui, t("备份"), "").clicked() {
                 action = Some(ProjectRowAction::Backup);
                 ui.close();
             }
-            if theme::menu_button(ui, "删除", "").clicked() {
+            if theme::menu_button(ui, t("删除"), "").clicked() {
                 action = Some(ProjectRowAction::Delete);
                 ui.close();
             }
         });
         response
             .on_hover_cursor(egui::CursorIcon::PointingHand)
-            .on_hover_text(format!(
+            .on_hover_text(t_args(
                 "{}\n最近保存：{}\n点击展开工程信息与历史版本；右键可备份或删除",
-                path.display(),
-                time_fmt::format_datetime(modified)
+                &[
+                    &path.display().to_string(),
+                    &time_fmt::format_datetime(modified),
+                ],
             ));
         if expanded {
             self.ui_home_project_details(ui, path, modified, &mut action);
@@ -912,22 +917,22 @@ impl SurfingApp {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
                     ui.label(
-                        egui::RichText::new("工程信息")
+                        egui::RichText::new(t("工程信息"))
                             .size(11.5)
                             .strong()
                             .color(theme::TEXT),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
-                            .small_button("打开工程")
-                            .on_hover_text("在工程窗口中打开")
+                            .small_button(t("打开工程"))
+                            .on_hover_text(t("在工程窗口中打开"))
                             .clicked()
                         {
                             *action = Some(ProjectRowAction::Open);
                         }
                         if ui
-                            .small_button("刷新信息")
-                            .on_hover_text("重新读取工程文件")
+                            .small_button(t("刷新信息"))
+                            .on_hover_text(t("重新读取工程文件"))
                             .clicked()
                         {
                             *action = Some(ProjectRowAction::RefreshInfo);
@@ -935,11 +940,11 @@ impl SurfingApp {
                     });
                 });
                 ui.add_space(4.0);
-                project_detail_row(ui, "路径", &path.display().to_string());
-                project_detail_row(ui, "大小", &format_bytes(bytes));
+                project_detail_row(ui, t("路径"), &path.display().to_string());
+                project_detail_row(ui, t("大小"), &format_bytes(bytes));
                 project_detail_row(
                     ui,
-                    "最近保存",
+                    t("最近保存"),
                     &format!(
                         "{}（{}）",
                         time_fmt::format_datetime(saved_at),
@@ -950,32 +955,40 @@ impl SurfingApp {
                     Some(Ok(summary)) => {
                         project_detail_row(
                             ui,
-                            "工程",
-                            &format!(
+                            t("工程"),
+                            &t_args(
                                 "{} BPM · {}/{} · {} 小节",
-                                summary.bpm.round() as i32,
-                                summary.time_sig.0,
-                                summary.time_sig.1,
-                                (summary.length_beats / summary.beats_per_bar).ceil() as i32
+                                &[
+                                    &(summary.bpm.round() as i32).to_string(),
+                                    &summary.time_sig.0.to_string(),
+                                    &summary.time_sig.1.to_string(),
+                                    &((summary.length_beats / summary.beats_per_bar).ceil() as i32)
+                                        .to_string(),
+                                ],
                             ),
                         );
                         project_detail_row(
                             ui,
-                            "内容",
-                            &format!(
+                            t("内容"),
+                            &t_args(
                                 "{} 轨 · {} 片段 · {} 音符 · {} 插件",
-                                summary.tracks, summary.clips, summary.notes, summary.plugins
+                                &[
+                                    &summary.tracks.to_string(),
+                                    &summary.clips.to_string(),
+                                    &summary.notes.to_string(),
+                                    &summary.plugins.to_string(),
+                                ],
                             ),
                         );
                     }
                     Some(Err(error)) => {
-                        project_detail_row(ui, "读取失败", &error);
+                        project_detail_row(ui, t("读取失败"), &error);
                     }
                     None => {
                         ui.horizontal(|ui| {
                             ui.add(egui::Spinner::new().size(12.0));
                             ui.label(
-                                egui::RichText::new("正在读取工程信息…")
+                                egui::RichText::new(t("正在读取工程信息…"))
                                     .size(10.5)
                                     .color(theme::TEXT_DIM),
                             );
@@ -987,7 +1000,7 @@ impl SurfingApp {
                 ui.separator();
                 ui.add_space(5.0);
                 ui.label(
-                    egui::RichText::new(format!("历史版本（{}）", versions.len()))
+                    egui::RichText::new(t_args("历史版本（{}）", &[&versions.len().to_string()]))
                         .size(11.0)
                         .strong()
                         .color(theme::TEXT),
@@ -995,16 +1008,16 @@ impl SurfingApp {
                 if versions.is_empty() {
                     ui.label(
                         egui::RichText::new(if self.settings.auto_backup {
-                            "保存后会自动在工程目录的 Backups 文件夹保留版本。"
+                            t("保存后会自动在工程目录的 Backups 文件夹保留版本。")
                         } else {
-                            "自动备份已关闭，可在设置 → 存储中开启后保存一次。"
+                            t("自动备份已关闭，可在设置 → 存储中开启后保存一次。")
                         })
                         .size(10.0)
                         .color(theme::TEXT_FAINT),
                     );
                 } else {
                     ui.label(
-                        egui::RichText::new("版本按保存时间从新到旧排列，可直接打开只读查看。")
+                        egui::RichText::new(t("版本按保存时间从新到旧排列，可直接打开只读查看。"))
                             .size(9.5)
                             .color(theme::TEXT_FAINT),
                     );
@@ -1025,8 +1038,8 @@ impl SurfingApp {
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
                                     if ui
-                                        .small_button("打开")
-                                        .on_hover_text("打开该历史版本（另存为不会覆盖原工程）")
+                                        .small_button(t("打开"))
+                                        .on_hover_text(t("打开该历史版本（另存为不会覆盖原工程）"))
                                         .clicked()
                                     {
                                         open_version = Some(version.path.clone());
@@ -1094,7 +1107,7 @@ impl SurfingApp {
             Ok(result) => result,
             Err(std::sync::mpsc::TryRecvError::Empty) => return,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                Err("工程信息读取线程中断".to_string())
+                Err(t("工程信息读取线程中断").to_string())
             }
         };
         let path = path.clone();
@@ -1118,15 +1131,17 @@ impl SurfingApp {
     fn ui_home_templates(&mut self, ui: &mut egui::Ui) {
         ui.add_space(2.0);
         ui.label(
-            egui::RichText::new("模板工程")
+            egui::RichText::new(t("模板工程"))
                 .size(HOME_TITLE_SIZE)
                 .strong()
                 .color(theme::TEXT),
         );
         ui.label(
-            egui::RichText::new("从主流音乐风格模板快速开始，或打开更完整的范例工程继续修改。")
-                .size(10.5)
-                .color(theme::TEXT_DIM),
+            egui::RichText::new(t(
+                "从主流音乐风格模板快速开始，或打开更完整的范例工程继续修改。",
+            ))
+            .size(10.5)
+            .color(theme::TEXT_DIM),
         );
         ui.add_space(12.0);
 
@@ -1134,7 +1149,7 @@ impl SurfingApp {
         ui.add_sized(
             [search_width, 32.0],
             egui::TextEdit::singleline(&mut self.home_template_search)
-                .hint_text("搜索风格、标签或音色")
+                .hint_text(t("搜索风格、标签或音色"))
                 .desired_width(search_width),
         );
         ui.add_space(theme::SPACE_SM);
@@ -1166,13 +1181,13 @@ impl SurfingApp {
                     ui.add_space(40.0);
                     ui.vertical_centered(|ui| {
                         ui.label(
-                            egui::RichText::new("没有匹配的模板")
+                            egui::RichText::new(t("没有匹配的模板"))
                                 .size(13.0)
                                 .color(theme::TEXT_DIM),
                         );
                         ui.add_space(4.0);
                         ui.label(
-                            egui::RichText::new("换一个风格关键词，或选择“全部”家族。")
+                            egui::RichText::new(t("换一个风格关键词，或选择“全部”家族。"))
                                 .size(10.5)
                                 .color(theme::TEXT_FAINT),
                         );
@@ -1207,13 +1222,13 @@ impl SurfingApp {
 
                 ui.add_space(6.0);
                 ui.label(
-                    egui::RichText::new("范例工程")
+                    egui::RichText::new(t("范例工程"))
                         .size(15.0)
                         .strong()
                         .color(theme::TEXT),
                 );
                 ui.label(
-                    egui::RichText::new("16 小节的完整编曲，可直接打开继续修改。")
+                    egui::RichText::new(t("16 小节的完整编曲，可直接打开继续修改。"))
                         .size(10.5)
                         .color(theme::TEXT_DIM),
                 );
@@ -1262,8 +1277,8 @@ impl SurfingApp {
         self.pending_window_actions.push(WindowAction::NewProject {
             template: Some(template),
         });
-        let name = crate::core::model::template::display_name(template).unwrap_or("模板工程");
-        self.status = format!("正在从「{name}」创建工程…");
+        let name = crate::core::model::template::display_name(template).unwrap_or(t("模板工程"));
+        self.status = t_args("正在从「{}」创建工程…", &[name]);
     }
 
     /// 所属模块：app / 主页 / 插件页
@@ -1281,15 +1296,17 @@ impl SurfingApp {
     fn ui_home_plugins(&mut self, ui: &mut egui::Ui) {
         ui.add_space(theme::SPACE_XS);
         ui.label(
-            egui::RichText::new("插件")
+            egui::RichText::new(t("插件"))
                 .size(HOME_TITLE_SIZE)
                 .strong()
                 .color(theme::TEXT),
         );
         ui.label(
-            egui::RichText::new("按品牌浏览已扫描的插件；选择一行后在右侧查看路径与能力。")
-                .size(theme::FONT_MICRO)
-                .color(theme::TEXT_DIM),
+            egui::RichText::new(t(
+                "按品牌浏览已扫描的插件；选择一行后在右侧查看路径与能力。",
+            ))
+            .size(theme::FONT_MICRO)
+            .color(theme::TEXT_DIM),
         );
         ui.add_space(theme::SPACE_LG);
 
@@ -1298,9 +1315,9 @@ impl SurfingApp {
         // buttons no longer compete for one row.
         ui.horizontal(|ui| {
             for (kind, label) in [
-                (None, "全部"),
-                (Some(PluginKind::Instrument), "乐器"),
-                (Some(PluginKind::Effect), "效果器"),
+                (None, t("全部")),
+                (Some(PluginKind::Instrument), t("乐器")),
+                (Some(PluginKind::Effect), t("效果器")),
             ] {
                 if theme::chip(ui, label, self.home_plugin_kind == kind).clicked() {
                     self.home_plugin_kind = kind;
@@ -1312,18 +1329,18 @@ impl SurfingApp {
                     ui.add(egui::Spinner::new().size(14.0));
                     ui.add_space(theme::SPACE_SM);
                 }
-                let scan = theme::dropdown_button_filled(ui, "扫描插件");
+                let scan = theme::dropdown_button_filled(ui, t("扫描插件"));
                 egui::Popup::menu(&scan).show(|ui| {
                     ui.set_min_width(150.0);
-                    if theme::menu_button(ui, "扫描全部", "").clicked() {
+                    if theme::menu_button(ui, t("扫描全部"), "").clicked() {
                         self.start_scan();
                         ui.close();
                     }
-                    if theme::menu_button(ui, "仅 VST3", "").clicked() {
+                    if theme::menu_button(ui, t("仅 VST3"), "").clicked() {
                         self.scan_vst3_only();
                         ui.close();
                     }
-                    if theme::menu_button(ui, "仅 VST2 / VST", "").clicked() {
+                    if theme::menu_button(ui, t("仅 VST2 / VST"), "").clicked() {
                         self.scan_legacy_only();
                         ui.close();
                     }
@@ -1334,7 +1351,7 @@ impl SurfingApp {
         ui.add_sized(
             [ui.available_width(), 32.0],
             egui::TextEdit::singleline(&mut self.home_plugin_search)
-                .hint_text("搜索插件、品牌或类型")
+                .hint_text(t("搜索插件、品牌或类型"))
                 .desired_width(f32::INFINITY),
         );
         ui.add_space(theme::SPACE_SM);
@@ -1362,9 +1379,13 @@ impl SurfingApp {
             .filter(|plugin| plugin.kind == PluginKind::Effect)
             .count();
         ui.label(
-            egui::RichText::new(format!(
-                "共 {} 个插件 · 乐器 {instruments} · 效果器 {effects}",
-                plugins.len()
+            egui::RichText::new(t_args(
+                "共 {} 个插件 · 乐器 {} · 效果器 {}",
+                &[
+                    &plugins.len().to_string(),
+                    &instruments.to_string(),
+                    &effects.to_string(),
+                ],
             ))
             .size(theme::FONT_MICRO)
             .color(theme::TEXT_FAINT),
@@ -1378,16 +1399,16 @@ impl SurfingApp {
                 ui.vertical_centered(|ui| {
                     ui.label(
                         egui::RichText::new(if self.scanning {
-                            "正在扫描插件…"
+                            t("正在扫描插件…")
                         } else {
-                            "还没有插件记录"
+                            t("还没有插件记录")
                         })
                         .size(theme::FONT_BODY)
                         .color(theme::TEXT_DIM),
                     );
                     ui.add_space(theme::SPACE_XS);
                     ui.label(
-                        egui::RichText::new("点击右上角「扫描插件」选择扫描范围。")
+                        egui::RichText::new(t("点击右上角「扫描插件」选择扫描范围。"))
                             .size(theme::FONT_MICRO)
                             .color(theme::TEXT_FAINT),
                     );
@@ -1500,7 +1521,7 @@ impl SurfingApp {
         let tips: [(String, &str); 6] = [
             (
                 self.settings.shortcut_label(ShortcutAction::PlayPause),
-                "播放 / 暂停。焦点在插件窗口或浮动卷帘时同样有效。",
+                t("播放 / 暂停。焦点在插件窗口或浮动卷帘时同样有效。"),
             ),
             (
                 format!(
@@ -1509,11 +1530,11 @@ impl SurfingApp {
                     self.settings.shortcut_label(ShortcutAction::Open),
                     self.settings.shortcut_label(ShortcutAction::New)
                 ),
-                "保存、打开与新建工程。",
+                t("保存、打开与新建工程。"),
             ),
             (
                 self.settings.shortcut_label(ShortcutAction::PluginBrowser),
-                "打开插件浏览器，管理 VST3 / VST2 插件。",
+                t("打开插件浏览器，管理 VST3 / VST2 插件。"),
             ),
             (
                 format!(
@@ -1521,28 +1542,28 @@ impl SurfingApp {
                     self.settings.shortcut_label(ShortcutAction::ControllerRoll),
                     self.settings.shortcut_label(ShortcutAction::EffectsRoll)
                 ),
-                "打开当前轨道的控制器卷帘 / 效果器链卷帘。",
+                t("打开当前轨道的控制器卷帘 / 效果器链卷帘。"),
             ),
             (
-                "双击片段或子轨".to_string(),
-                "进入钢琴卷帘、控制器或效果器编辑；单击只选中。",
+                t("双击片段或子轨").to_string(),
+                t("进入钢琴卷帘、控制器或效果器编辑；单击只选中。"),
             ),
             (
-                "拖入 WAV".to_string(),
-                "在轨道上创建音频片段；拖到空白处会自动新建音频轨道。",
+                t("拖入 WAV").to_string(),
+                t("在轨道上创建音频片段；拖到空白处会自动新建音频轨道。"),
             ),
         ];
         ui.add_space(2.0);
         ui.label(
-            egui::RichText::new("提示")
+            egui::RichText::new(t("提示"))
                 .size(HOME_TITLE_SIZE)
                 .strong()
                 .color(theme::TEXT),
         );
         ui.label(
-            egui::RichText::new(format!(
+            egui::RichText::new(t_args(
                 "常用操作与快捷键，完整说明见帮助窗口（{}）。",
-                self.settings.shortcut_label(ShortcutAction::Help)
+                &[&self.settings.shortcut_label(ShortcutAction::Help)],
             ))
             .size(10.5)
             .color(theme::TEXT_DIM),
@@ -1591,13 +1612,13 @@ impl SurfingApp {
     /// Complexity: O(projects) time (only when missing) and O(1) space.
     pub(super) fn open_recent_project(&mut self, path: PathBuf) {
         if self.load_rx.is_some() || self.dialog_rx.is_some() {
-            self.status = "正在加载工程，请稍候…".into();
+            self.status = t("正在加载工程，请稍候…").into();
             return;
         }
         if !path.is_file() {
             self.settings.remove_recent(&path);
             self.commit_settings();
-            self.status = format!("项目不存在：{}", path.display());
+            self.status = t_args("项目不存在：{}", &[&path.display().to_string()]);
             return;
         }
         self.pending_window_actions
@@ -1730,7 +1751,7 @@ fn format_bytes(bytes: u64) -> String {
 fn format_version_name(path: &Path) -> String {
     path.file_stem()
         .map(|stem| stem.to_string_lossy().to_string())
-        .unwrap_or_else(|| "版本".into())
+        .unwrap_or_else(|| t("版本").into())
 }
 
 /// 所属模块：app / 主页 / 侧栏
@@ -1802,26 +1823,26 @@ fn paint_chevron(
 }
 
 /// 所属模块：app / 主页 / 侧栏
-/// 功能：返回主页菜单项的中文名称。
+/// 功能：返回主页菜单项的当前语言名称。
 /// 输入：`page`：菜单页面。
 /// 输出/副作用：返回静态文本；不修改状态。
 /// 复杂度：时间 O(1)，空间 O(1)。
 ///
 /// Module: app / home page / sidebar
-/// Purpose: Return the Chinese label of a home menu entry.
+/// Purpose: Return the home menu label in the active language.
 /// Inputs: `page`: menu page.
 /// Outputs / side effects: static text; no state change.
 /// Complexity: O(1) time and space.
 fn home_page_label(page: HomePage) -> &'static str {
     match page {
-        HomePage::Projects => "项目",
-        HomePage::Templates => "模板",
-        HomePage::Plugins => "插件",
-        HomePage::Tips => "提示",
+        HomePage::Projects => t("项目"),
+        HomePage::Templates => t("模板"),
+        HomePage::Plugins => t("插件"),
+        HomePage::Tips => t("提示"),
         HomePage::Agents => "Agent",
-        HomePage::AgentBasics => "基础",
-        HomePage::AgentTechniques => "技能",
-        HomePage::AgentInstruments => "乐器",
+        HomePage::AgentBasics => t("基础"),
+        HomePage::AgentTechniques => t("技能"),
+        HomePage::AgentInstruments => t("乐器"),
     }
 }
 
@@ -2074,7 +2095,7 @@ fn home_nav_icon(painter: &egui::Painter, rect: egui::Rect, page: HomePage, colo
 /// Complexity: O(families) per frame.
 fn template_family_filter(ui: &mut egui::Ui, selected: &mut Option<TemplateFamily>) {
     ui.horizontal_wrapped(|ui| {
-        if template_filter_chip(ui, "全部", selected.is_none()).clicked() {
+        if template_filter_chip(ui, t("全部"), selected.is_none()).clicked() {
             *selected = None;
         }
         for family in TemplateFamily::ALL {
@@ -2164,11 +2185,13 @@ fn template_card(ui: &mut egui::Ui, template: &MusicTemplate, width: f32) -> egu
     painter.text(
         egui::pos2(rect.left() + 22.0, rect.top() + 29.0),
         egui::Align2::LEFT_TOP,
-        format!(
+        t_args(
             "{} · {} BPM · 4/4 · {} 小节",
-            template.style,
-            template.bpm.round() as i32,
-            template.bars
+            &[
+                template.style,
+                &(template.bpm.round() as i32).to_string(),
+                &template.bars.to_string(),
+            ],
         ),
         egui::FontId::proportional(9.5),
         theme::TEXT_FAINT,
@@ -2219,7 +2242,7 @@ fn template_card(ui: &mut egui::Ui, template: &MusicTemplate, width: f32) -> egu
     painter.text(
         button.center(),
         egui::Align2::CENTER_CENTER,
-        "创建",
+        t("创建"),
         egui::FontId::proportional(10.5),
         egui::Color32::WHITE,
     );
@@ -2280,7 +2303,7 @@ fn example_card(ui: &mut egui::Ui, example: &ExampleProject, width: f32) -> egui
     );
     let template_name = template::find_template(example.template_id)
         .map(|template| template.name)
-        .unwrap_or("模板");
+        .unwrap_or(t("模板"));
     painter.text(
         egui::pos2(rect.left() + 22.0, rect.top() + 10.0),
         egui::Align2::LEFT_TOP,
@@ -2291,7 +2314,10 @@ fn example_card(ui: &mut egui::Ui, example: &ExampleProject, width: f32) -> egui
     painter.text(
         egui::pos2(rect.left() + 22.0, rect.top() + 28.0),
         egui::Align2::LEFT_TOP,
-        format!("{template_name} · {} 小节 · 范例", example.bars),
+        t_args(
+            "{} · {} 小节 · 范例",
+            &[template_name, &example.bars.to_string()],
+        ),
         egui::FontId::proportional(9.5),
         theme::TEXT_FAINT,
     );
@@ -2327,7 +2353,7 @@ fn example_card(ui: &mut egui::Ui, example: &ExampleProject, width: f32) -> egui
     painter.text(
         button.center(),
         egui::Align2::CENTER_CENTER,
-        "打开",
+        t("打开"),
         egui::FontId::proportional(10.5),
         egui::Color32::WHITE,
     );
@@ -2413,9 +2439,9 @@ fn plugin_brand_header(
     response
         .on_hover_cursor(egui::CursorIcon::PointingHand)
         .on_hover_text(if openness > 0.5 {
-            "点击收起该品牌的插件"
+            t("点击收起该品牌的插件")
         } else {
-            "点击展开该品牌的插件"
+            t("点击展开该品牌的插件")
         })
 }
 
@@ -2483,7 +2509,7 @@ fn home_plugin_row(ui: &mut egui::Ui, plugin: &ScannedPlugin, openness: f32) -> 
                         .truncate(),
                     );
                     let vendor = if plugin.vendor.trim().is_empty() {
-                        "未标注厂商"
+                        t("未标注厂商")
                     } else {
                         plugin.vendor.trim()
                     };
@@ -2511,10 +2537,9 @@ fn home_plugin_row(ui: &mut egui::Ui, plugin: &ScannedPlugin, openness: f32) -> 
     );
     response
         .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text(format!(
+        .on_hover_text(t_args(
             "{}\n{}\n点击展开插件详情",
-            plugin.name,
-            plugin.path.display()
+            &[&plugin.name, &plugin.path.display().to_string()],
         ))
         .clicked()
 }
@@ -2544,27 +2569,27 @@ fn plugin_detail_body(ui: &mut egui::Ui, plugin: &ScannedPlugin) {
             ui.horizontal_top(|ui| {
                 ui.vertical(|ui| {
                     ui.set_width(column);
-                    plugin_detail_field(ui, "路径", &plugin.path.display().to_string(), true);
+                    plugin_detail_field(ui, t("路径"), &plugin.path.display().to_string(), true);
                     if !plugin.uid.is_empty() {
                         ui.add_space(theme::SPACE_MD);
-                        plugin_detail_field(ui, "标识", &plugin.uid, true);
+                        plugin_detail_field(ui, t("标识"), &plugin.uid, true);
                     }
                 });
                 ui.add_space(gap);
                 ui.vertical(|ui| {
                     ui.set_width(column);
                     let vendor = if plugin.vendor.trim().is_empty() {
-                        "未标注厂商"
+                        t("未标注厂商")
                     } else {
                         plugin.vendor.trim()
                     };
-                    plugin_detail_field(ui, "厂商", vendor, false);
+                    plugin_detail_field(ui, t("厂商"), vendor, false);
                     ui.add_space(theme::SPACE_MD);
                     plugin_detail_field(
                         ui,
-                        "分类",
+                        t("分类"),
                         if plugin.category.trim().is_empty() {
-                            "未分类"
+                            t("未分类")
                         } else {
                             plugin.category.trim()
                         },
@@ -2573,11 +2598,17 @@ fn plugin_detail_body(ui: &mut egui::Ui, plugin: &ScannedPlugin) {
                     ui.add_space(theme::SPACE_MD);
                     plugin_detail_field(
                         ui,
-                        "能力",
-                        &format!(
+                        t("能力"),
+                        &t_args(
                             "MIDI 输入：{}    原生界面：{}",
-                            if plugin.has_midi_input { "是" } else { "否" },
-                            if plugin.has_gui { "是" } else { "否" }
+                            &[
+                                if plugin.has_midi_input {
+                                    t("是")
+                                } else {
+                                    t("否")
+                                },
+                                if plugin.has_gui { t("是") } else { t("否") },
+                            ],
                         ),
                         false,
                     );

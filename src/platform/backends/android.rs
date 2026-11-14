@@ -9,6 +9,7 @@
 //! - `AndroidPlatform::info` / `caps`：标识与能力。
 //! - `AndroidPlatform::config_dir` / `cache_dir` / `data_dir` / `log_dir` / `temp_dir`：目录。
 //! - `AndroidPlatform::pick_file` / `pick_folder` / `save_file`：不支持系统对话框，返回 `None`。
+//! - `AndroidPlatform::system_locale`：从环境变量读取系统区域。
 //! - `AndroidPlatform::exit_process`：终止进程。
 //!
 //! Module: platform / Android backend
@@ -24,6 +25,7 @@
 //! - `AndroidPlatform::info` / `caps`: identity and capabilities.
 //! - `AndroidPlatform::config_dir` / `cache_dir` / `data_dir` / `log_dir` / `temp_dir`: directories.
 //! - `AndroidPlatform::pick_file` / `pick_folder` / `save_file`: no system dialog, always `None`.
+//! - `AndroidPlatform::system_locale`: read the system locale from the environment.
 //! - `AndroidPlatform::exit_process`: terminate the process.
 
 use super::super::{FileRequest, PlatformBackend, PlatformCaps, PlatformInfo};
@@ -287,6 +289,21 @@ impl PlatformBackend for AndroidPlatform {
     /// Complexity: O(1) time and space.
     fn caps(&self) -> PlatformCaps {
         PlatformCaps::ANDROID
+    }
+
+    /// 所属模块：platform / 安卓后端 / 区域
+    /// 功能：从进程环境变量读取系统区域（安卓由系统注入 `LANG`）。
+    /// 输入：`self`。
+    /// 输出/副作用：区域标识或 `None`；不修改状态。
+    /// 复杂度：时间 O(环境变量数 × 文本长度)，空间 O(文本长度)。
+    ///
+    /// Module: platform / Android backend / locale
+    /// Purpose: Read the system locale from the process environment (Android injects `LANG`).
+    /// Inputs: `self`.
+    /// Outputs / side effects: the locale id or `None`; no state change.
+    /// Complexity: O(variables × text length) time and O(text length) space.
+    fn system_locale(&self) -> Option<String> {
+        super::super::backend::locale_from_env()
     }
 
     /// 所属模块：platform / 安卓后端 / 存储

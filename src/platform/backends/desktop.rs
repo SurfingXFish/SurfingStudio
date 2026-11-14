@@ -9,6 +9,7 @@
 //! - `DesktopPlatform::install_dir` / `config_dir` / `cache_dir` / `data_dir` / `log_dir` /
 //!   `temp_dir`：目录约定（全部位于安装目录 `data/` 下）。
 //! - `DesktopPlatform::pick_file` / `pick_folder` / `save_file`：rfd 对话框。
+//! - `DesktopPlatform::system_locale`：系统区域标识（Windows 用户默认区域 / 其他系统环境变量）。
 //! - `DesktopPlatform::exit_process`：终止进程。
 //!
 //! Module: platform / desktop backend
@@ -23,6 +24,7 @@
 //! - `DesktopPlatform::install_dir` / `config_dir` / `cache_dir` / `data_dir` / `log_dir` /
 //!   `temp_dir`: directory conventions (all under `<install>/data`).
 //! - `DesktopPlatform::pick_file` / `pick_folder` / `save_file`: rfd dialogs.
+//! - `DesktopPlatform::system_locale`: system locale (Windows user default / environment elsewhere).
 //! - `DesktopPlatform::exit_process`: terminate the process.
 
 use super::super::{
@@ -283,6 +285,45 @@ impl PlatformBackend for DesktopPlatform {
             dialog = dialog.set_parent(parent);
         }
         dialog.save_file()
+    }
+
+    /// 所属模块：platform / 桌面后端 / 区域
+    /// 功能：返回系统区域标识；Windows 读取用户默认区域，其余系统读取环境变量。
+    /// 输入：`self`。
+    /// 输出/副作用：区域标识或 `None`；不修改状态。
+    /// 复杂度：时间 O(系统调用)，空间 O(区域名长度)。
+    ///
+    /// Module: platform / desktop backend / locale
+    /// Purpose: Return the system locale; Windows reads the user default locale, other systems read
+    /// environment variables.
+    /// Inputs: `self`.
+    /// Outputs / side effects: the locale id or `None`; no state change.
+    /// Complexity: O(system call) time and O(locale length) space.
+    fn system_locale(&self) -> Option<String> {
+        #[cfg(target_os = "windows")]
+        {
+            // LOCALE_NAME_MAX_LENGTH；缓冲区必须覆盖最长区域名。
+            // LOCALE_NAME_MAX_LENGTH; the buffer must hold the longest locale name.
+            let mut buffer = [0u16; 85];
+            // SAFETY: 缓冲区长度与 API 约定一致；返回值为写入的字符数（含结尾 0）。
+            // SAFETY: the buffer matches the API contract; the return value is the written length
+            // including the terminator.
+            let length = unsafe {
+                winapi::um::winnls::GetUserDefaultLocaleName(
+                    buffer.as_mut_ptr(),
+                    buffer.len() as i32,
+                )
+            };
+            if length > 1 {
+                let end = (length as usize - 1).min(buffer.len());
+                return Some(String::from_utf16_lossy(&buffer[..end]));
+            }
+            super::super::backend::locale_from_env()
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            super::super::backend::locale_from_env()
+        }
     }
 
     /// 所属模块：platform / 桌面后端 / 退出

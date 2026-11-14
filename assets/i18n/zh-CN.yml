@@ -1,0 +1,9 @@
+# SurfingStudio 界面语言目录：简体中文（源语言）。
+# SurfingStudio UI language catalog: Simplified Chinese (source language).
+#
+# 源语言目录只保存需要覆盖的文本；未登记的键直接使用代码中的中文原文。
+# The source catalog only stores overrides; missing keys use the Chinese source text.
+language:
+  code: zh-CN
+  name: 简体中文
+strings: {}

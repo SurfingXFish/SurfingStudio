@@ -1,4 +1,4 @@
-﻿//! 所属模块：app / 面板
+//! 所属模块：app / 面板
 //! 文件用途：
 //! - 自绘无边框窗口的应用栏（图标、主菜单、项目栏与窗口按钮）与下方工具栏。
 //! - 底部状态栏、子轨覆盖确认弹窗与无边框窗口的边缘缩放热区。
@@ -33,6 +33,7 @@
 //! - `app_logo` / `hamburger_button` / `bar_text_button` / `project_chip` / `icon_button` / `window_control`: widgets.
 //! - `menu_item` / `paint_gear` / `paint_minimize` / `paint_maximize` / `paint_close` / `paint_chevron`: items and glyphs.
 
+use super::i18n::{t, t_args};
 use super::*;
 
 /// 应用栏高度（逻辑点）；窗口按钮与拖动热区都使用该高度。
@@ -64,7 +65,7 @@ impl SurfingApp {
         };
         let (what, target) = match &prompt.payload {
             Clipboard::ControllerLane { kind, .. } => (
-                format!("子轨「{}」", kind.label()),
+                t_args("子轨「{}」", &[kind.label()]),
                 self.project
                     .tracks
                     .get(prompt.target_track)
@@ -72,7 +73,7 @@ impl SurfingApp {
                     .unwrap_or_default(),
             ),
             Clipboard::EffectChain(effects) => (
-                format!("效果器子轨（{} 个）", effects.len()),
+                t_args("效果器子轨（{} 个）", &[&effects.len().to_string()]),
                 self.project
                     .tracks
                     .get(prompt.target_track)
@@ -82,18 +83,18 @@ impl SurfingApp {
             _ => return,
         };
         let mut decision: Option<bool> = None;
-        egui::Window::new("覆盖子轨")
+        egui::Window::new(t("覆盖子轨"))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
-                ui.label(format!("轨道「{target}」已有{what}，是否覆盖？"));
+                ui.label(t_args("轨道「{}」已有{}，是否覆盖？", &[&target, &what]));
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    if ui.button("覆盖").clicked() {
+                    if ui.button(t("覆盖")).clicked() {
                         decision = Some(true);
                     }
-                    if ui.button("取消").clicked() {
+                    if ui.button(t("取消")).clicked() {
                         decision = Some(false);
                     }
                 });
@@ -105,7 +106,7 @@ impl SurfingApp {
             }
             Some(false) => {
                 self.lane_paste_prompt = None;
-                self.status = "已取消粘贴".into();
+                self.status = t("已取消粘贴").into();
             }
             None => {}
         }
@@ -137,33 +138,37 @@ impl SurfingApp {
         egui::Modal::new(egui::Id::new("group_delete_prompt")).show(ctx, |ui| {
             ui.set_min_width(400.0);
             ui.label(
-                egui::RichText::new(format!("删除组合轨道「{name}」"))
+                egui::RichText::new(t_args("删除组合轨道「{}」", &[&name]))
                     .size(15.0)
                     .strong(),
             );
             ui.add_space(6.0);
-            ui.label(format!(
-                "该组合当前包含 {members} 条成员轨道。请选择删除方式："
+            ui.label(t_args(
+                "该组合当前包含 {} 条成员轨道。请选择删除方式：",
+                &[&members.to_string()],
             ));
             ui.add_space(8.0);
             if ui
                 .button(
-                    egui::RichText::new(format!("删除整个组合（含 {members} 条成员）"))
-                        .color(theme::RED),
+                    egui::RichText::new(t_args(
+                        "删除整个组合（含 {} 条成员）",
+                        &[&members.to_string()],
+                    ))
+                    .color(theme::RED),
                 )
                 .clicked()
             {
                 decision = Some(Some(GroupDeleteMode::Whole));
             }
             if ui
-                .button("仅删除组合，成员释放到上级")
-                .on_hover_text("保留成员轨道，只移除组合轨道本身")
+                .button(t("仅删除组合，成员释放到上级"))
+                .on_hover_text(t("保留成员轨道，只移除组合轨道本身"))
                 .clicked()
             {
                 decision = Some(Some(GroupDeleteMode::Release));
             }
             ui.add_space(4.0);
-            if ui.button("取消").clicked() {
+            if ui.button(t("取消")).clicked() {
                 decision = Some(None);
             }
         });
@@ -171,7 +176,7 @@ impl SurfingApp {
             Some(Some(mode)) => self.confirm_group_delete(group_id, mode),
             Some(None) => {
                 self.group_delete_prompt = None;
-                self.status = "已取消删除组合轨道".into();
+                self.status = t("已取消删除组合轨道").into();
             }
             None => {}
         }
@@ -246,9 +251,9 @@ impl SurfingApp {
                         // message with the current OS user instead.
                         ui.add_space(8.0);
                         ui.label(
-                            egui::RichText::new(format!(
+                            egui::RichText::new(t_args(
                                 "欢迎使用SurfingStudio（{}）",
-                                current_user_name()
+                                &[&current_user_name()],
                             ))
                             .size(10.5)
                             .color(theme::APP_BAR_TEXT_DIM),
@@ -275,7 +280,7 @@ impl SurfingApp {
                             ui.separator();
                             if menu_item(
                                 ui,
-                                "打开项目…",
+                                t("打开项目…"),
                                 &self.settings.shortcut_label(ShortcutAction::Open),
                             )
                             .clicked()
@@ -285,7 +290,7 @@ impl SurfingApp {
                             }
                             if menu_item(
                                 ui,
-                                "新建工程",
+                                t("新建工程"),
                                 &self.settings.shortcut_label(ShortcutAction::New),
                             )
                             .clicked()
@@ -299,13 +304,17 @@ impl SurfingApp {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.spacing_mut().item_spacing.x = 2.0;
                         ui.add_space(4.0);
-                        let close = window_control(ui, "关闭", theme::CLOSE_HOVER, paint_close);
+                        let close = window_control(ui, t("关闭"), theme::CLOSE_HOVER, paint_close);
                         if close.clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                         }
                         let maximize = window_control(
                             ui,
-                            if maximized { "还原" } else { "最大化" },
+                            if maximized {
+                                t("还原")
+                            } else {
+                                t("最大化")
+                            },
                             theme::APP_BAR_HOVER,
                             |painter, rect, color| paint_maximize(painter, rect, color, maximized),
                         );
@@ -313,7 +322,7 @@ impl SurfingApp {
                             self.toggle_window_maximize(ctx);
                         }
                         let minimize =
-                            window_control(ui, "最小化", theme::APP_BAR_HOVER, paint_minimize);
+                            window_control(ui, t("最小化"), theme::APP_BAR_HOVER, paint_minimize);
                         if minimize.clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                         }
@@ -357,20 +366,20 @@ impl SurfingApp {
 
         // 主页独立为下拉栏第一项：点击直接显示主页窗口，不再藏在「文件」菜单里。
         // Home is a standalone first entry; it no longer lives inside the File menu.
-        let home = bar_text_button(ui, "主页", theme::APP_BAR_TEXT_DIM);
+        let home = bar_text_button(ui, t("主页"), theme::APP_BAR_TEXT_DIM);
         rect = rect.union(home.rect);
         if home.clicked() {
             self.open_home();
         }
 
-        let file = bar_text_button(ui, "文件", theme::APP_BAR_TEXT_DIM);
+        let file = bar_text_button(ui, t("文件"), theme::APP_BAR_TEXT_DIM);
         rect = rect.union(file.rect);
         egui::Popup::menu(&file).show(|ui| {
             apply_menu_style(ui);
             ui.set_min_width(230.0);
             if menu_item(
                 ui,
-                "新建工程",
+                t("新建工程"),
                 &self.settings.shortcut_label(ShortcutAction::New),
             )
             .clicked()
@@ -380,7 +389,7 @@ impl SurfingApp {
             }
             if menu_item(
                 ui,
-                "打开项目…",
+                t("打开项目…"),
                 &self.settings.shortcut_label(ShortcutAction::Open),
             )
             .clicked()
@@ -390,7 +399,7 @@ impl SurfingApp {
             }
             if menu_item(
                 ui,
-                "保存",
+                t("保存"),
                 &self.settings.shortcut_label(ShortcutAction::Save),
             )
             .clicked()
@@ -398,14 +407,14 @@ impl SurfingApp {
                 self.save_project();
                 ui.close();
             }
-            if menu_item(ui, "另存为…", "").clicked() {
+            if menu_item(ui, t("另存为…"), "").clicked() {
                 self.save_project_as(true);
                 ui.close();
             }
             ui.separator();
             if menu_item(
                 ui,
-                "导出音频…",
+                t("导出音频…"),
                 &self.settings.shortcut_label(ShortcutAction::Export),
             )
             .clicked()
@@ -417,25 +426,25 @@ impl SurfingApp {
             // Platforms without a native dialog (Android) write copies to a public folder via SAF.
             if !crate::platform::caps().native_file_dialog {
                 ui.separator();
-                if menu_item(ui, "工程副本保存到公共目录…", "").clicked() {
+                if menu_item(ui, t("工程副本保存到公共目录…"), "").clicked() {
                     self.export_project_copy_to_public();
                     ui.close();
                 }
-                if menu_item(ui, "WAV 导出到公共目录…", "").clicked() {
+                if menu_item(ui, t("WAV 导出到公共目录…"), "").clicked() {
                     self.export_wav_copy_to_public();
                     ui.close();
                 }
             }
         });
 
-        let edit = bar_text_button(ui, "编辑", theme::APP_BAR_TEXT_DIM);
+        let edit = bar_text_button(ui, t("编辑"), theme::APP_BAR_TEXT_DIM);
         rect = rect.union(edit.rect);
         egui::Popup::menu(&edit).show(|ui| {
             apply_menu_style(ui);
             ui.set_min_width(210.0);
             if menu_item(
                 ui,
-                "撤销",
+                t("撤销"),
                 &self.settings.shortcut_label(ShortcutAction::Undo),
             )
             .clicked()
@@ -445,7 +454,7 @@ impl SurfingApp {
             }
             if menu_item(
                 ui,
-                "重做",
+                t("重做"),
                 &self.settings.shortcut_label(ShortcutAction::Redo),
             )
             .clicked()
@@ -456,7 +465,7 @@ impl SurfingApp {
             ui.separator();
             if menu_item(
                 ui,
-                "复制",
+                t("复制"),
                 &self.settings.shortcut_label(ShortcutAction::Copy),
             )
             .clicked()
@@ -466,7 +475,7 @@ impl SurfingApp {
             }
             if menu_item(
                 ui,
-                "粘贴",
+                t("粘贴"),
                 &self.settings.shortcut_label(ShortcutAction::Paste),
             )
             .clicked()
@@ -476,7 +485,7 @@ impl SurfingApp {
             }
             if menu_item(
                 ui,
-                "删除",
+                t("删除"),
                 &self.settings.shortcut_label(ShortcutAction::Delete),
             )
             .clicked()
@@ -489,14 +498,14 @@ impl SurfingApp {
         // 插件菜单只在支持插件宿主的平台出现（安卓没有 VST 生态）。
         // The plugin menu only exists where plugin hosting is available (Android has no VST).
         if crate::platform::caps().plugin_hosting {
-            let vst = bar_text_button(ui, "VST 插件", theme::APP_BAR_TEXT_DIM);
+            let vst = bar_text_button(ui, t("VST 插件"), theme::APP_BAR_TEXT_DIM);
             rect = rect.union(vst.rect);
             egui::Popup::menu(&vst).show(|ui| {
                 apply_menu_style(ui);
                 ui.set_min_width(240.0);
                 if menu_item(
                     ui,
-                    "管理 VST 插件…",
+                    t("管理 VST 插件…"),
                     &self.settings.shortcut_label(ShortcutAction::PluginBrowser),
                 )
                 .clicked()
@@ -505,25 +514,25 @@ impl SurfingApp {
                     ui.close();
                 }
                 ui.separator();
-                if menu_item(ui, "仅扫描 VST3", "").clicked() {
+                if menu_item(ui, t("仅扫描 VST3"), "").clicked() {
                     self.scan_vst3_only();
                     ui.close();
                 }
-                if menu_item(ui, "仅扫描 VST2 / VST", "").clicked() {
+                if menu_item(ui, t("仅扫描 VST2 / VST"), "").clicked() {
                     self.scan_legacy_only();
                     ui.close();
                 }
             });
         }
 
-        let help = bar_text_button(ui, "帮助", theme::APP_BAR_TEXT_DIM);
+        let help = bar_text_button(ui, t("帮助"), theme::APP_BAR_TEXT_DIM);
         rect = rect.union(help.rect);
         egui::Popup::menu(&help).show(|ui| {
             apply_menu_style(ui);
             ui.set_min_width(210.0);
             if menu_item(
                 ui,
-                "使用帮助与快捷键",
+                t("使用帮助与快捷键"),
                 &self.settings.shortcut_label(ShortcutAction::Help),
             )
             .clicked()
@@ -543,7 +552,7 @@ impl SurfingApp {
         // Settings is a standalone entry that opens the settings window (or modal on single-window
         // platforms) directly.
         ui.add_space(4.0);
-        let settings = bar_text_button(ui, "设置", theme::APP_BAR_TEXT_DIM);
+        let settings = bar_text_button(ui, t("设置"), theme::APP_BAR_TEXT_DIM);
         rect = rect.union(settings.rect);
         if settings.clicked() {
             self.open_settings(ui.ctx());
@@ -586,16 +595,20 @@ impl SurfingApp {
                             egui::Button::new(egui::RichText::new("⏮").size(13.0))
                                 .min_size(egui::Vec2::new(26.0, 24.0)),
                         )
-                        .on_hover_text("回到最前")
+                        .on_hover_text(t("回到最前"))
                         .clicked()
                     {
                         self.jump_to_start();
                     }
                     let play_shortcut = self.settings.shortcut_label(ShortcutAction::PlayPause);
                     let (play_icon, play_color, play_tip) = if playing {
-                        ("⏸", theme::APP_BAR_TEXT, format!("暂停 ({play_shortcut})"))
+                        (
+                            "⏸",
+                            theme::APP_BAR_TEXT,
+                            t_args("暂停 ({})", &[&play_shortcut]),
+                        )
                     } else {
-                        ("▶", theme::GREEN, format!("播放 ({play_shortcut})"))
+                        ("▶", theme::GREEN, t_args("播放 ({})", &[&play_shortcut]))
                     };
                     if ui
                         .add(
@@ -626,7 +639,7 @@ impl SurfingApp {
                             .selected(recording)
                             .min_size(egui::Vec2::new(30.0, 24.0)),
                         )
-                        .on_hover_text("录制 MIDI（停止播放后自动退出录音）")
+                        .on_hover_text(t("录制 MIDI（停止播放后自动退出录音）"))
                         .clicked()
                     {
                         self.toggle_record();
@@ -636,7 +649,7 @@ impl SurfingApp {
                             egui::Button::new(egui::RichText::new("⏭").size(13.0))
                                 .min_size(egui::Vec2::new(26.0, 24.0)),
                         )
-                        .on_hover_text("跳到最后一个片段末尾")
+                        .on_hover_text(t("跳到最后一个片段末尾"))
                         .clicked()
                     {
                         self.jump_to_end();
@@ -662,7 +675,7 @@ impl SurfingApp {
                                 .custom_formatter(|value, _| format!("{value:.0} BPM"))
                                 .custom_parser(|text| text.trim_end_matches(" BPM").parse().ok()),
                         )
-                        .on_hover_text("工程速度（BPM）")
+                        .on_hover_text(t("工程速度（BPM）"))
                         .changed()
                     {
                         self.project.bpm = bpm;
@@ -672,7 +685,7 @@ impl SurfingApp {
                     let mut num = self.project.time_sig_num as i32;
                     if ui
                         .add(egui::DragValue::new(&mut num).range(1..=12).suffix(" /"))
-                        .on_hover_text("每小节拍数")
+                        .on_hover_text(t("每小节拍数"))
                         .changed()
                     {
                         self.project.time_sig_num = num as u8;
@@ -701,11 +714,11 @@ impl SurfingApp {
 
                     if ui
                         .add(
-                            egui::Button::new(egui::RichText::new("循环").size(11.5))
+                            egui::Button::new(egui::RichText::new(t("循环")).size(11.5))
                                 .selected(self.project.loop_enabled)
                                 .min_size(egui::Vec2::new(46.0, 24.0)),
                         )
-                        .on_hover_text("开启/关闭循环播放")
+                        .on_hover_text(t("开启/关闭循环播放"))
                         .clicked()
                     {
                         self.project.loop_enabled = !self.project.loop_enabled;
@@ -718,9 +731,9 @@ impl SurfingApp {
                             egui::DragValue::new(&mut loop_start)
                                 .range(0.0..=512.0)
                                 .speed(0.1)
-                                .prefix("起 "),
+                                .prefix(t("起 ")),
                         )
-                        .on_hover_text("循环起点（beat）")
+                        .on_hover_text(t("循环起点（beat）"))
                         .changed()
                     {
                         self.project.loop_start = loop_start.min(self.project.loop_end - 0.25);
@@ -731,9 +744,9 @@ impl SurfingApp {
                             egui::DragValue::new(&mut loop_end)
                                 .range(0.25..=512.0)
                                 .speed(0.1)
-                                .prefix("止 "),
+                                .prefix(t("止 ")),
                         )
-                        .on_hover_text("循环终点（beat）")
+                        .on_hover_text(t("循环终点（beat）"))
                         .changed()
                     {
                         self.project.loop_end = loop_end.max(self.project.loop_start + 0.25);
@@ -747,27 +760,28 @@ impl SurfingApp {
                         self.settings.shortcut_label(ShortcutAction::ToggleAutoPage);
                     if ui
                         .add(
-                            egui::Button::new(egui::RichText::new("自动翻页").size(11.5))
+                            egui::Button::new(egui::RichText::new(t("自动翻页")).size(11.5))
                                 .selected(self.auto_page)
                                 .min_size(egui::Vec2::new(64.0, 24.0)),
                         )
-                        .on_hover_text(format!(
-                            "播放时自动翻页跟随播放头（快捷键 {auto_page_shortcut}）"
+                        .on_hover_text(t_args(
+                            "播放时自动翻页跟随播放头（快捷键 {}）",
+                            &[&auto_page_shortcut],
                         ))
                         .clicked()
                     {
                         self.auto_page = !self.auto_page;
                         self.status = if self.auto_page {
-                            "自动翻页：开".into()
+                            t("自动翻页：开").into()
                         } else {
-                            "自动翻页：关".into()
+                            t("自动翻页：关").into()
                         };
                     }
 
                     // Pointer tool selector (arrangement + piano/controller roll).
                     toolbar_separator(ui);
                     ui.label(
-                        egui::RichText::new("鼠标")
+                        egui::RichText::new(t("鼠标"))
                             .size(10.0)
                             .color(theme::APP_BAR_TEXT_DIM),
                     );
@@ -788,10 +802,9 @@ impl SurfingApp {
                         };
                         if ui
                             .add(button)
-                            .on_hover_text(format!(
+                            .on_hover_text(t_args(
                                 "{}（快捷键 {}）· 按住 Shift 临时切换为绘制",
-                                mode.label(),
-                                self.settings.shortcut_label(action)
+                                &[mode.label(), &self.settings.shortcut_label(action)],
                             ))
                             .clicked()
                         {
@@ -805,11 +818,11 @@ impl SurfingApp {
                     let ai_open = self.side_panel == Some(SidePanel::Ai);
                     if ui
                         .add(
-                            egui::Button::new(egui::RichText::new("AI 编曲").size(11.5))
+                            egui::Button::new(egui::RichText::new(t("AI 编曲")).size(11.5))
                                 .selected(ai_open)
                                 .min_size(egui::Vec2::new(72.0, 24.0)),
                         )
-                        .on_hover_text("打开 / 关闭 AI 编曲对话（DeepSeek / MiMo）")
+                        .on_hover_text(t("打开 / 关闭 AI 编曲对话（DeepSeek / MiMo）"))
                         .clicked()
                     {
                         self.toggle_ai_panel();
@@ -957,7 +970,7 @@ impl SurfingApp {
                 apply_chrome_style(ui);
                 ui.horizontal(|ui| {
                     ui.label(
-                        egui::RichText::new(&self.status)
+                        egui::RichText::new(super::i18n::t_owned(&self.status))
                             .size(10.5)
                             .color(theme::APP_BAR_TEXT_DIM),
                     );
@@ -974,19 +987,19 @@ impl SurfingApp {
                         );
                         ui.separator();
                         ui.label(
-                            egui::RichText::new(&self.audio_status)
+                            egui::RichText::new(super::i18n::t_owned(&self.audio_status))
                                 .size(10.5)
                                 .color(theme::APP_BAR_TEXT_DIM),
                         );
                         ui.separator();
                         ui.label(
-                            egui::RichText::new(&self.midi_status)
+                            egui::RichText::new(super::i18n::t_owned(&self.midi_status))
                                 .size(10.5)
                                 .color(theme::APP_BAR_TEXT_DIM),
                         );
                         if self.dirty {
                             ui.label(
-                                egui::RichText::new("● 未保存")
+                                egui::RichText::new(t("● 未保存"))
                                     .size(10.5)
                                     .color(theme::AMBER),
                             );
@@ -1137,7 +1150,7 @@ fn current_user_name() -> String {
             }
         }
     }
-    "用户".to_string()
+    t("用户").to_string()
 }
 
 /// 所属模块：app / 面板 / 应用栏控件
@@ -1237,9 +1250,9 @@ fn app_logo(ui: &mut egui::Ui) -> egui::Response {
     let logo = egui::Rect::from_center_size(rect.center(), egui::vec2(16.0, 16.0));
     paint_studio_logo(ui.painter(), logo);
     response
-        .on_hover_text(format!(
+        .on_hover_text(t_args(
             "SurfingStudio {} · 点击返回主页",
-            env!("CARGO_PKG_VERSION")
+            &[env!("CARGO_PKG_VERSION")],
         ))
         .on_hover_cursor(egui::CursorIcon::PointingHand)
 }
@@ -1280,7 +1293,7 @@ fn hamburger_button(ui: &mut egui::Ui) -> egui::Response {
         );
     }
     response
-        .on_hover_text("显示菜单栏")
+        .on_hover_text(t("显示菜单栏"))
         .on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
@@ -1380,7 +1393,7 @@ fn project_chip(ui: &mut egui::Ui, name: &str, dirty: bool) -> egui::Response {
         egui::pos2(rect.right() - 9.0, rect.center().y),
         theme::APP_BAR_TEXT_DIM,
     );
-    response.on_hover_text("当前工程 · 点击打开或新建工程")
+    response.on_hover_text(t("当前工程 · 点击打开或新建工程"))
 }
 
 /// 所属模块：app / 面板 / 应用栏控件
