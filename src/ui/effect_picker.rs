@@ -229,15 +229,27 @@ impl SurfingApp {
                                                     })
                                             })
                                             .count();
-                                        ui.label(
-                                            RichText::new(format!(
-                                                "▼ {} · {} 个",
-                                                option.vendor, count
-                                            ))
-                                            .size(10.5)
-                                            .strong()
-                                            .color(theme::TEXT_DIM),
-                                        );
+                                        ui.horizontal(|ui| {
+                                            let (arrow, _) = ui.allocate_exact_size(
+                                                egui::vec2(10.0, 10.0),
+                                                egui::Sense::hover(),
+                                            );
+                                            theme::paint_dropdown(
+                                                ui.painter(),
+                                                arrow.center(),
+                                                false,
+                                                theme::TEXT_DIM,
+                                            );
+                                            ui.label(
+                                                RichText::new(format!(
+                                                    "{} · {} 个",
+                                                    option.vendor, count
+                                                ))
+                                                .size(10.5)
+                                                .strong()
+                                                .color(theme::TEXT_DIM),
+                                            );
+                                        });
                                         last_vendor = Some(option.vendor.as_str());
                                     }
                                     let favorite = favorites.contains(&option.key);

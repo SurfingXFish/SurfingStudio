@@ -1,4 +1,4 @@
-//! 所属模块：ui / 钢琴卷帘
+﻿//! 所属模块：ui / 钢琴卷帘
 //! 文件用途：
 //! - 在一个绝对时间轴上绘制并编辑选中轨道的全部 MIDI 片段。
 //! - 底部力度控制器按音符显示与编辑力度，由工具条开关控制显示。
@@ -1598,6 +1598,7 @@ impl SurfingApp {
                     }
 
                     let scale_mode = egui::ComboBox::from_id_salt("scale_mode")
+                        .icon(crate::ui::theme::dropdown_icon)
                         .width(96.0)
                         .selected_text(SCALES[self.scale_mode.min(SCALES.len() - 1)].0)
                         .show_ui(ui, |ui| {
@@ -1612,6 +1613,7 @@ impl SurfingApp {
                         });
                     controls.push(scale_mode.response.rect);
                     let scale_root = egui::ComboBox::from_id_salt("scale_root")
+                        .icon(crate::ui::theme::dropdown_icon)
                         .width(52.0)
                         .selected_text(NOTE_NAMES[self.scale_root.rem_euclid(12) as usize])
                         .show_ui(ui, |ui| {
@@ -1633,6 +1635,7 @@ impl SurfingApp {
 
                     let label = snap_label(self.snap_beats);
                     let snap = egui::ComboBox::from_id_salt("snap_grid")
+                        .icon(crate::ui::theme::dropdown_icon)
                         .width(70.0)
                         .selected_text(label)
                         .show_ui(ui, |ui| {

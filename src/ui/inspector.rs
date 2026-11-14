@@ -1,4 +1,4 @@
-//! Right-hand inspector: track settings, instrument, effect chain and master bus.
+﻿//! Right-hand inspector: track settings, instrument, effect chain and master bus.
 
 use crate::app::{RollKind, SurfingApp};
 use crate::audio::SlotKind;
@@ -137,6 +137,7 @@ impl SurfingApp {
                         .clone()
                         .unwrap_or_else(|| "跟随默认设备".to_string());
                     egui::ComboBox::from_id_salt(("track_midi_input", track_id))
+                        .icon(crate::ui::theme::dropdown_icon)
                         .width(180.0)
                         .selected_text(current)
                         .show_ui(ui, |ui| {
@@ -256,6 +257,7 @@ impl SurfingApp {
                         };
                         let mut kind = old_kind;
                         egui::ComboBox::from_id_salt("instrument_kind")
+                            .icon(crate::ui::theme::dropdown_icon)
                             .width(ui.available_width())
                             .selected_text(track.instrument.label())
                             .show_ui(ui, |ui| {
@@ -320,6 +322,7 @@ impl SurfingApp {
                                     ui.label("音色");
                                     let mut kind = native.kind;
                                     egui::ComboBox::from_id_salt("native_instrument_kind")
+                                        .icon(crate::ui::theme::dropdown_icon)
                                         .width(150.0)
                                         .selected_text(kind.label())
                                         .show_ui(ui, |ui| {
@@ -345,6 +348,7 @@ impl SurfingApp {
                                     ui.label("音色");
                                     let mut id = sample.bank.clone();
                                     egui::ComboBox::from_id_salt("sample_instrument_bank")
+                                        .icon(crate::ui::theme::dropdown_icon)
                                         .width(150.0)
                                         .selected_text(sample.name.clone())
                                         .show_ui(ui, |ui| {
@@ -603,6 +607,7 @@ impl SurfingApp {
                                 let mut pair = (track.output_pair as usize)
                                     .min(output_layout.pairs().saturating_sub(1));
                                 egui::ComboBox::from_id_salt(("track_output_pair", track_id))
+                                    .icon(crate::ui::theme::dropdown_icon)
                                     .width(ui.available_width())
                                     .selected_text(output_layout.pair_label(pair))
                                     .show_ui(ui, |ui| {
@@ -691,6 +696,7 @@ impl SurfingApp {
                         ui.horizontal(|ui| {
                             ui.label("输出布局");
                             egui::ComboBox::from_id_salt("master_output_layout")
+                                .icon(crate::ui::theme::dropdown_icon)
                                 .width(ui.available_width())
                                 .selected_text(layout_choice.label())
                                 .show_ui(ui, |ui| {
@@ -962,6 +968,7 @@ fn synth_settings_ui(ui: &mut egui::Ui, settings: &mut SynthSettings) -> bool {
     ui.horizontal(|ui| {
         ui.label("波形");
         egui::ComboBox::from_id_salt("synth_wave")
+            .icon(crate::ui::theme::dropdown_icon)
             .width(110.0)
             .selected_text(settings.waveform.label())
             .show_ui(ui, |ui| {

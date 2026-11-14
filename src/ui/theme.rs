@@ -11,6 +11,7 @@
 //! - 设计令牌：`SPACE_*` / `FONT_*` / `RADIUS_*` / `CARD_PAD` / `CONTROL_H` / `FIELD_H`。
 //! - 复用表面与控件：`card_frame` / `sheet_frame` / `floating_frame` / `field_label` /
 //!   `section_title` / `primary_button` / `quiet_button` / `danger_button` / `chip`。
+//! - 下拉指示：`paint_dropdown` / `dropdown_icon` / `dropdown_button` / `dropdown_button_filled`。
 //! - `level_meter` / `badge` / `toggle_switch` / `menu_button`：主题内的复用绘制。
 //!
 //! Module: ui / theme
@@ -27,6 +28,7 @@
 //! - Design tokens: `SPACE_*` / `FONT_*` / `RADIUS_*` / `CARD_PAD` / `CONTROL_H` / `FIELD_H`.
 //! - Shared surfaces and controls: `card_frame` / `sheet_frame` / `floating_frame` / `field_label` /
 //!   `section_title` / `primary_button` / `quiet_button` / `danger_button` / `chip`.
+//! - Dropdown indicators: `paint_dropdown` / `dropdown_icon` / `dropdown_button` / `dropdown_button_filled`.
 //! - `level_meter` / `badge` / `toggle_switch` / `menu_button`: reusable painters owned by the theme.
 
 use eframe::egui::{self, Color32, CornerRadius, FontFamily, Stroke, Vec2};
@@ -524,6 +526,158 @@ pub fn chip(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Response {
             .min_size(egui::Vec2::new(0.0, 26.0)),
     )
     .on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// 所属模块：ui / 主题 / 下拉
+/// 功能：绘制下拉箭头（V 形细线）；展开时朝上，收起时朝下。
+/// 输入：`painter` 绘制器；`center` 箭头中心；`up` 是否朝上；`color` 线条颜色。
+/// 输出/副作用：写入绘制命令；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: ui / theme / dropdown
+/// Purpose: Paint a thin V-shaped dropdown chevron; it points up while open and down while closed.
+/// Inputs: `painter`; `center`; `up`; `color`.
+/// Outputs / side effects: emits paint commands; no state change.
+/// Complexity: O(1) time and space.
+pub fn paint_dropdown(painter: &egui::Painter, center: egui::Pos2, up: bool, color: Color32) {
+    let half = 4.0;
+    let dy = if up { -2.0 } else { 2.0 };
+    let stroke = egui::Stroke::new(1.5_f32, color);
+    painter.line_segment(
+        [
+            egui::pos2(center.x - half, center.y - dy),
+            egui::pos2(center.x, center.y + dy),
+        ],
+        stroke,
+    );
+    painter.line_segment(
+        [
+            egui::pos2(center.x, center.y + dy),
+            egui::pos2(center.x + half, center.y - dy),
+        ],
+        stroke,
+    );
+}
+
+/// 所属模块：ui / 主题 / 下拉
+/// 功能：ComboBox 自定义图标：始终绘制高对比度箭头，展开时翻转，避免默认小三角看不清。
+/// 输入：`ui`；`rect` 图标区域；`visuals` 当前控件视觉；`is_open` 弹出层是否展开。
+/// 输出/副作用：只绘制；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: ui / theme / dropdown
+/// Purpose: Custom ComboBox icon: always draw a high-contrast chevron and flip it while open, so the
+/// default tiny triangle can never disappear.
+/// Inputs: `ui`; `rect`; `visuals`; `is_open`.
+/// Outputs / side effects: paint only; no state change.
+/// Complexity: O(1) time and space.
+pub fn dropdown_icon(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    visuals: &egui::style::WidgetVisuals,
+    is_open: bool,
+) {
+    paint_dropdown(
+        ui.painter(),
+        rect.center(),
+        is_open,
+        if visuals.fg_stroke.color == Color32::TRANSPARENT {
+            TEXT_DIM
+        } else {
+            visuals.fg_stroke.color
+        },
+    );
+}
+
+/// 所属模块：ui / 主题 / 下拉
+/// 功能：绘制一个带可见下拉箭头的文本按钮，用于工具栏里的模型/推理等选择器。
+/// 输入：`ui`；`label` 当前值；`with_dot` 是否在文字前画一个强调色圆点。
+/// 输出/副作用：返回点击响应；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: ui / theme / dropdown
+/// Purpose: Draw a text button with a visible dropdown chevron for toolbar selectors such as model
+/// and reasoning.
+/// Inputs: `ui`; `label`; `with_dot`.
+/// Outputs / side effects: the click response; no state change.
+/// Complexity: O(1) time and space.
+pub fn dropdown_button(ui: &mut egui::Ui, label: &str, with_dot: bool) -> egui::Response {
+    dropdown_button_impl(ui, label, with_dot, None)
+}
+
+/// 所属模块：ui / 主题 / 下拉
+/// 功能：绘制一个填充底色的下拉按钮，用于扫描菜单与乐器选择器。
+/// 输入：`ui`；`label` 文本。
+/// 输出/副作用：返回点击响应；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: ui / theme / dropdown
+/// Purpose: Draw a filled dropdown button for scan menus and instrument pickers.
+/// Inputs: `ui`; `label`.
+/// Outputs / side effects: the click response; no state change.
+/// Complexity: O(1) time and space.
+pub fn dropdown_button_filled(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    dropdown_button_impl(ui, label, false, Some(PANEL_2))
+}
+
+/// 所属模块：ui / 主题 / 下拉
+/// 功能：下拉按钮的共用实现：文字 + 预留箭头区域 + 悬停底色。
+/// 输入：`ui`；`label`；`with_dot`；`fill`（`None` 表示透明）。
+/// 输出/副作用：分配矩形并绘制；返回点击响应。
+/// 复杂度：时间 O(文本长度)，空间 O(1)。
+///
+/// Module: ui / theme / dropdown
+/// Purpose: Shared dropdown-button implementation: text + reserved chevron area + hover fill.
+/// Inputs: `ui`; `label`; `with_dot`; `fill` (`None` means transparent).
+/// Outputs / side effects: allocates and paints; returns the click response.
+/// Complexity: O(text length) time and O(1) space.
+fn dropdown_button_impl(
+    ui: &mut egui::Ui,
+    label: &str,
+    with_dot: bool,
+    fill: Option<Color32>,
+) -> egui::Response {
+    let galley =
+        egui::WidgetText::from(egui::RichText::new(label).size(FONT_LABEL).color(TEXT_DIM))
+            .into_galley(
+                ui,
+                Some(egui::TextWrapMode::Extend),
+                f32::INFINITY,
+                egui::TextStyle::Button,
+            );
+    let dot_width = if with_dot { 10.0 } else { 0.0 };
+    let width = galley.size().x + dot_width + 30.0;
+    let (rect, response) =
+        ui.allocate_exact_size(egui::Vec2::new(width, CONTROL_H), egui::Sense::click());
+    let hovered = response.hovered();
+    if let Some(fill) = fill {
+        ui.painter().rect_filled(
+            rect,
+            egui::CornerRadius::from(8),
+            if hovered { PANEL_3 } else { fill },
+        );
+    } else if hovered {
+        ui.painter()
+            .rect_filled(rect, egui::CornerRadius::from(6), PANEL_3);
+    }
+    let mut text_left = rect.left() + 9.0;
+    if with_dot {
+        ui.painter()
+            .circle_filled(egui::pos2(text_left + 3.0, rect.center().y), 2.5, ACCENT);
+        text_left += dot_width;
+    }
+    ui.painter().galley(
+        egui::pos2(text_left, rect.center().y - galley.size().y * 0.5),
+        galley,
+        TEXT_DIM,
+    );
+    paint_dropdown(
+        ui.painter(),
+        egui::pos2(rect.right() - 10.0, rect.center().y),
+        false,
+        if hovered { TEXT } else { TEXT_DIM },
+    );
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// Draw a horizontal or vertical peak meter.

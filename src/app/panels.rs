@@ -1,4 +1,4 @@
-//! 所属模块：app / 面板
+﻿//! 所属模块：app / 面板
 //! 文件用途：
 //! - 自绘无边框窗口的应用栏（图标、主菜单、项目栏与窗口按钮）与下方工具栏。
 //! - 底部状态栏、子轨覆盖确认弹窗与无边框窗口的边缘缩放热区。
@@ -679,6 +679,7 @@ impl SurfingApp {
                         self.mark_dirty();
                     }
                     egui::ComboBox::from_id_salt("timesig_den")
+                        .icon(crate::ui::theme::dropdown_icon)
                         .width(44.0)
                         .selected_text(format!("{}", self.project.time_sig_den))
                         .show_ui(ui, |ui| {

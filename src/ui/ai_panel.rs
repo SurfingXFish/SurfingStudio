@@ -1,29 +1,33 @@
 //! 所属模块：ui / AI 编曲面板
 //! 文件用途：
-//! - 绘制右侧 AI 编曲工作台：左侧任务栏（新任务与项目内历史对话）与右侧对话区。
-//! - 面板以带投影的浮动卡片呈现；输入区只保留输入框、附件、高级选项与发送，其余控件收进高级选项。
+//! - 在工作区上方绘制 AI 编曲浮层：半透明遮罩 + 右侧 700 点工作台（240 点任务栏 + 对话区）。
+//! - 输入卡片沿用聊天应用结构：上方快捷指令胶囊，下方工具栏含附件、智能体、模型、推理、技能乐器与发送。
+//! - 所有下拉入口都绘制可见箭头（展开时翻转），不依赖字体中的 ▾ 字形。
 //! - 只发出用户意图（发送、停止、添加附件、打开设置、跳转主页），网络与工程写入由 `app::ai` 完成。
 //!
 //! 函数清单：
-//! - `SurfingApp::ui_ai_panel` / `ui_ai_panel_main` / `ui_ai_task_rail`：浮动工作台、对话区与任务栏。
-//! - `SurfingApp::ui_ai_composer`：输入卡片、附件、高级选项弹出层（技能/乐器/智能体/模型/推理）与发送/停止。
-//! - `ai_task_card` / `paint_task_status`：任务卡片与状态图标。
+//! - `SurfingApp::ui_ai_overlay`：遮罩、浮动工作台与关闭逻辑。
+//! - `SurfingApp::ui_ai_sidebar` / `ui_ai_panel_main`：左侧任务栏与右侧对话区。
+//! - `SurfingApp::ui_ai_composer`：快捷指令、输入卡片、下拉选择器、技能/乐器弹出层与发送/停止。
+//! - `ai_task_card` / `relative_time`：任务行与相对时间。
 //! - `paint_ai_message` / `paint_ai_live` / `paint_message_meta` / `paint_thinking_block` /
 //!   `paint_change_card` / `paint_ai_empty`：气泡、流式生成、任务信息、折叠思考、工程改动卡片与空状态。
 //! - Markdown 富文本渲染已抽到 `ui/markdown.rs`，对话与 Agent 资料库共用。
 //!
 //! Module: ui / AI composition panel
 //! Purpose:
-//! - Draw the right-hand AI workspace: a left task rail (new task and project conversation history)
-//!   and the conversation area.
-//! - The panel is a floating card with a shadow; the composer keeps only the input, attachments,
-//!   advanced options and send, with everything else folded into the advanced popup.
+//! - Draw the AI overlay above the workspace: a translucent scrim plus a 700 pt panel on the right
+//!   (240 pt task rail + conversation).
+//! - The composer follows a chat-app layout: suggestion pills above, then a toolbar with attachment,
+//!   agent, model, reasoning, skills/instruments and send.
+//! - Every dropdown paints a visible chevron (flipped while open) and never depends on the ▾ glyph.
 //! - Only emits user intents; networking and project writes live in `app::ai`.
 //!
 //! Functions:
-//! - `SurfingApp::ui_ai_panel` / `ui_ai_panel_main` / `ui_ai_task_rail`: floating workspace, conversation and rail.
-//! - `SurfingApp::ui_ai_composer`: composer card, attachments, advanced popup and send/stop.
-//! - `ai_task_card` / `paint_task_status`: task card and status icon.
+//! - `SurfingApp::ui_ai_overlay`: scrim, floating workspace and close handling.
+//! - `SurfingApp::ui_ai_sidebar` / `ui_ai_panel_main`: task rail and conversation.
+//! - `SurfingApp::ui_ai_composer`: suggestions, composer card, dropdowns, skills/instruments popup and send/stop.
+//! - `ai_task_card` / `relative_time`: task rows and relative time.
 //! - `paint_ai_message` / `paint_ai_live` / `paint_message_meta` / `paint_thinking_block` /
 //!   `paint_change_card` / `paint_ai_empty`: bubbles, streaming state, metadata, collapsible
 //!   reasoning, change card and empty state.
@@ -47,72 +51,113 @@ const EMPTY_PROMPTS: [&str; 4] = [
 /// 有对话后展示的快捷指令。
 /// Quick prompts shown once the conversation has started.
 const QUICK_PROMPTS: [&str; 3] = ["继续发展这段旋律", "加一段弦乐铺底", "换成 3/4 拍"];
+/// AI 浮层默认宽度（逻辑点）。
+/// Default AI overlay width in logical points.
+const AI_PANEL_W: f32 = 700.0;
+/// 左侧任务栏宽度（逻辑点）。
+/// Width of the left task rail in logical points.
+const AI_SIDEBAR_W: f32 = 240.0;
+/// 单条任务行高度（逻辑点）。
+/// Height of one task row in logical points.
+const AI_TASK_H: f32 = 52.0;
 
 impl SurfingApp {
-    /// 所属模块：ui / AI 编曲面板
-    /// 功能：绘制「任务栏 + 对话区」两栏布局；窄窗口时自动退化为单栏对话。
-    /// 输入：`ui` 右侧面板绘制区域。
-    /// 输出/副作用：读写任务选择与 `ai_chat` 状态；不直接修改工程。
+    /// 所属模块：ui / AI 编曲面板 / 浮层
+    /// 功能：在工作区上绘制 AI 浮层：半透明遮罩 + 右侧 700 点工作台（左侧任务栏 / 右侧对话）。
+    /// 输入：`ctx`：egui 上下文；`rect`：工作区（应用栏、工具栏与状态栏之外）。
+    /// 输出/副作用：点击遮罩或按 Esc 收起面板；绘制与交互只读写本窗口 UI 状态。
     /// 复杂度：每帧 O(任务数 + 消息数)。
     ///
-    /// Module: ui / AI composition panel
-    /// Purpose: Draw the two-column "task rail + conversation" layout and fall back to a single column
-    /// on narrow windows.
-    /// Inputs: `ui`: right-panel drawing area.
-    /// Outputs / side effects: reads/writes task selection and `ai_chat` state; never edits
-    /// the project directly.
+    /// Module: ui / AI composition panel / overlay
+    /// Purpose: Draw the AI workspace above the editor: a translucent scrim plus a 700 pt panel on
+    /// the right (task rail on the left, conversation on the right).
+    /// Inputs: `ctx`; `rect` (workspace below the app bar/toolbar/status bar).
+    /// Outputs / side effects: the scrim or Esc closes the panel; only this window's UI state changes.
     /// Complexity: O(tasks + messages) per frame.
-    pub fn ui_ai_panel(&mut self, ui: &mut egui::Ui) {
+    pub fn ui_ai_overlay(&mut self, ctx: &egui::Context, rect: egui::Rect) {
         self.ai_chat.ensure_active_conversation();
-        // 侧栏外留出阴影空间，内部再画一张浮动卡片：AI 面板因此从编辑区里“浮”起来。
-        // Leave room for the shadow, then draw a floating card inside so the AI workspace lifts off
-        // the editor instead of blending into it.
-        let outer = ui.available_size();
-        theme::floating_frame().show(ui, |ui| {
-            ui.set_width((outer.x - theme::CARD_PAD as f32 * 2.0).max(240.0));
-            ui.set_height((outer.y - theme::CARD_PAD as f32 * 2.0).max(240.0));
-            if ui.available_width() < 520.0 {
-                self.ui_ai_panel_main(ui);
-                return;
-            }
-            let height = ui.available_height();
-            ui.horizontal_top(|ui| {
-                ui.allocate_ui_with_layout(
-                    egui::vec2(178.0, height),
-                    egui::Layout::top_down(egui::Align::Min),
-                    |ui| self.ui_ai_task_rail(ui),
-                );
-                ui.add_space(theme::SPACE_SM);
-                ui.separator();
-                ui.add_space(theme::SPACE_SM);
-                ui.allocate_ui_with_layout(
-                    egui::vec2(ui.available_width(), height),
-                    egui::Layout::top_down(egui::Align::Min),
-                    |ui| self.ui_ai_panel_main(ui),
-                );
+        let mut close = ctx.input(|input| input.key_pressed(egui::Key::Escape))
+            && !egui::Popup::is_any_open(ctx);
+        let panel_w = AI_PANEL_W.min((rect.width() - 48.0).max(480.0));
+        let panel_pos = egui::pos2(rect.right() - panel_w, rect.top());
+
+        // 遮罩：只盖住工作区，保留应用栏与工具栏，窗口按钮仍可用。
+        // Scrim: covers the workspace only, so the app bar and toolbar stay usable.
+        egui::Area::new(egui::Id::new("ai_workspace_scrim"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(rect.min)
+            .show(ctx, |ui| {
+                let (scrim, response) = ui.allocate_exact_size(rect.size(), egui::Sense::click());
+                ui.painter()
+                    .rect_filled(scrim, 0.0, egui::Color32::from_black_alpha(145));
+                if response.clicked() {
+                    close = true;
+                }
             });
-        });
+
+        egui::Area::new(egui::Id::new("ai_workspace_panel"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(panel_pos)
+            .show(ctx, |ui| {
+                ui.set_width(panel_w);
+                ui.set_height(rect.height());
+                egui::Frame::NONE
+                    .fill(theme::BG)
+                    .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
+                    .shadow(egui::epaint::Shadow {
+                        offset: [-12, 0],
+                        blur: 32,
+                        spread: 0,
+                        color: egui::Color32::from_black_alpha(160),
+                    })
+                    .show(ui, |ui| {
+                        ui.set_width(panel_w - 1.0);
+                        ui.set_height(rect.height() - 1.0);
+                        ui.horizontal_top(|ui| {
+                            let height = ui.available_height();
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(AI_SIDEBAR_W, height),
+                                egui::Layout::top_down(egui::Align::Min),
+                                |ui| self.ui_ai_sidebar(ui),
+                            );
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(ui.available_width(), height),
+                                egui::Layout::top_down(egui::Align::Min),
+                                |ui| self.ui_ai_panel_main(ui),
+                            );
+                        });
+                    });
+            });
+
+        if close {
+            self.close_side_panel();
+        }
     }
 
     /// 所属模块：ui / AI 编曲面板 / 任务栏
-    /// 功能：列出当前项目窗口内的历史对话；当前查看的对话高亮，没有任务时高亮「新任务」。
-    /// 输入：`ui` 左侧任务栏区域。
-    /// 输出/副作用：切换对话、清空为新任务；只操作本窗口的 `ai_chat`，不修改工程。
+    /// 功能：绘制左侧任务栏：图标 + 标题 + 设置、整宽「新任务」按钮、按今天/更早分组的历史对话、
+    /// 底部 VST 连接状态。
+    /// 输入：`ui`：左侧任务栏区域。
+    /// 输出/副作用：切换对话、开始新任务或打开 AI 设置；不修改工程。
     /// 复杂度：每帧 O(历史对话数)。
     ///
     /// Module: ui / AI composition panel / task rail
-    /// Purpose: List historical conversations of this project window; highlight the active one or the
-    /// new-task entry when none is active.
-    /// Inputs: `ui`: left task-rail area.
-    /// Outputs / side effects: switches conversations or starts a new task; touches only this window's
-    /// `ai_chat`, never the project.
+    /// Purpose: Draw the left rail: logo + title + settings, a full-width new-task button, history
+    /// grouped into today/earlier, and the VST connection status at the bottom.
+    /// Inputs: `ui`: task-rail area.
+    /// Outputs / side effects: switches conversations, starts a new task or opens AI settings; never
+    /// edits the project.
     /// Complexity: O(conversations) per frame.
-    fn ui_ai_task_rail(&mut self, ui: &mut egui::Ui) {
+    fn ui_ai_sidebar(&mut self, ui: &mut egui::Ui) {
         let active = self.ai_chat.active_conversation();
         let current_count = self.ai_chat.messages.len();
         let current_title = crate::app::AiChatState::conversation_title(&self.ai_chat.messages);
         let pending = self.ai_chat.pending.is_some();
-        let tasks: Vec<(u64, String, usize, bool)> = self
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs_f64())
+            .unwrap_or(0.0);
+        let tasks: Vec<(u64, String, usize, bool, f64)> = self
             .ai_chat
             .conversations
             .iter()
@@ -123,107 +168,174 @@ impl SurfingApp {
                     conversation.title.clone(),
                     conversation.messages.len(),
                     conversation.pending.is_some(),
+                    conversation.updated_at,
                 )
             })
             .collect();
+        let plugin_note = if crate::platform::caps().plugin_hosting {
+            let count = self.plugin_cache.len();
+            if count > 0 {
+                format!("已连接 {count} 个 VST 插件")
+            } else {
+                "使用内置音色".to_string()
+            }
+        } else {
+            "使用内置音色".to_string()
+        };
         let mut new_task = false;
         let mut open_id = None;
+        let mut open_settings = false;
 
-        egui::Frame::NONE
-            .inner_margin(egui::Margin::ZERO)
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.set_min_height(ui.available_height());
-                ui.horizontal(|ui| {
-                    let (logo_rect, _) =
-                        ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
-                    crate::app::paint_studio_logo(ui.painter(), logo_rect);
-                    ui.label(
-                        RichText::new("SurfingStudio")
-                            .size(12.5)
-                            .strong()
-                            .color(theme::TEXT),
-                    );
-                });
-                ui.add_space(6.0);
-                let new_selected = active.is_none();
-                let ring = if new_selected {
-                    egui::Stroke::new(1.5_f32, egui::Color32::WHITE)
-                } else {
-                    egui::Stroke::NONE
-                };
-                egui::Frame::NONE
-                    .stroke(ring)
-                    .corner_radius(9)
-                    .inner_margin(2.0)
-                    .show(ui, |ui| {
-                        let fill = if new_selected {
-                            theme::PANEL_2
-                        } else {
-                            theme::ACCENT_DARK
-                        };
-                        let stroke = if new_selected {
-                            egui::Stroke::new(1.0_f32, theme::LINE)
-                        } else {
-                            egui::Stroke::new(1.0_f32, theme::ACCENT)
-                        };
-                        if ui
-                            .add_sized(
-                                [ui.available_width(), 28.0],
-                                egui::Button::new(RichText::new("+  新任务").size(11.0))
-                                    .fill(fill)
-                                    .stroke(stroke),
-                            )
-                            .clicked()
-                        {
-                            new_task = true;
-                        }
-                    });
+        egui::Frame::NONE.fill(theme::BG_DEEP).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.set_height(ui.available_height());
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                ui.add_space(14.0);
+                let (logo, _) =
+                    ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::hover());
+                crate::app::paint_studio_logo(ui.painter(), logo);
                 ui.add_space(8.0);
                 ui.label(
-                    RichText::new(format!("任务  {}", tasks.len()))
-                        .size(9.0)
-                        .color(theme::TEXT_FAINT),
+                    RichText::new("AI 编曲")
+                        .size(14.0)
+                        .strong()
+                        .color(theme::TEXT),
                 );
-                ui.add_space(4.0);
-                egui::ScrollArea::vertical()
-                    .id_salt("ai-task-rail")
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        for (id, title, count, task_running) in &tasks {
-                            ui.add_space(4.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add(
+                            egui::Button::new(RichText::new("⚙").size(12.0).color(theme::TEXT_DIM))
+                                .frame(false)
+                                .min_size(egui::vec2(24.0, 24.0)),
+                        )
+                        .on_hover_text("AI 设置")
+                        .clicked()
+                    {
+                        open_settings = true;
+                    }
+                    ui.add_space(8.0);
+                });
+            });
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                ui.add_space(14.0);
+                let width = (ui.available_width() - 14.0).max(80.0);
+                if ui
+                    .add_sized(
+                        [width, 38.0],
+                        egui::Button::new(
+                            RichText::new("+  新任务")
+                                .size(13.0)
+                                .color(egui::Color32::WHITE),
+                        )
+                        .fill(theme::ACCENT)
+                        .stroke(egui::Stroke::NONE)
+                        .corner_radius(8),
+                    )
+                    .clicked()
+                {
+                    new_task = true;
+                }
+            });
+            ui.add_space(10.0);
+            egui::ScrollArea::vertical()
+                .id_salt("ai-task-rail")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.add_space(2.0);
+                    let mut section = |ui: &mut egui::Ui, label: &str| {
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            ui.add_space(16.0);
+                            ui.label(
+                                RichText::new(label)
+                                    .size(theme::FONT_MICRO)
+                                    .color(theme::TEXT_FAINT),
+                            );
+                        });
+                        ui.add_space(2.0);
+                    };
+                    let today: Vec<_> = tasks
+                        .iter()
+                        .filter(|task| now - task.4 < 86_400.0)
+                        .collect();
+                    let earlier: Vec<_> = tasks
+                        .iter()
+                        .filter(|task| now - task.4 >= 86_400.0)
+                        .collect();
+                    for (label, group) in [("今天", &today), ("更早", &earlier)] {
+                        if group.is_empty() {
+                            continue;
+                        }
+                        section(ui, label);
+                        for task in group.iter().copied() {
+                            let (id, title, count, task_running, updated) = task;
+                            let running = *task_running || (pending && active == Some(*id));
                             let (title, count) = if active == Some(*id) {
                                 (current_title.clone(), current_count)
                             } else {
                                 (title.clone(), *count)
                             };
-                            if ai_task_card(
-                                ui,
-                                &format!("ai-task-{id}"),
-                                active == Some(*id),
-                                if *task_running || (pending && active == Some(*id)) {
-                                    AiTaskStatus::Running
-                                } else {
-                                    AiTaskStatus::Done
-                                },
-                                &title,
-                                &format!("{count} 条消息"),
-                            )
-                            .clicked()
-                            {
-                                open_id = Some(*id);
-                            }
+                            let subtitle = if running {
+                                format!("生成中 · {}", relative_time(now - *updated))
+                            } else {
+                                format!("已完成 · {}", relative_time(now - *updated))
+                            };
+                            ui.horizontal(|ui| {
+                                ui.add_space(8.0);
+                                ui.allocate_ui_with_layout(
+                                    egui::vec2(ui.available_width() - 8.0, AI_TASK_H),
+                                    egui::Layout::top_down(egui::Align::Min),
+                                    |ui| {
+                                        if ai_task_card(
+                                            ui,
+                                            &format!("ai-task-{id}"),
+                                            active == Some(*id),
+                                            if running {
+                                                AiTaskStatus::Running
+                                            } else {
+                                                AiTaskStatus::Done
+                                            },
+                                            &title,
+                                            &subtitle,
+                                        )
+                                        .clicked()
+                                        {
+                                            open_id = Some(*id);
+                                        }
+                                    },
+                                );
+                            });
+                            ui.add_space(2.0);
                         }
-                        if tasks.is_empty() && current_count == 0 {
-                            ui.add_space(8.0);
+                    }
+                    if tasks.is_empty() && current_count == 0 {
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            ui.add_space(16.0);
                             ui.label(
-                                RichText::new("暂无历史对话；当前项目内的对话会显示在这里。")
-                                    .size(9.0)
+                                RichText::new("暂无历史对话")
+                                    .size(theme::FONT_MICRO)
                                     .color(theme::TEXT_FAINT),
                             );
-                        }
-                    });
+                        });
+                    }
+                });
+            let remaining = ui.available_height() - 34.0;
+            if remaining > 0.0 {
+                ui.add_space(remaining);
+            }
+            ui.horizontal(|ui| {
+                ui.add_space(14.0);
+                ui.label(
+                    RichText::new(plugin_note)
+                        .size(theme::FONT_MICRO)
+                        .color(theme::TEXT_FAINT),
+                );
             });
+            ui.add_space(10.0);
+        });
 
         if new_task {
             self.ai_chat.clear();
@@ -231,91 +343,74 @@ impl SurfingApp {
         if let Some(id) = open_id {
             self.ai_chat.open_conversation(id);
         }
+        if open_settings {
+            self.open_ai_settings(ui.ctx());
+        }
     }
 
     /// 所属模块：ui / AI 编曲面板
-    /// 功能：绘制 AI 编曲对话：标题栏、密钥提示、消息与改动卡片、快捷指令、圆角输入区。
-    /// 输入：`ui`：右侧面板的绘制区域。
+    /// 功能：绘制对话区：会话标题 + 关闭、低饱和密钥/错误提示条、消息滚动区与底部输入卡片。
+    /// 输入：`ui`：右侧对话区。
     /// 输出/副作用：读写 `ai_chat`；可能发送消息、打开设置或附件选择器；不直接修改工程。
     /// 复杂度：每帧 O(消息数 + 消息文本长度)。
     ///
     /// Module: ui / AI composition panel
-    /// Purpose: Draw the AI chat: header, key hint, messages and change cards, quick prompts and the
-    /// rounded composer.
-    /// Inputs: `ui`: right-panel drawing area.
-    /// Outputs / side effects: reads/writes `ai_chat`; may send a message, open settings or the
-    /// attachment picker; never edits the project directly.
+    /// Purpose: Draw the conversation: title + close, low-saturation key/error strips, the transcript
+    /// and the bottom composer.
+    /// Inputs: `ui`: conversation area.
+    /// Outputs / side effects: reads/writes `ai_chat`; may send, open settings or the attachment picker;
+    /// never edits the project directly.
     /// Complexity: O(messages + message length) per frame.
     fn ui_ai_panel_main(&mut self, ui: &mut egui::Ui) {
         let mut close = false;
-        let mut open_settings = false;
-        // 顶部：左侧标题与状态，右侧关闭/设置；插件数量降为状态副标题，不再单独占一行。
-        // Top bar: title and status on the left, close/settings on the right; the plugin count becomes
-        // part of the status line instead of its own row.
-        ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                ui.label(
-                    RichText::new("AI 编曲")
-                        .size(theme::FONT_SECTION)
-                        .strong()
-                        .color(theme::TEXT),
-                );
-                let status = if self.ai_chat.pending.is_some() {
-                    "正在生成"
-                } else {
-                    "就绪"
-                };
-                let status_text = if crate::platform::caps().plugin_hosting {
-                    let count = self.plugin_cache.len();
-                    if count > 0 {
-                        format!("{status} · 已连接 {count} 个 VST 插件")
-                    } else {
-                        format!("{status} · 使用内置音色")
-                    }
-                } else {
-                    status.to_string()
-                };
-                ui.label(
-                    RichText::new(status_text)
-                        .size(theme::FONT_MICRO)
-                        .color(theme::TEXT_FAINT),
-                );
+        let title = if self.ai_chat.messages.is_empty() {
+            "新任务".to_string()
+        } else {
+            crate::app::AiChatState::conversation_title(&self.ai_chat.messages)
+        };
+        let header = egui::Frame::NONE
+            .inner_margin(egui::Margin::symmetric(16, 12))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(title)
+                                .size(theme::FONT_SECTION)
+                                .strong()
+                                .color(theme::TEXT),
+                        )
+                        .truncate(),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    RichText::new("×").size(15.0).color(theme::TEXT_DIM),
+                                )
+                                .frame(false)
+                                .min_size(egui::vec2(24.0, 24.0)),
+                            )
+                            .on_hover_text("关闭面板")
+                            .clicked()
+                        {
+                            close = true;
+                        }
+                    });
+                });
             });
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .add(
-                        egui::Button::new(RichText::new("×").size(15.0).color(theme::TEXT_DIM))
-                            .frame(false)
-                            .min_size(egui::vec2(24.0, 24.0)),
-                    )
-                    .on_hover_text("关闭面板")
-                    .clicked()
-                {
-                    close = true;
-                }
-                if ui
-                    .add(
-                        egui::Button::new(RichText::new("⚙").size(12.0).color(theme::TEXT_DIM))
-                            .frame(false)
-                            .min_size(egui::vec2(24.0, 24.0)),
-                    )
-                    .on_hover_text("AI 设置（模型、API Key、联网检索、采样参数）")
-                    .clicked()
-                {
-                    open_settings = true;
-                }
-            });
-        });
+        ui.painter().hline(
+            header.response.rect.left()..=header.response.rect.right(),
+            header.response.rect.bottom(),
+            egui::Stroke::new(1.0_f32, theme::LINE),
+        );
         if close {
             self.close_side_panel();
             return;
         }
-        if open_settings {
-            self.open_ai_settings(ui.ctx());
-        }
 
-        // 缺少密钥时把入口放在面板内，避免用户只看到失败提示。
-        // Show the setup entry inside the panel when the key is missing.
+        // 缺少密钥时显示整宽提示条：低饱和琥珀底 + 图标 + 右侧「去配置」文字链接。
+        // Missing key: a full-width low-saturation amber strip with an icon and a text link.
         let missing_key = find_preset(&self.settings.ai.model_preset)
             .map(|preset| {
                 self.settings
@@ -326,58 +421,42 @@ impl SurfingApp {
             })
             .unwrap_or(true);
         if missing_key {
-            ui.add_space(theme::SPACE_MD);
-            // 低饱和琥珀底 + 图标 + 纯文字按钮：提示存在感足够，但不和蓝色主操作抢焦点。
-            // Low-saturation amber surface, icon and text button: visible without competing with the
-            // single blue primary action.
-            egui::Frame::NONE
-                .fill(theme::with_alpha(theme::AMBER, 24))
-                .corner_radius(theme::RADIUS_CARD)
-                .inner_margin(egui::Margin::symmetric(
-                    theme::SPACE_MD as i8,
-                    theme::SPACE_SM as i8,
-                ))
+            let strip = egui::Frame::NONE
+                .fill(theme::with_alpha(theme::AMBER, 26))
+                .inner_margin(egui::Margin::symmetric(16, 9))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.horizontal(|ui| {
                         let (icon, _) =
-                            ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::hover());
+                            ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
                         ui.painter().circle_filled(
                             icon.center(),
-                            9.0,
-                            theme::with_alpha(theme::AMBER, 55),
+                            8.0,
+                            theme::with_alpha(theme::AMBER, 60),
                         );
                         ui.painter().text(
                             icon.center(),
                             egui::Align2::CENTER_CENTER,
                             "!",
-                            egui::FontId::proportional(11.0),
+                            egui::FontId::proportional(10.5),
                             theme::AMBER,
                         );
                         ui.add_space(theme::SPACE_SM);
-                        ui.vertical(|ui| {
-                            ui.label(
-                                RichText::new("尚未配置 API Key")
-                                    .size(theme::FONT_LABEL)
-                                    .strong()
-                                    .color(theme::TEXT),
-                            );
-                            ui.label(
-                                RichText::new("配置后即可发送 AI 编曲请求")
-                                    .size(theme::FONT_MICRO)
-                                    .color(theme::TEXT_DIM),
-                            );
-                        });
+                        ui.label(
+                            RichText::new("尚未配置 API Key，AI 编曲无法发送请求")
+                                .size(theme::FONT_LABEL)
+                                .color(theme::AMBER),
+                        );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui
                                 .add(
                                     egui::Button::new(
-                                        RichText::new("配置")
+                                        RichText::new("去配置")
                                             .size(theme::FONT_LABEL)
                                             .color(theme::AMBER),
                                     )
                                     .frame(false)
-                                    .min_size(egui::vec2(0.0, 26.0)),
+                                    .min_size(egui::vec2(0.0, 24.0)),
                                 )
                                 .clicked()
                             {
@@ -386,16 +465,16 @@ impl SurfingApp {
                         });
                     });
                 });
+            ui.painter().hline(
+                strip.response.rect.left()..=strip.response.rect.right(),
+                strip.response.rect.bottom(),
+                egui::Stroke::new(1.0_f32, theme::with_alpha(theme::AMBER, 70)),
+            );
         }
         if let Some(error) = self.ai_chat.error.clone() {
-            ui.add_space(theme::SPACE_SM);
-            egui::Frame::NONE
+            let strip = egui::Frame::NONE
                 .fill(theme::with_alpha(theme::RED, 24))
-                .corner_radius(theme::RADIUS_CARD)
-                .inner_margin(egui::Margin::symmetric(
-                    theme::SPACE_MD as i8,
-                    theme::SPACE_SM as i8,
-                ))
+                .inner_margin(egui::Margin::symmetric(16, 9))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.label(
@@ -404,8 +483,12 @@ impl SurfingApp {
                             .color(theme::RED),
                     );
                 });
+            ui.painter().hline(
+                strip.response.rect.left()..=strip.response.rect.right(),
+                strip.response.rect.bottom(),
+                egui::Stroke::new(1.0_f32, theme::with_alpha(theme::RED, 70)),
+            );
         }
-        ui.add_space(theme::SPACE_SM);
 
         // 输入区先作为底部停靠面板登记，保证任何窗口高度下都不会被消息区挤掉。
         // Register the composer as a bottom dock first so the transcript can never push it off screen.
@@ -414,100 +497,64 @@ impl SurfingApp {
             .frame(
                 egui::Frame::NONE
                     .fill(theme::BG)
-                    .inner_margin(egui::Margin::symmetric(0, 6)),
+                    .inner_margin(egui::Margin::symmetric(16, 10)),
             )
             .show_inside(ui, |ui| {
                 ui.set_width(ui.available_width());
-                // 有对话后给出几个可直接修改的快捷指令；点击只填入输入框，不立即发送。
-                // Quick prompts after the first turn; clicking fills the composer instead of sending.
-                if !self.ai_chat.messages.is_empty() && self.ai_chat.pending.is_none() {
-                    let mut quick: Option<&str> = None;
-                    ui.horizontal_wrapped(|ui| {
-                        for prompt in QUICK_PROMPTS {
-                            if ui
-                                .add(
-                                    egui::Button::new(RichText::new(prompt).size(10.0))
-                                        .fill(theme::PANEL_2)
-                                        .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
-                                        .corner_radius(12)
-                                        .min_size(egui::vec2(0.0, 22.0)),
-                                )
-                                .clicked()
-                            {
-                                quick = Some(prompt);
-                            }
-                        }
-                    });
-                    if let Some(prompt) = quick {
-                        self.ai_chat.input = prompt.to_string();
-                    }
-                    ui.add_space(4.0);
-                }
                 self.ui_ai_composer(ui);
             });
 
         let transcript_h = ui.available_height().max(80.0);
         let mut empty_pick: Option<&'static str> = None;
-        // 右侧整块为深色背景，消息与卡片直接悬浮其上。
-        // The whole right side is one dark canvas; messages and cards float directly on it.
-        // 只在流式生成时自动吸底；否则折叠/展开消息时会把视图拉到最底部，显得页面突然跳远。
-        // Only stick to the bottom while streaming; otherwise expanding/collapsing a message would
-        // yank the view to the very bottom.
         let streaming = self.ai_chat.live.is_some() || self.ai_chat.pending.is_some();
-        egui::ScrollArea::vertical()
-            .id_salt("ai_transcript")
-            .max_height(transcript_h)
-            .auto_shrink([false, false])
-            .stick_to_bottom(streaming)
+        egui::Frame::NONE
+            .inner_margin(egui::Margin::symmetric(16, 0))
             .show(ui, |ui| {
-                if self.ai_chat.messages.is_empty() {
-                    empty_pick = paint_ai_empty(ui);
-                } else {
-                    for (index, message) in self.ai_chat.messages.iter().enumerate() {
-                        paint_ai_message(
-                            ui,
-                            index,
-                            message.role,
-                            &message.content,
-                            message.reasoning.as_deref(),
-                            message.meta.as_ref(),
-                            message.changes,
-                        );
-                        ui.add_space(10.0);
-                    }
-                }
-                if let Some(live) = self.ai_chat.live.as_ref() {
-                    paint_ai_live(ui, live);
-                    ui.add_space(10.0);
-                } else if self.ai_chat.pending.is_some() {
-                    ui.horizontal(|ui| {
-                        ui.add(egui::Spinner::new().size(14.0));
-                        ui.label(
-                            RichText::new("AI 正在思考…（可点输入区右侧停止）")
-                                .size(10.5)
-                                .color(theme::TEXT_DIM),
-                        );
+                ui.set_width(ui.available_width());
+                egui::ScrollArea::vertical()
+                    .id_salt("ai_transcript")
+                    .max_height(transcript_h)
+                    .auto_shrink([false, false])
+                    .stick_to_bottom(streaming)
+                    .show(ui, |ui| {
+                        ui.add_space(12.0);
+                        if self.ai_chat.messages.is_empty() {
+                            empty_pick = paint_ai_empty(ui);
+                        } else {
+                            for (index, message) in self.ai_chat.messages.iter().enumerate() {
+                                paint_ai_message(
+                                    ui,
+                                    index,
+                                    message.role,
+                                    &message.content,
+                                    message.reasoning.as_deref(),
+                                    message.meta.as_ref(),
+                                    message.changes,
+                                );
+                                ui.add_space(10.0);
+                            }
+                        }
+                        if let Some(live) = self.ai_chat.live.as_ref() {
+                            paint_ai_live(ui, live);
+                            ui.add_space(10.0);
+                        } else if self.ai_chat.pending.is_some() {
+                            ui.horizontal(|ui| {
+                                ui.add(egui::Spinner::new().size(14.0));
+                                ui.label(
+                                    RichText::new("AI 正在思考…（可点输入区右侧停止）")
+                                        .size(theme::FONT_LABEL)
+                                        .color(theme::TEXT_DIM),
+                                );
+                            });
+                        }
+                        ui.add_space(12.0);
                     });
-                }
             });
         if let Some(prompt) = empty_pick {
             self.ai_chat.input = prompt.to_string();
         }
     }
 
-    /// 所属模块：ui / AI 编曲面板 / 输入区
-    /// 功能：绘制圆角输入区：附件条、多行输入、加附件、智能体、模型与发送/停止按钮。
-    /// 输入：`ui`：右侧面板的绘制区域。
-    /// 输出/副作用：读写 `ai_chat.input`、模型预设与附件；可能发送、停止或打开附件选择器。
-    /// 复杂度：每帧 O(附件数 + 模型预设数)。
-    ///
-    /// Module: ui / AI composition panel / composer
-    /// Purpose: Draw the rounded composer: attachments, multiline input, attach, agent, model and
-    /// send/stop controls.
-    /// Inputs: `ui`: right-panel drawing area.
-    /// Outputs / side effects: reads/writes input, model preset and attachments; may send, stop or open
-    /// the attachment picker.
-    /// Complexity: O(attachments + model presets) per frame.
     fn ui_ai_composer(&mut self, ui: &mut egui::Ui) {
         let mut send = false;
         let mut stop = false;
@@ -526,7 +573,7 @@ impl SurfingApp {
             .iter()
             .map(|agent| (agent.id.clone(), agent.name.clone()))
             .collect();
-        let mut selected_agent = self.ai_chat.agent.clone();
+        let selected_agent = self.ai_chat.agent.clone();
         // 技能与乐器选题列表在绘制前克隆，避免在菜单闭包里借用 settings 与插件缓存。
         // Clone skill and instrument choices before painting so the menu closures do not borrow
         // settings or the plugin cache.
@@ -607,26 +654,65 @@ impl SurfingApp {
                 self.attach_clipboard_to_ai();
             }
         }
-        // 输入卡片：只保留输入框、附件、高级选项与发送；技能/乐器/模型/智能体全部收进高级选项。
-        // Composer card: only the input, attachments, advanced options and send stay visible; skills,
-        // instruments, model and agent live in the advanced popup.
-        let advanced_total = displayed_skill_count + usable_count + required_count;
-        let advanced_label = if advanced_total > 0 {
-            format!("高级选项 · {advanced_total}")
+
+        // 快捷指令胶囊：空对话用完整示例，已有对话用继续指令；点击只填入输入框。
+        // Suggestion pills: full examples for an empty chat, continue-prompts afterwards; clicking
+        // only fills the composer.
+        let prompts: &[&str] = if self.ai_chat.messages.is_empty() {
+            &EMPTY_PROMPTS
         } else {
-            "高级选项".to_string()
+            &QUICK_PROMPTS
         };
+        let mut picked: Option<&str> = None;
+        egui::ScrollArea::horizontal()
+            .id_salt("ai_suggestion_chips")
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    for prompt in prompts {
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    RichText::new(*prompt)
+                                        .size(theme::FONT_MICRO)
+                                        .color(theme::TEXT_DIM),
+                                )
+                                .fill(theme::PANEL)
+                                .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
+                                .corner_radius(13)
+                                .min_size(egui::vec2(0.0, 26.0)),
+                            )
+                            .clicked()
+                        {
+                            picked = Some(prompt);
+                        }
+                    }
+                });
+            });
+        if let Some(prompt) = picked {
+            self.ai_chat.input = prompt.to_string();
+        }
+        ui.add_space(theme::SPACE_SM);
+
+        let focused = ui.memory(|memory| memory.has_focus(ai_input_id));
+        let mut agent_selected = selected_agent.clone();
+        let mut preset_id = self.settings.ai.model_preset.clone();
+        let current_reasoning = AiReasoning::from_id(&self.settings.ai.reasoning);
+        let mut reasoning = current_reasoning;
+
+        // 输入卡片：边框焦点态 + 底部工具栏（附件 / 智能体 / 模型 / 推理 / 技能乐器 / 发送）。
+        // Composer card: focus border and a toolbar with attachment, agent, model, reasoning,
+        // skills/instruments and send.
         egui::Frame::NONE
             .fill(theme::PANEL_2)
-            .corner_radius(theme::RADIUS_SHEET)
-            .inner_margin(egui::Margin::symmetric(
-                theme::SPACE_MD as i8,
-                theme::SPACE_MD as i8,
+            .stroke(egui::Stroke::new(
+                1.0_f32,
+                if focused { theme::ACCENT } else { theme::LINE },
             ))
+            .corner_radius(14)
+            .inner_margin(egui::Margin::symmetric(14, 10))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                // 附件条：每个附件可单独移除。
-                // Attachment chips: each one can be removed.
                 if !self.ai_chat.attachments.is_empty() {
                     let mut remove: Option<usize> = None;
                     ui.horizontal_wrapped(|ui| {
@@ -663,42 +749,102 @@ impl SurfingApp {
                         .frame(egui::Frame::NONE)
                         .desired_rows(3)
                         .desired_width(f32::INFINITY)
-                        .hint_text("描述你想要的音乐；也可以说“用已安装的 Serum 做一个 Pad”…"),
+                        .hint_text("描述你想要的音乐，也可以说“用已安装的 Serum 做一个 Pad”…"),
                 );
 
                 ui.add_space(theme::SPACE_SM);
-                ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                ui.horizontal_wrapped(|ui| {
                     if ui
                         .add(
-                            egui::Button::new(RichText::new("+").size(16.0).color(theme::TEXT_DIM))
-                                .fill(theme::PANEL_3)
-                                .stroke(egui::Stroke::NONE)
-                                .corner_radius(8)
-                                .min_size(egui::vec2(28.0, 26.0)),
+                            egui::Button::new(
+                                RichText::new("+").size(16.0).color(theme::TEXT_DIM),
+                            )
+                            .frame(false)
+                            .min_size(egui::vec2(26.0, 26.0)),
                         )
                         .on_hover_text("添加文本 / Markdown / JSON / MIDI 附件")
                         .clicked()
                     {
                         attach = true;
                     }
-                    ui.add_space(theme::SPACE_XS);
-                    let advanced = ui.add(
-                        egui::Button::new(
-                            RichText::new(advanced_label)
-                                .size(theme::FONT_LABEL)
-                                .color(theme::TEXT_DIM),
-                        )
-                        .fill(theme::PANEL_3)
-                        .stroke(egui::Stroke::NONE)
-                        .corner_radius(8)
-                        .min_size(egui::vec2(0.0, 26.0)),
-                    );
+
+                    let agent_label = agents
+                        .iter()
+                        .find(|(id, _)| id == &agent_selected)
+                        .map(|(_, name)| name.as_str())
+                        .unwrap_or("智能体");
+                    let agent_response = theme::dropdown_button(ui, agent_label, true);
+                    egui::Popup::menu(&agent_response).show(|ui| {
+                        ui.set_min_width(180.0);
+                        if agents.is_empty() {
+                            ui.label(
+                                RichText::new("暂无智能体")
+                                    .size(theme::FONT_LABEL)
+                                    .color(theme::TEXT_FAINT),
+                            );
+                        }
+                        for (id, name) in &agents {
+                            if ui
+                                .selectable_label(agent_selected == *id, name.as_str())
+                                .clicked()
+                            {
+                                agent_selected = id.clone();
+                            }
+                        }
+                    });
+                    if agent_selected != self.ai_chat.agent {
+                        self.ai_chat.select_agent(&agent_selected);
+                    }
+
+                    let preset_label = find_preset(&preset_id)
+                        .map(|preset| preset.label)
+                        .unwrap_or("自定义");
+                    let model_response = theme::dropdown_button(ui, preset_label, false);
+                    egui::Popup::menu(&model_response).show(|ui| {
+                        ui.set_min_width(160.0);
+                        for entry in MODEL_PRESETS {
+                            if ui
+                                .selectable_label(preset_id == entry.id, entry.label)
+                                .clicked()
+                            {
+                                preset_id = entry.id.to_string();
+                            }
+                        }
+                    });
+                    if preset_id != self.settings.ai.model_preset {
+                        self.settings.ai.model_preset = preset_id;
+                        preset_changed = true;
+                    }
+
+                    let reasoning_response =
+                        theme::dropdown_button(ui, &format!("推理  {}", reasoning.label()), false);
+                    egui::Popup::menu(&reasoning_response).show(|ui| {
+                        ui.set_min_width(120.0);
+                        for entry in AiReasoning::ALL {
+                            if ui
+                                .selectable_label(reasoning == entry, entry.label())
+                                .clicked()
+                            {
+                                reasoning = entry;
+                            }
+                        }
+                    });
+                    if reasoning != current_reasoning {
+                        self.settings.ai.reasoning = reasoning.id().to_string();
+                        reasoning_changed = true;
+                    }
+
+                    let advanced = theme::dropdown_button(ui, "…", false);
+                    let advanced = advanced.on_hover_text(format!(
+                        "技能 {displayed_skill_count} · 可用乐器 {usable_count} · 必须乐器 {required_count}"
+                    ));
                     egui::Popup::menu(&advanced)
                         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                         .show(|ui| {
                             ui.set_min_width(360.0);
                             ui.label(
-                                RichText::new("高级选项")
+                                RichText::new("技能与乐器")
                                     .size(theme::FONT_BODY)
                                     .strong()
                                     .color(theme::TEXT),
@@ -729,7 +875,8 @@ impl SurfingApp {
                                     .iter()
                                     .chain(technique_choices.iter())
                                     .filter(|(_, title)| {
-                                        filter.is_empty() || title.to_lowercase().contains(&filter)
+                                        filter.is_empty()
+                                            || title.to_lowercase().contains(&filter)
                                     })
                                     .all(|(id, _)| {
                                         effective_skill_checked(
@@ -780,7 +927,8 @@ impl SurfingApp {
                                 .max_height(170.0)
                                 .auto_shrink([false, false])
                                 .show(ui, |ui| {
-                                    let filter = self.ai_chat.skill_filter.trim().to_lowercase();
+                                    let filter =
+                                        self.ai_chat.skill_filter.trim().to_lowercase();
                                     ui.label(
                                         RichText::new("基础")
                                             .size(theme::FONT_MICRO)
@@ -921,128 +1069,55 @@ impl SurfingApp {
                                         }
                                     });
                             }
-
-                            ui.add_space(theme::SPACE_MD);
-                            ui.label(
-                                RichText::new("智能体与模型")
-                                    .size(theme::FONT_LABEL)
-                                    .strong()
-                                    .color(theme::TEXT),
-                            );
-                            ui.add_space(theme::SPACE_XS);
-                            ui.horizontal(|ui| {
-                                let agent_label = agents
-                                    .iter()
-                                    .find(|(id, _)| id == &selected_agent)
-                                    .map(|(_, name)| name.as_str())
-                                    .unwrap_or("智能体");
-                                egui::ComboBox::from_id_salt("ai_agent")
-                                    .width(110.0)
-                                    .selected_text(
-                                        RichText::new(agent_label).size(theme::FONT_LABEL),
-                                    )
-                                    .show_ui(ui, |ui| {
-                                        for (id, name) in &agents {
-                                            ui.selectable_value(
-                                                &mut selected_agent,
-                                                id.clone(),
-                                                name,
-                                            );
-                                        }
-                                    });
-                                if selected_agent != self.ai_chat.agent {
-                                    self.ai_chat.select_agent(&selected_agent);
-                                }
-
-                                let mut preset_id = self.settings.ai.model_preset.clone();
-                                let preset_label = find_preset(&preset_id)
-                                    .map(|preset| preset.label)
-                                    .unwrap_or("自定义");
-                                egui::ComboBox::from_id_salt("ai_model_preset")
-                                    .width(120.0)
-                                    .selected_text(
-                                        RichText::new(preset_label).size(theme::FONT_LABEL),
-                                    )
-                                    .show_ui(ui, |ui| {
-                                        for entry in MODEL_PRESETS {
-                                            ui.selectable_value(
-                                                &mut preset_id,
-                                                entry.id.to_string(),
-                                                entry.label,
-                                            );
-                                        }
-                                    });
-                                if preset_id != self.settings.ai.model_preset {
-                                    self.settings.ai.model_preset = preset_id;
-                                    preset_changed = true;
-                                }
-
-                                let current_reasoning =
-                                    AiReasoning::from_id(&self.settings.ai.reasoning);
-                                let mut reasoning = current_reasoning;
-                                egui::ComboBox::from_id_salt("ai_reasoning")
-                                    .width(96.0)
-                                    .selected_text(
-                                        RichText::new(format!("推理 {}", reasoning.label()))
-                                            .size(theme::FONT_LABEL),
-                                    )
-                                    .show_ui(ui, |ui| {
-                                        for entry in AiReasoning::ALL {
-                                            ui.selectable_value(
-                                                &mut reasoning,
-                                                entry,
-                                                entry.label(),
-                                            );
-                                        }
-                                    });
-                                if reasoning != current_reasoning {
-                                    self.settings.ai.reasoning = reasoning.id().to_string();
-                                    reasoning_changed = true;
-                                }
-                            });
                         });
 
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if self.ai_chat.pending.is_some() {
-                            if ui
-                                .add(
-                                    egui::Button::new(
-                                        RichText::new("■").size(13.0).color(egui::Color32::WHITE),
-                                    )
-                                    .fill(theme::RED)
-                                    .corner_radius(17)
-                                    .min_size(egui::vec2(34.0, 34.0)),
+                    let remaining = ui.available_width() - 40.0;
+                    if remaining > 0.0 {
+                        ui.add_space(remaining);
+                    }
+                    if self.ai_chat.pending.is_some() {
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    RichText::new("■")
+                                        .size(13.0)
+                                        .color(egui::Color32::WHITE),
                                 )
-                                .on_hover_text("停止等待当前回复")
-                                .clicked()
-                            {
-                                stop = true;
-                            }
-                        } else {
-                            let can_send = !self.ai_chat.input.trim().is_empty()
-                                || !self.ai_chat.attachments.is_empty();
-                            let fill = if can_send {
-                                theme::ACCENT
-                            } else {
-                                theme::PANEL_3
-                            };
-                            if ui
-                                .add(
-                                    egui::Button::new(
-                                        RichText::new("↑").size(16.0).color(egui::Color32::WHITE),
-                                    )
-                                    .fill(fill)
-                                    .corner_radius(17)
-                                    .min_size(egui::vec2(34.0, 34.0)),
-                                )
-                                .on_hover_text("发送（Ctrl+Enter）")
-                                .clicked()
-                                && can_send
-                            {
-                                send = true;
-                            }
+                                .fill(theme::RED)
+                                .corner_radius(16)
+                                .min_size(egui::vec2(32.0, 32.0)),
+                            )
+                            .on_hover_text("停止等待当前回复")
+                            .clicked()
+                        {
+                            stop = true;
                         }
-                    });
+                    } else {
+                        let can_send = !self.ai_chat.input.trim().is_empty()
+                            || !self.ai_chat.attachments.is_empty();
+                        let fill = if can_send {
+                            theme::ACCENT
+                        } else {
+                            theme::PANEL_3
+                        };
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    RichText::new("↑")
+                                        .size(16.0)
+                                        .color(egui::Color32::WHITE),
+                                )
+                                .fill(fill)
+                                .corner_radius(16)
+                                .min_size(egui::vec2(32.0, 32.0)),
+                            )
+                            .on_hover_text("发送（Ctrl+Enter）")
+                            .clicked()
+                            && can_send
+                        {
+                            send = true;
+                        }
+                    }
                 });
             });
 
@@ -1164,13 +1239,15 @@ enum AiTaskStatus {
 }
 
 /// 所属模块：ui / AI 编曲面板 / 任务栏
-/// 功能：绘制一张可点击的任务卡片（状态图标 + 标题 + 副标题 + 选中高亮）。
+/// 功能：绘制一张任务行：选中时整行加深并在左侧画 3 点强调条；标题 12.5、状态副标题 10.5，
+/// 运行中在副标题前加绿色圆点。
 /// 输入：`ui`、`id` 稳定标识、`selected` 是否选中、`status` 状态、`title`/`subtitle` 文本。
 /// 输出/副作用：返回点击响应；只绘制，不修改状态。
 /// 复杂度：时间 O(文本长度)，空间 O(1)。
 ///
 /// Module: ui / AI composition panel / task rail
-/// Purpose: Draw a clickable task card (status icon + title + subtitle + selection highlight).
+/// Purpose: Draw one task row: selected rows get a deeper fill and a 3 pt accent bar; the title is
+/// 12.5 pt and the status subtitle 10.5 pt, with a green dot while running.
 /// Inputs: `ui`, stable `id`, `selected`, `status`, `title`/`subtitle`.
 /// Outputs / side effects: the click response; painting only.
 /// Complexity: O(text length) time and O(1) space.
@@ -1182,81 +1259,63 @@ fn ai_task_card(
     title: &str,
     subtitle: &str,
 ) -> egui::Response {
-    let fill = if selected { theme::PANEL_2 } else { theme::BG };
-    let stroke = egui::Stroke::new(1.0_f32, theme::LINE);
-    let inner = egui::Frame::NONE
-        .fill(fill)
-        .stroke(stroke)
-        .corner_radius(9)
-        .inner_margin(egui::Margin::symmetric(8, 7))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                paint_task_status(ui, status);
-                ui.add_space(2.0);
-                ui.vertical(|ui| {
-                    ui.label(RichText::new(title).size(10.0).strong().color(if selected {
-                        theme::TEXT
-                    } else {
-                        theme::TEXT_DIM
-                    }));
-                    ui.label(RichText::new(subtitle).size(8.5).color(theme::TEXT_FAINT));
-                });
-            });
-        });
+    let width = ui.available_width();
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(width, AI_TASK_H), egui::Sense::click());
+    let hovered = response.hovered();
+    let painter = ui.painter().with_clip_rect(rect);
     if selected {
-        // 选中态用外圈白色描边，不改变卡片底色。
-        // Selection uses a white outer ring instead of a coloured background.
-        ui.painter().rect_stroke(
-            inner.response.rect.expand(2.0),
-            egui::CornerRadius::from(11),
-            egui::Stroke::new(1.5_f32, egui::Color32::WHITE),
-            egui::StrokeKind::Outside,
+        painter.rect_filled(rect, egui::CornerRadius::from(8), theme::PANEL_3);
+        painter.rect_filled(
+            egui::Rect::from_min_size(
+                egui::pos2(rect.left(), rect.top() + 8.0),
+                egui::vec2(3.0, rect.height() - 16.0),
+            ),
+            egui::CornerRadius::from(2),
+            theme::ACCENT,
+        );
+    } else if hovered {
+        painter.rect_filled(rect, egui::CornerRadius::from(8), theme::PANEL_2);
+    }
+    let title_galley =
+        egui::WidgetText::from(egui::RichText::new(title).size(theme::FONT_BODY).color(
+            if selected {
+                egui::Color32::WHITE
+            } else {
+                theme::TEXT_DIM
+            },
+        ))
+        .into_galley(
+            ui,
+            Some(egui::TextWrapMode::Truncate),
+            rect.width() - 24.0,
+            egui::TextStyle::Button,
+        );
+    painter.galley(
+        egui::pos2(rect.left() + 12.0, rect.top() + 10.0),
+        title_galley,
+        theme::TEXT,
+    );
+    let running = matches!(status, AiTaskStatus::Running);
+    if running {
+        painter.circle_filled(
+            egui::pos2(rect.left() + 15.0, rect.top() + 34.0),
+            3.0,
+            theme::GREEN,
         );
     }
-    let response = ui.interact(
-        inner.response.rect,
-        ui.make_persistent_id(id),
-        egui::Sense::click(),
+    painter.text(
+        egui::pos2(
+            rect.left() + if running { 23.0 } else { 12.0 },
+            rect.top() + 34.0,
+        ),
+        egui::Align2::LEFT_CENTER,
+        subtitle,
+        egui::FontId::proportional(theme::FONT_MICRO),
+        theme::TEXT_FAINT,
     );
-    if response.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
-    response
-}
-
-/// 所属模块：ui / AI 编曲面板 / 任务栏
-/// 功能：绘制圆形状态图标；完成态为绿底白勾，运行态为蓝色圆环加点。
-/// 输入：`ui`、`status` 状态。
-/// 输出/副作用：占用 16×16 区域并绘制；不修改状态。
-/// 复杂度：时间 O(1)，空间 O(1)。
-///
-/// Module: ui / AI composition panel / task rail
-/// Purpose: Draw the circular status icon: a green disc with a white check when done, a blue ring and
-/// dot while running.
-/// Inputs: `ui`, `status`.
-/// Outputs / side effects: allocates 16×16 and paints; no state change.
-/// Complexity: O(1) time and space.
-fn paint_task_status(ui: &mut egui::Ui, status: AiTaskStatus) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
-    let center = rect.center();
-    let painter = ui.painter();
-    match status {
-        AiTaskStatus::Done => {
-            painter.circle_filled(center, 7.5, theme::GREEN);
-            painter.text(
-                center,
-                egui::Align2::CENTER_CENTER,
-                "✓",
-                egui::FontId::proportional(10.0),
-                theme::TEXT,
-            );
-        }
-        AiTaskStatus::Running => {
-            painter.circle_stroke(center, 7.0, egui::Stroke::new(1.5_f32, theme::ACCENT));
-            painter.circle_filled(center, 2.5, theme::ACCENT);
-        }
-    }
+    ui.interact(rect, ui.make_persistent_id(id), egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// 所属模块：ui / AI 编曲面板 / 气泡
@@ -1345,18 +1404,22 @@ fn paint_assistant_header(
         let elapsed = meta.map(|meta| meta.elapsed_seconds).unwrap_or(0.0);
         if elapsed > 0.0 {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let arrow = if state.is_open() { "▴" } else { "▾" };
-                if ui
-                    .add(
-                        egui::Button::new(
-                            RichText::new(format!("任务耗时 {} {arrow}", format_elapsed(elapsed)))
-                                .size(9.0)
-                                .color(theme::TEXT_FAINT),
-                        )
-                        .frame(false),
+                let response = ui.add(
+                    egui::Button::new(
+                        RichText::new(format!("任务耗时 {}", format_elapsed(elapsed)))
+                            .size(9.0)
+                            .color(theme::TEXT_FAINT),
                     )
-                    .clicked()
-                {
+                    .frame(false),
+                );
+                theme::paint_dropdown(
+                    ui.painter(),
+                    egui::pos2(response.rect.right() + 6.0, response.rect.center().y),
+                    state.is_open(),
+                    theme::TEXT_FAINT,
+                );
+                ui.add_space(10.0);
+                if response.clicked() {
                     state.toggle(ui);
                 }
             });
@@ -1424,6 +1487,33 @@ fn format_elapsed(seconds: f32) -> String {
         format!("{}m {:02}s", total / 60, total % 60)
     } else {
         format!("{total}s")
+    }
+}
+
+/// 所属模块：ui / AI 编曲面板 / 任务栏
+/// 功能：把“距今秒数”格式化为刚刚 / N 分钟前 / N 小时前 / N 天前；过旧或缺失时间显示“更早”。
+/// 输入：`age` 距今秒数。
+/// 输出/副作用：展示文本；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: ui / AI composition panel / task rail
+/// Purpose: Format an age in seconds as just now / N minutes / N hours / N days ago; missing or very
+/// old timestamps read "更早".
+/// Inputs: `age` seconds since the update.
+/// Outputs / side effects: display text; no state change.
+/// Complexity: O(1) time and space.
+fn relative_time(age: f64) -> String {
+    if !age.is_finite() || age >= 30.0 * 86_400.0 {
+        return "更早".to_string();
+    }
+    if age < 60.0 {
+        "刚刚".to_string()
+    } else if age < 3_600.0 {
+        format!("{} 分钟前", (age / 60.0).floor() as i64)
+    } else if age < 86_400.0 {
+        format!("{} 小时前", (age / 3_600.0).floor() as i64)
+    } else {
+        format!("{} 天前", (age / 86_400.0).floor() as i64)
     }
 }
 
@@ -1693,52 +1783,38 @@ fn change_rows(ui: &mut egui::Ui, summary: &AiApplySummary) {
 }
 
 /// 所属模块：ui / AI 编曲面板 / 空状态
-/// 功能：绘制空对话引导与可点击的示例问题。
+/// 功能：绘制空对话引导：居中的 AI 方块与一行说明；示例问题已移到输入区上方的胶囊行。
 /// 输入：`ui` 绘制区域。
-/// 输出/副作用：返回被点击的示例文本；不修改状态。
-/// 复杂度：时间 O(示例数)，空间 O(1)。
+/// 输出/副作用：只绘制；返回 `None`。
+/// 复杂度：时间 O(1)，空间 O(1)。
 ///
 /// Module: ui / AI composition panel / empty state
-/// Purpose: Draw empty-conversation guidance and clickable examples.
+/// Purpose: Draw the empty-chat guidance: a centered AI tile and one line of copy; example prompts
+/// now live in the pill row above the composer.
 /// Inputs: `ui` drawing area.
-/// Outputs / side effects: the clicked example, if any; no state change.
-/// Complexity: O(examples) time and O(1) space.
+/// Outputs / side effects: paint only; returns `None`.
+/// Complexity: O(1) time and space.
 fn paint_ai_empty(ui: &mut egui::Ui) -> Option<&'static str> {
-    let mut picked = None;
-    ui.add_space(8.0);
-    for (index, example) in EMPTY_PROMPTS.iter().enumerate() {
-        let inner = egui::Frame::NONE
-            .fill(theme::PANEL_2)
-            .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
-            .corner_radius(10)
-            .inner_margin(egui::Margin::symmetric(10, 8))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new(format!("· {example}"))
-                            .size(9.8)
-                            .color(theme::TEXT_DIM),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(RichText::new("↗").size(10.0).color(theme::TEXT_FAINT));
-                    });
-                });
-            });
-        let response = ui.interact(
-            inner.response.rect,
-            ui.make_persistent_id(("ai-empty-prompt", index)),
-            egui::Sense::click(),
+    ui.add_space(56.0);
+    ui.vertical_centered(|ui| {
+        let (tile, _) = ui.allocate_exact_size(egui::vec2(44.0, 44.0), egui::Sense::hover());
+        ui.painter()
+            .rect_filled(tile, egui::CornerRadius::from(12), theme::PANEL_2);
+        ui.painter().text(
+            tile.center(),
+            egui::Align2::CENTER_CENTER,
+            "AI",
+            egui::FontId::proportional(14.0),
+            theme::TEXT_DIM,
         );
-        if response.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        }
-        if response.clicked() {
-            picked = Some(*example);
-        }
-        ui.add_space(6.0);
-    }
-    picked
+        ui.add_space(12.0);
+        ui.label(
+            RichText::new("开始描述你想要的音乐，或点击左上角「+ 新任务」")
+                .size(theme::FONT_BODY)
+                .color(theme::TEXT_FAINT),
+        );
+    });
+    None
 }
 
 /// 所属模块：ui / AI 编曲面板 / 输入区
@@ -1760,26 +1836,6 @@ fn toggle_choice(items: &mut Vec<String>, id: &str, checked: bool) {
     } else {
         items.retain(|entry| entry != id);
     }
-}
-
-/// 所属模块：ui / AI 编曲面板 / 输入区
-/// 功能：绘制紧凑的多选菜单入口按钮。
-/// 输入：`ui` 当前布局；`label` 文本。
-/// 输出/副作用：返回按钮响应；不修改状态。
-/// 复杂度：时间 O(1)，空间 O(1)。
-///
-/// Module: ui / AI composition panel / composer
-/// Purpose: Draw a compact multi-select menu trigger.
-/// Inputs: `ui`; `label`.
-/// Outputs / side effects: the button response; no state change.
-/// Complexity: O(1) time and space.
-fn compact_menu_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
-    ui.add(
-        egui::Button::new(RichText::new(label).size(9.0))
-            .fill(theme::PANEL_3)
-            .corner_radius(6)
-            .min_size(egui::vec2(0.0, 20.0)),
-    )
 }
 
 /// 所属模块：ui / AI 编曲面板 / 输入区

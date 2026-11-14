@@ -288,7 +288,7 @@ impl SurfingApp {
             if page == HomePage::Plugins && !crate::platform::caps().plugin_hosting {
                 continue;
             }
-            if home_nav_item(ui, page, self.home_page == page).clicked() {
+            if home_nav_item(ui, page, self.home_page == page, false).clicked() {
                 self.home_page = page;
             }
             ui.add_space(2.0);
@@ -298,7 +298,12 @@ impl SurfingApp {
         // Agent column: clicking the main entry switches page and toggles the basics/techniques/
         // instruments submenu.
         let agent_selected = self.home_page.is_agent_section();
-        let agent_response = home_nav_item(ui, HomePage::Agents, agent_selected);
+        let agent_response = home_nav_item(
+            ui,
+            HomePage::Agents,
+            agent_selected,
+            self.agent_library.expanded,
+        );
         if agent_response.clicked() {
             // 从其他页面进入 Agent 时自动展开；已在 Agent 栏时再次点击才收起/展开。
             // Entering Agent from another page expands it; clicking again while inside toggles.
@@ -1314,17 +1319,7 @@ impl SurfingApp {
                     ui.add(egui::Spinner::new().size(14.0));
                     ui.add_space(theme::SPACE_SM);
                 }
-                let scan = ui.add(
-                    egui::Button::new(
-                        egui::RichText::new("扫描插件  ▾")
-                            .size(theme::FONT_LABEL)
-                            .color(theme::TEXT_DIM),
-                    )
-                    .fill(theme::PANEL_2)
-                    .stroke(egui::Stroke::NONE)
-                    .corner_radius(8)
-                    .min_size(egui::vec2(0.0, theme::CONTROL_H)),
-                );
+                let scan = theme::dropdown_button_filled(ui, "扫描插件");
                 egui::Popup::menu(&scan).show(|ui| {
                     ui.set_min_width(150.0);
                     if theme::menu_button(ui, "扫描全部", "").clicked() {
@@ -1931,9 +1926,15 @@ fn home_sub_nav_item(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Re
 /// - `ui`: sidebar paint context.
 /// - `page`: menu page.
 /// - `selected`: whether this page is active.
+/// - `expanded`: whether the Agent submenu is open; the chevron flips with it.
 /// Outputs / side effects: allocates the full row and paints; the caller handles clicks.
 /// Complexity: O(1) time and space.
-fn home_nav_item(ui: &mut egui::Ui, page: HomePage, selected: bool) -> egui::Response {
+fn home_nav_item(
+    ui: &mut egui::Ui,
+    page: HomePage,
+    selected: bool,
+    expanded: bool,
+) -> egui::Response {
     let width = ui.available_width();
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, NAV_H), egui::Sense::click());
     let hovered = response.hovered();
@@ -1968,23 +1969,14 @@ fn home_nav_item(ui: &mut egui::Ui, page: HomePage, selected: bool) -> egui::Res
         egui::FontId::proportional(12.5),
         color,
     );
-    // Agent 是下拉入口：右侧画一个向下的折线，避免字体缺少 ▾ 时显示成方块。
-    // Agent is a dropdown entry: draw a chevron with lines so missing glyphs never show a box.
+    // Agent 是下拉入口：右侧画一个随展开状态翻转的箭头。
+    // Agent is a dropdown entry: draw a chevron that flips with the expanded state.
     if page == HomePage::Agents {
-        let center = egui::pos2(rect.right() - 13.0, rect.center().y);
-        painter.line_segment(
-            [
-                egui::pos2(center.x - 3.5, center.y - 2.0),
-                egui::pos2(center.x, center.y + 1.5),
-            ],
-            egui::Stroke::new(1.2_f32, color),
-        );
-        painter.line_segment(
-            [
-                egui::pos2(center.x, center.y + 1.5),
-                egui::pos2(center.x + 3.5, center.y - 2.0),
-            ],
-            egui::Stroke::new(1.2_f32, color),
+        theme::paint_dropdown(
+            painter,
+            egui::pos2(rect.right() - 13.0, rect.center().y),
+            expanded,
+            color,
         );
     }
     response.on_hover_cursor(egui::CursorIcon::PointingHand)

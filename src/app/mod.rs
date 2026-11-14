@@ -1909,6 +1909,9 @@ impl SurfingApp {
             // AI 后台任务运行期间锁住工程编辑；用户选择「后台继续运行」后解锁。
             // Lock project editing while an AI task runs; choosing "keep running" unlocks it.
             let editing_locked = self.ai_chat.project_editing_locked();
+            // 工作区（应用栏/工具栏/状态栏之外）用于 AI 浮层定位，避免遮住窗口按钮。
+            // The workspace below the app bar/toolbar anchors the AI overlay so window controls stay reachable.
+            let workspace_rect = ctx.available_rect();
             if self.bottom_open {
                 diag::set_activity("ui.paint.bottom");
                 // 插件 GUI 会等比缩放到卡片大小，底部面板不再需要按插件高度撑开。
@@ -1947,36 +1950,24 @@ impl SurfingApp {
             }
 
             diag::set_activity("ui.paint.inspector");
-            // 右侧面板在轨道属性与 AI 编曲对话之间切换；关闭时整块收起。
-            // The right panel switches between track properties and the AI chat; closing hides it.
-            if let Some(panel) = self.side_panel {
-                // AI 编曲使用独立的「任务栏 + 对话区」宽度；轨道属性仍保持窄面板。
-                // The AI workspace uses its own task-rail + conversation width; the inspector stays narrow.
-                let (id, default_width, min_width, max_width) = match panel {
-                    SidePanel::Ai => ("ai_workspace", 660.0, 520.0, 920.0),
-                    SidePanel::Inspector => ("inspector", 360.0, 300.0, 520.0),
-                };
-                let panel_fill = match panel {
-                    SidePanel::Ai => theme::BG,
-                    SidePanel::Inspector => theme::PANEL,
-                };
+            // 轨道属性仍是右侧窄面板；AI 编曲改为工作区上方的浮层，不再挤压编曲区。
+            // The inspector stays a narrow right panel; the AI workspace is an overlay above the
+            // arrangement instead of squeezing it.
+            if self.side_panel == Some(SidePanel::Inspector) {
                 let mut inspector_rect = None;
-                egui::SidePanel::right(id)
+                egui::SidePanel::right("inspector")
                     .resizable(true)
-                    .default_width(default_width)
-                    .min_width(min_width)
-                    .max_width(max_width)
+                    .default_width(360.0)
+                    .min_width(300.0)
+                    .max_width(520.0)
                     .frame(
                         egui::Frame::NONE
-                            .fill(panel_fill)
+                            .fill(theme::PANEL)
                             .inner_margin(egui::Margin::symmetric(12, 10)),
                     )
-                    .show(ctx, |ui| match panel {
-                        SidePanel::Inspector => {
-                            inspector_rect = Some(ui.available_rect_before_wrap());
-                            ui.add_enabled_ui(!editing_locked, |ui| self.ui_inspector(ui));
-                        }
-                        SidePanel::Ai => self.ui_ai_panel(ui),
+                    .show(ctx, |ui| {
+                        inspector_rect = Some(ui.available_rect_before_wrap());
+                        ui.add_enabled_ui(!editing_locked, |ui| self.ui_inspector(ui));
                     });
                 if let Some(rect) = inspector_rect {
                     self.note_edit_surface_interaction(ctx, rect);
@@ -2000,6 +1991,11 @@ impl SurfingApp {
             self.ui_roll_windows(ctx);
             self.ui_lane_paste_prompt(ctx);
             self.ui_group_delete_prompt(ctx);
+            // AI 工作台作为浮层绘制在编曲区与底部卷帘之上，带遮罩与投影。
+            // Draw the AI workspace as an overlay above the arrangement and bottom editor, with a scrim.
+            if self.side_panel == Some(SidePanel::Ai) {
+                self.ui_ai_overlay(ctx, workspace_rect);
+            }
         }
         // 无系统边框后，窗口缩放改由应用栏同层的边缘热区接管。
         // Without OS decorations, window resizing is handled by edge hit areas.

@@ -559,17 +559,7 @@ impl SurfingApp {
                         agent_section_title(ui, "基本信息");
                         let mut chosen: Option<AiInstrumentDoc> = None;
                         ui.horizontal(|ui| {
-                            let response = ui.add(
-                                egui::Button::new(
-                                    egui::RichText::new("从乐器库选择…")
-                                        .size(theme::FONT_LABEL)
-                                        .color(theme::TEXT_DIM),
-                                )
-                                .fill(theme::PANEL_2)
-                                .stroke(egui::Stroke::NONE)
-                                .corner_radius(8)
-                                .min_size(egui::vec2(0.0, theme::CONTROL_H)),
-                            );
+                            let response = theme::dropdown_button_filled(ui, "从乐器库选择…");
                             egui::Popup::menu(&response)
                                 .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                                 .show(|ui| {
@@ -1571,20 +1561,8 @@ fn default_instrument_selector(
         });
         ui.add_space(theme::SPACE_XS);
     }
-    let response = ui.add(
-        egui::Button::new(
-            egui::RichText::new(format!(
-                "选择默认乐器…（{}）",
-                entry.default_instrument_ids.len()
-            ))
-            .size(theme::FONT_LABEL)
-            .color(theme::TEXT_DIM),
-        )
-        .fill(theme::PANEL_2)
-        .stroke(egui::Stroke::NONE)
-        .corner_radius(8)
-        .min_size(egui::vec2(0.0, theme::CONTROL_H)),
-    );
+    let label = format!("选择默认乐器…（{}）", entry.default_instrument_ids.len());
+    let response = theme::dropdown_button_filled(ui, &label);
     egui::Popup::menu(&response)
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .show(|ui| {
