@@ -234,10 +234,10 @@ impl SurfingApp {
                                                 egui::vec2(10.0, 10.0),
                                                 egui::Sense::hover(),
                                             );
-                                            theme::paint_dropdown(
+                                            theme::paint_dropdown_dir(
                                                 ui.painter(),
                                                 arrow.center(),
-                                                false,
+                                                theme::DropdownDir::Right,
                                                 theme::TEXT_DIM,
                                             );
                                             ui.label(

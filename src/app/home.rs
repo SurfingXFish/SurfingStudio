@@ -2,7 +2,7 @@
 //! 文件用途：
 //! - 绘制主页：左侧为软件图标/名称/版本、项目/模板/插件/提示菜单与底部设置入口；右侧为具体内容。
 //! - 项目页按最近保存时间列出全部打开过的工程，自动清理失效路径，并可下拉查看工程信息与历史版本。
-//! - 插件页按类别胶囊筛选、按品牌分组，行内只保留名称/厂商/格式与一个类别标签，详情在右侧抽屉。
+//! - 插件页按类别胶囊筛选、按品牌分组；品牌与插件行都是带动画的折叠项，插件详情在行内展开。
 //! - 模板页与提示页保持原有内容。
 //!
 //! 函数清单：
@@ -17,7 +17,7 @@
 //! - `SurfingApp::open_recent_project` / `request_project_from_template`：打开项目 / 从模板创建。
 //! - `load_project_summary` / `format_bytes` / `format_version_name`：工程摘要与展示文本。
 //! - `home_logo` / `home_nav_item` / `home_nav_icon` / `home_page_label`：侧栏控件。
-//! - `ui_home_project_row` / `plugin_brand_header` / `home_plugin_row` / `plugin_detail_drawer` /
+//! - `ui_home_project_row` / `plugin_brand_header` / `home_plugin_row` / `plugin_detail_body` /
 //!   `plugin_detail_field` / `paint_chevron` / `path_hash` / `project_display_name`：列表行与命名。
 //! - `template_card` / `example_card` / `template_family_filter` / `template_filter_chip`：模板与范例卡片。
 //!
@@ -27,8 +27,8 @@
 //!   tips menu and a settings entry at the bottom; the right column shows the selected content.
 //! - The projects page lists every opened project by last-saved time, prunes missing paths and
 //!   exposes project info plus history versions in a dropdown.
-//! - The plugins page filters by kind chips, groups by brand, keeps only name/vendor/format plus one
-//!   kind tag per row, and shows the details in a right-hand drawer.
+//! - The plugins page filters by kind chips, groups by brand, and makes both brand headers and plugin
+//!   rows animated disclosures with inline details.
 //! - The templates and tips pages keep their previous content.
 //!
 //! Functions:
@@ -41,7 +41,7 @@
 //! - `SurfingApp::open_recent_project` / `request_project_from_template`: open a project / create from a template.
 //! - `load_project_summary` / `format_bytes` / `format_version_name`: project summary and display text.
 //! - `home_logo` / `home_nav_item` / `home_nav_icon` / `home_page_label`: sidebar widgets.
-//! - `home_project_row` / `plugin_brand_header` / `home_plugin_row` / `plugin_detail_drawer` /
+//! - `home_project_row` / `plugin_brand_header` / `home_plugin_row` / `plugin_detail_body` /
 //!   `plugin_detail_field` / `path_hash` / `project_display_name`: rows and names.
 //! - `template_card` / `example_card` / `template_family_filter` / `template_filter_chip`: template and example cards.
 
@@ -75,13 +75,6 @@ const PLUGIN_BRAND_H: f32 = 40.0;
 /// 插件行高度（逻辑点）。
 /// Height of one plugin row in logical points.
 const PLUGIN_ROW_H: f32 = 52.0;
-/// 插件详情抽屉最小/最大宽度（逻辑点）。
-/// Minimum and maximum width of the plugin detail drawer in logical points.
-const PLUGIN_DRAWER_MIN_W: f32 = 280.0;
-const PLUGIN_DRAWER_MAX_W: f32 = 340.0;
-/// 插件列表在抽屉打开时保留的最小宽度（逻辑点）。
-/// Minimum list width kept while the detail drawer is open.
-const PLUGIN_LIST_MIN_W: f32 = 320.0;
 /// 主页顶部标题字号（逻辑点），与 Agent 资料库页头统一。
 /// Home page heading size in logical points; matches the Agent library header.
 const HOME_TITLE_SIZE: f32 = 22.0;
@@ -1443,88 +1436,53 @@ impl SurfingApp {
         }
         groups.sort_by_cached_key(|group| group.brand.to_lowercase());
 
-        let selected_path = self.home_plugin_selected.clone();
-        let mut drawer_plugin = selected_path
-            .as_ref()
-            .and_then(|path| plugins.iter().find(|plugin| &plugin.path == path))
-            .cloned();
-        if drawer_plugin.is_none() {
-            self.home_plugin_selected = None;
-        }
-        let drawer_w =
-            (ui.available_width() * 0.38).clamp(PLUGIN_DRAWER_MIN_W, PLUGIN_DRAWER_MAX_W);
-        let list_w = (ui.available_width()
-            - if drawer_plugin.is_some() {
-                drawer_w + theme::SPACE_LG
-            } else {
-                0.0
-            })
-        .max(PLUGIN_LIST_MIN_W);
-        let height = ui.available_height();
-        let mut toggle_brand: Option<String> = None;
-        let mut select: Option<PathBuf> = None;
-        let mut close_drawer = false;
-        ui.horizontal_top(|ui| {
-            ui.allocate_ui_with_layout(
-                egui::vec2(list_w, height),
-                egui::Layout::top_down(egui::Align::Min),
-                |ui| {
-                    ui.set_width(list_w);
-                    egui::ScrollArea::vertical()
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            for group in &groups {
-                                let collapsed = self.home_plugin_collapsed.contains(&group.brand);
-                                if plugin_brand_header(
-                                    ui,
-                                    &group.brand,
-                                    group.plugins.len(),
-                                    collapsed,
-                                )
-                                .clicked()
-                                {
-                                    toggle_brand = Some(group.brand.clone());
-                                }
-                                if collapsed {
-                                    continue;
-                                }
-                                ui.add_space(theme::SPACE_XS);
-                                for plugin in &group.plugins {
-                                    let selected = selected_path.as_ref() == Some(&plugin.path);
-                                    if home_plugin_row(ui, plugin, selected) {
-                                        select = Some(plugin.path.clone());
-                                    }
-                                }
-                                ui.add_space(theme::SPACE_MD);
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                for group in &groups {
+                    let brand_id = ui.make_persistent_id(("plugin-brand", &group.brand));
+                    let mut brand_state =
+                        egui::collapsing_header::CollapsingState::load_with_default_open(
+                            ui.ctx(),
+                            brand_id,
+                            true,
+                        );
+                    let brand_openness = brand_state.openness(ui.ctx());
+                    if plugin_brand_header(ui, &group.brand, group.plugins.len(), brand_openness)
+                        .clicked()
+                    {
+                        brand_state.toggle(ui);
+                    }
+                    brand_state.store(ui.ctx());
+                    if !brand_state.is_open() && brand_openness <= 0.0 {
+                        continue;
+                    }
+                    brand_state.show_body_unindented(ui, |ui| {
+                        ui.add_space(theme::SPACE_XS);
+                        for plugin in &group.plugins {
+                            let row_id = ui.make_persistent_id(("plugin-row", &plugin.path));
+                            let mut row_state =
+                                egui::collapsing_header::CollapsingState::load_with_default_open(
+                                    ui.ctx(),
+                                    row_id,
+                                    false,
+                                );
+                            let row_openness = row_state.openness(ui.ctx());
+                            if home_plugin_row(ui, plugin, row_openness) {
+                                row_state.toggle(ui);
                             }
-                        });
-                },
-            );
-            if let Some(plugin) = drawer_plugin.take() {
-                ui.add_space(theme::SPACE_LG);
-                ui.allocate_ui_with_layout(
-                    egui::vec2(drawer_w, height),
-                    egui::Layout::top_down(egui::Align::Min),
-                    |ui| {
-                        ui.set_width(drawer_w);
-                        if plugin_detail_drawer(ui, &plugin) {
-                            close_drawer = true;
+                            row_state.store(ui.ctx());
+                            if !row_state.is_open() && row_openness <= 0.0 {
+                                continue;
+                            }
+                            row_state.show_body_unindented(ui, |ui| {
+                                plugin_detail_body(ui, plugin);
+                            });
                         }
-                    },
-                );
-            }
-        });
-        if let Some(brand) = toggle_brand {
-            if !self.home_plugin_collapsed.remove(&brand) {
-                self.home_plugin_collapsed.insert(brand);
-            }
-        }
-        if let Some(path) = select {
-            self.home_plugin_selected = Some(path);
-        }
-        if close_drawer {
-            self.home_plugin_selected = None;
-        }
+                    });
+                    ui.add_space(theme::SPACE_MD);
+                }
+            });
     }
 
     /// 所属模块：app / 主页 / 提示页
@@ -1969,13 +1927,19 @@ fn home_nav_item(
         egui::FontId::proportional(12.5),
         color,
     );
-    // Agent 是下拉入口：右侧画一个随展开状态翻转的箭头。
-    // Agent is a dropdown entry: draw a chevron that flips with the expanded state.
+    // Agent 是下拉入口：左侧入口在收起时指向右，展开时向下；箭头随状态补间旋转。
+    // Agent is a disclosure entry at the left edge: right when closed, down when open; the chevron
+    // tweens with the state.
     if page == HomePage::Agents {
-        theme::paint_dropdown(
+        let openness = ui.ctx().animate_bool_with_time(
+            ui.make_persistent_id("home-agent-nav-arrow"),
+            expanded,
+            theme::DROPDOWN_ANIM_SECS,
+        );
+        theme::paint_dropdown_angle(
             painter,
             egui::pos2(rect.right() - 13.0, rect.center().y),
-            expanded,
+            std::f32::consts::FRAC_PI_2 * (1.0 - openness),
             color,
         );
     }
@@ -2393,29 +2357,30 @@ fn plugin_kind_color(kind: PluginKind) -> egui::Color32 {
 }
 
 /// 所属模块：app / 主页 / 插件页
-/// 功能：绘制一个插件品牌标题行：展开箭头、品牌名与插件数量；无分割线。
+/// 功能：绘制一个插件品牌标题行：左侧箭头、品牌名与插件数量；箭头随展开进度从右向下旋转。
 /// 输入：
 /// - `ui`：插件列表。
 /// - `brand`：品牌名。
 /// - `count`：当前筛选下该品牌的插件数量。
-/// - `collapsed`：是否收起。
+/// - `openness`：展开进度（0 收起，1 展开）。
 /// 输出/副作用：分配整行并绘制；返回点击响应。
 /// 复杂度：时间 O(文本长度)，空间 O(文本长度)。
 ///
 /// Module: app / home page / plugins
-/// Purpose: Draw one plugin brand header: chevron, brand name and plugin count; no divider line.
+/// Purpose: Draw one plugin brand header: left chevron, brand name and plugin count; the chevron
+/// rotates from right to down with the expansion progress.
 /// Inputs:
 /// - `ui`: plugin list.
 /// - `brand`: brand name.
 /// - `count`: plugins of this brand under the current filter.
-/// - `collapsed`: whether the brand is collapsed.
+/// - `openness`: expansion progress (0 closed, 1 open).
 /// Outputs / side effects: allocates and paints the row; returns the click response.
 /// Complexity: O(text length) time and space.
 fn plugin_brand_header(
     ui: &mut egui::Ui,
     brand: &str,
     count: usize,
-    collapsed: bool,
+    openness: f32,
 ) -> egui::Response {
     let width = ui.available_width();
     let (rect, response) =
@@ -2425,10 +2390,10 @@ fn plugin_brand_header(
     if hovered {
         painter.rect_filled(rect, egui::CornerRadius::from(8), theme::PANEL_2);
     }
-    paint_chevron(
+    theme::paint_dropdown_angle(
         painter,
         egui::pos2(rect.left() + 10.0, rect.center().y),
-        !collapsed,
+        -std::f32::consts::FRAC_PI_2 * (1.0 - openness),
         theme::TEXT_DIM,
     );
     painter.text(
@@ -2447,52 +2412,57 @@ fn plugin_brand_header(
     );
     response
         .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text(if collapsed {
-            "点击展开该品牌的插件"
-        } else {
+        .on_hover_text(if openness > 0.5 {
             "点击收起该品牌的插件"
+        } else {
+            "点击展开该品牌的插件"
         })
 }
 
 /// 所属模块：app / 主页 / 插件页
-/// 功能：绘制一条紧凑插件行：类别圆点、名称、厂商 · 格式与一个类别标签；点击打开右侧详情。
+/// 功能：绘制一条紧凑插件行：类别圆点、名称、厂商 · 格式与一个类别标签；右侧箭头随展开进度
+/// 从左向下旋转，点击展开内联详情。
 /// 输入：
 /// - `ui`：插件列表。
 /// - `plugin`：扫描记录。
-/// - `selected`：是否为详情抽屉中的插件。
+/// - `openness`：详情展开进度（0 收起，1 展开）。
 /// 输出/副作用：分配整行并绘制；返回是否点击。
 /// 复杂度：时间 O(文本长度)，空间 O(1)。
 ///
 /// Module: app / home page / plugins
-/// Purpose: Draw one compact plugin row: kind dot, name, vendor · format and a single kind tag;
-/// clicking opens the right-hand detail drawer.
+/// Purpose: Draw one compact plugin row: kind dot, name, vendor · format and a single kind tag. The
+/// right chevron rotates from left to down with the expansion progress; clicking reveals inline
+/// details.
 /// Inputs:
 /// - `ui`: plugin list.
 /// - `plugin`: scan record.
-/// - `selected`: whether the drawer shows this plugin.
+/// - `openness`: detail expansion progress (0 closed, 1 open).
 /// Outputs / side effects: allocates and paints the row; returns whether it was clicked.
 /// Complexity: O(text length) time and O(1) space.
-fn home_plugin_row(ui: &mut egui::Ui, plugin: &ScannedPlugin, selected: bool) -> bool {
+fn home_plugin_row(ui: &mut egui::Ui, plugin: &ScannedPlugin, openness: f32) -> bool {
     let width = ui.available_width();
     let (rect, response) =
         ui.allocate_exact_size(egui::vec2(width, PLUGIN_ROW_H), egui::Sense::click());
     let hovered = response.hovered();
     let painter = ui.painter();
-    if selected {
-        painter.rect_filled(rect, egui::CornerRadius::from(8), theme::ACCENT_DARK);
+    if hovered || openness > 0.01 {
+        painter.rect_filled(rect, egui::CornerRadius::from(8), theme::PANEL_2);
+    }
+    if openness > 0.01 {
         painter.rect_filled(
             egui::Rect::from_min_size(
                 egui::pos2(rect.left(), rect.top() + 14.0),
                 egui::vec2(3.0, rect.height() - 28.0),
             ),
             egui::CornerRadius::from(2),
-            theme::ACCENT,
+            theme::with_alpha(theme::ACCENT, (openness * 255.0) as u8),
         );
-    } else if hovered {
-        painter.rect_filled(rect, egui::CornerRadius::from(8), theme::PANEL_2);
     }
     let kind_color = plugin_kind_color(plugin.kind);
-    let content_rect = rect.shrink2(egui::vec2(12.0, 0.0));
+    let content_rect = egui::Rect::from_min_max(
+        egui::pos2(rect.left() + 12.0, rect.top()),
+        egui::pos2(rect.right() - 28.0, rect.bottom()),
+    );
     ui.scope_builder(egui::UiBuilder::new().max_rect(content_rect), |ui| {
         ui.horizontal_centered(|ui| {
             let (dot, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
@@ -2508,11 +2478,7 @@ fn home_plugin_row(ui: &mut egui::Ui, plugin: &ScannedPlugin, selected: bool) ->
                         egui::Label::new(
                             egui::RichText::new(&plugin.name)
                                 .size(theme::FONT_BODY)
-                                .color(if selected {
-                                    egui::Color32::WHITE
-                                } else {
-                                    theme::TEXT
-                                }),
+                                .color(theme::TEXT),
                         )
                         .truncate(),
                     );
@@ -2524,11 +2490,7 @@ fn home_plugin_row(ui: &mut egui::Ui, plugin: &ScannedPlugin, selected: bool) ->
                     ui.label(
                         egui::RichText::new(format!("{vendor} · {}", plugin.format.label()))
                             .size(theme::FONT_MICRO)
-                            .color(if selected {
-                                egui::Color32::from_rgb(200, 216, 255)
-                            } else {
-                                theme::TEXT_FAINT
-                            }),
+                            .color(theme::TEXT_FAINT),
                     );
                 },
             );
@@ -2537,12 +2499,12 @@ fn home_plugin_row(ui: &mut egui::Ui, plugin: &ScannedPlugin, selected: bool) ->
             });
         });
     });
-    paint_chevron(
+    theme::paint_dropdown_angle(
         ui.painter(),
         egui::pos2(rect.right() - 14.0, rect.center().y),
-        false,
-        if selected {
-            egui::Color32::WHITE
+        std::f32::consts::FRAC_PI_2 * (1.0 - openness),
+        if openness > 0.5 {
+            theme::ACCENT
         } else {
             theme::TEXT_DIM
         },
@@ -2550,7 +2512,7 @@ fn home_plugin_row(ui: &mut egui::Ui, plugin: &ScannedPlugin, selected: bool) ->
     response
         .on_hover_cursor(egui::CursorIcon::PointingHand)
         .on_hover_text(format!(
-            "{}\n{}\n点击查看插件详情",
+            "{}\n{}\n点击展开插件详情",
             plugin.name,
             plugin.path.display()
         ))
@@ -2558,99 +2520,71 @@ fn home_plugin_row(ui: &mut egui::Ui, plugin: &ScannedPlugin, selected: bool) ->
 }
 
 /// 所属模块：app / 主页 / 插件页
-/// 功能：绘制右侧插件详情抽屉：名称、厂商 · 格式、路径、分类、能力与标识。
-/// 输入：
-/// - `ui`：抽屉区域。
-/// - `plugin`：扫描记录。
-/// 输出/副作用：分配并绘制；返回是否点击了关闭按钮。
+/// 功能：绘制插件行下方展开的内联详情卡片：左侧路径与标识，右侧厂商、分类与能力。
+/// 输入：`ui`：详情区域；`plugin`：扫描记录。
+/// 输出/副作用：只绘制；不修改状态。
 /// 复杂度：时间 O(文本长度)，空间 O(文本长度)。
 ///
 /// Module: app / home page / plugins
-/// Purpose: Draw the right-hand plugin drawer: name, vendor · format, path, category, capabilities and
-/// identifier.
-/// Inputs:
-/// - `ui`: drawer area.
-/// - `plugin`: scan record.
-/// Outputs / side effects: allocates and paints; returns whether the close button was clicked.
+/// Purpose: Draw the inline detail card below a plugin row: path and identifier on the left, vendor,
+/// category and capabilities on the right.
+/// Inputs: `ui`: detail area; `plugin`: scan record.
+/// Outputs / side effects: paint only; no state change.
 /// Complexity: O(text length) time and space.
-fn plugin_detail_drawer(ui: &mut egui::Ui, plugin: &ScannedPlugin) -> bool {
-    let mut close = false;
-    theme::sheet_frame().show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.horizontal_top(|ui| {
-            ui.vertical(|ui| {
-                ui.label(
-                    egui::RichText::new(plugin.kind.label())
-                        .size(theme::FONT_MICRO)
-                        .strong()
-                        .color(plugin_kind_color(plugin.kind)),
-                );
-                ui.add_space(theme::SPACE_XS);
-                ui.label(
-                    egui::RichText::new(&plugin.name)
-                        .size(theme::FONT_TITLE)
-                        .strong()
-                        .color(theme::TEXT),
-                );
-            });
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                if ui
-                    .add(
-                        egui::Button::new(
-                            egui::RichText::new("×").size(16.0).color(theme::TEXT_DIM),
-                        )
-                        .frame(false)
-                        .min_size(egui::vec2(24.0, 24.0)),
-                    )
-                    .on_hover_text("关闭详情")
-                    .clicked()
-                {
-                    close = true;
-                }
+fn plugin_detail_body(ui: &mut egui::Ui, plugin: &ScannedPlugin) {
+    ui.add_space(theme::SPACE_XS);
+    egui::Frame::NONE
+        .fill(theme::PANEL)
+        .corner_radius(theme::RADIUS_CARD)
+        .inner_margin(egui::Margin::symmetric(theme::CARD_PAD, 14))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            let gap = theme::SPACE_LG;
+            let column = ((ui.available_width() - gap) * 0.5).max(120.0);
+            ui.horizontal_top(|ui| {
+                ui.vertical(|ui| {
+                    ui.set_width(column);
+                    plugin_detail_field(ui, "路径", &plugin.path.display().to_string(), true);
+                    if !plugin.uid.is_empty() {
+                        ui.add_space(theme::SPACE_MD);
+                        plugin_detail_field(ui, "标识", &plugin.uid, true);
+                    }
+                });
+                ui.add_space(gap);
+                ui.vertical(|ui| {
+                    ui.set_width(column);
+                    let vendor = if plugin.vendor.trim().is_empty() {
+                        "未标注厂商"
+                    } else {
+                        plugin.vendor.trim()
+                    };
+                    plugin_detail_field(ui, "厂商", vendor, false);
+                    ui.add_space(theme::SPACE_MD);
+                    plugin_detail_field(
+                        ui,
+                        "分类",
+                        if plugin.category.trim().is_empty() {
+                            "未分类"
+                        } else {
+                            plugin.category.trim()
+                        },
+                        false,
+                    );
+                    ui.add_space(theme::SPACE_MD);
+                    plugin_detail_field(
+                        ui,
+                        "能力",
+                        &format!(
+                            "MIDI 输入：{}    原生界面：{}",
+                            if plugin.has_midi_input { "是" } else { "否" },
+                            if plugin.has_gui { "是" } else { "否" }
+                        ),
+                        false,
+                    );
+                });
             });
         });
-        let vendor = if plugin.vendor.trim().is_empty() {
-            "未标注厂商"
-        } else {
-            plugin.vendor.trim()
-        };
-        ui.label(
-            egui::RichText::new(format!("{vendor} · {}", plugin.format.label()))
-                .size(theme::FONT_LABEL)
-                .color(theme::TEXT_DIM),
-        );
-        ui.add_space(theme::SPACE_LG);
-        plugin_detail_field(ui, "路径", &plugin.path.display().to_string(), true);
-        ui.add_space(theme::SPACE_MD);
-        plugin_detail_field(ui, "厂商", vendor, false);
-        ui.add_space(theme::SPACE_MD);
-        plugin_detail_field(
-            ui,
-            "分类",
-            if plugin.category.trim().is_empty() {
-                "未分类"
-            } else {
-                plugin.category.trim()
-            },
-            false,
-        );
-        ui.add_space(theme::SPACE_MD);
-        plugin_detail_field(
-            ui,
-            "能力",
-            &format!(
-                "MIDI 输入：{}    原生界面：{}",
-                if plugin.has_midi_input { "是" } else { "否" },
-                if plugin.has_gui { "是" } else { "否" }
-            ),
-            false,
-        );
-        if !plugin.uid.is_empty() {
-            ui.add_space(theme::SPACE_MD);
-            plugin_detail_field(ui, "标识", &plugin.uid, true);
-        }
-    });
-    close
+    ui.add_space(theme::SPACE_SM);
 }
 
 /// 所属模块：app / 主页 / 插件页

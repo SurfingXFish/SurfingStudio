@@ -2,7 +2,8 @@
 //! 文件用途：
 //! - 在工作区上方绘制 AI 编曲浮层：半透明遮罩 + 右侧 700 点工作台（240 点任务栏 + 对话区）。
 //! - 输入卡片沿用聊天应用结构：上方快捷指令胶囊，下方工具栏含附件、智能体、模型、推理、技能乐器与发送。
-//! - 所有下拉入口都绘制可见箭头（展开时翻转），不依赖字体中的 ▾ 字形。
+//! - 所有下拉入口都绘制可见箭头：选择菜单固定向下，折叠入口展开向下、收起按左右位置取向右/左，
+//!   展开高度与箭头旋转使用 0.18 秒补间，不依赖字体中的 ▾ 字形。
 //! - 只发出用户意图（发送、停止、添加附件、打开设置、跳转主页），网络与工程写入由 `app::ai` 完成。
 //!
 //! 函数清单：
@@ -20,7 +21,9 @@
 //!   (240 pt task rail + conversation).
 //! - The composer follows a chat-app layout: suggestion pills above, then a toolbar with attachment,
 //!   agent, model, reasoning, skills/instruments and send.
-//! - Every dropdown paints a visible chevron (flipped while open) and never depends on the ▾ glyph.
+//! - Every dropdown paints a visible chevron: select menus always point down; disclosures point down
+//!   when open and right/left by edge position when closed, with 0.18 s tweens for both height and
+//!   rotation. Never depends on the ▾ glyph.
 //! - Only emits user intents; networking and project writes live in `app::ai`.
 //!
 //! Functions:
@@ -40,17 +43,33 @@ use crate::app::{
 use crate::ui::theme;
 use eframe::egui::{self, RichText};
 
-/// 对话为空时展示的示例问题。
-/// Example prompts shown while the conversation is empty.
-const EMPTY_PROMPTS: [&str; 4] = [
-    "写一段 90 秒的钢琴与弦乐轻音乐，C 大调，84 BPM，温柔一点。",
-    "在现有工程上加入长笛主旋律和竖琴琶音，8 小节。",
-    "把这段旋律改成 3/4 拍的圆舞曲，配弦乐拨奏。",
-    "来一段中国风轻音乐：古筝、二胡、钢琴，五声音阶。",
+/// 空对话时的快捷指令：左侧为胶囊短标签，右侧为点击后填入的完整提示词。
+/// Empty-chat suggestions: short pill label on the left, full prompt filled on click on the right.
+const EMPTY_SUGGESTIONS: [(&str, &str); 4] = [
+    (
+        "钢琴与弦乐轻音乐",
+        "写一段 90 秒的钢琴与弦乐轻音乐，C 大调，84 BPM，温柔一点。",
+    ),
+    (
+        "长笛 + 竖琴琶音",
+        "在现有工程上加入长笛主旋律和竖琴琶音，8 小节。",
+    ),
+    (
+        "改成 3/4 拍圆舞曲",
+        "把这段旋律改成 3/4 拍的圆舞曲，配弦乐拨奏。",
+    ),
+    (
+        "中国风：古筝二胡",
+        "来一段中国风轻音乐：古筝、二胡、钢琴，五声音阶。",
+    ),
 ];
 /// 有对话后展示的快捷指令。
 /// Quick prompts shown once the conversation has started.
-const QUICK_PROMPTS: [&str; 3] = ["继续发展这段旋律", "加一段弦乐铺底", "换成 3/4 拍"];
+const QUICK_PROMPTS: [(&str, &str); 3] = [
+    ("继续发展这段旋律", "继续发展这段旋律"),
+    ("加一段弦乐铺底", "加一段弦乐铺底"),
+    ("换成 3/4 拍", "换成 3/4 拍"),
+];
 /// AI 浮层默认宽度（逻辑点）。
 /// Default AI overlay width in logical points.
 const AI_PANEL_W: f32 = 700.0;
@@ -149,6 +168,11 @@ impl SurfingApp {
     /// edits the project.
     /// Complexity: O(conversations) per frame.
     fn ui_ai_sidebar(&mut self, ui: &mut egui::Ui) {
+        // 强制占满 240 点：只写子控件宽度会让父布局按内容收缩，导致侧栏与主区比例失真。
+        // Reserve the full 240 pt: sizing only the children lets the parent shrink the rail and
+        // distorts the sidebar/main ratio.
+        ui.set_min_width(AI_SIDEBAR_W);
+        ui.set_min_height(ui.available_height());
         let active = self.ai_chat.active_conversation();
         let current_count = self.ai_chat.messages.len();
         let current_title = crate::app::AiChatState::conversation_title(&self.ai_chat.messages);
@@ -655,40 +679,35 @@ impl SurfingApp {
             }
         }
 
-        // 快捷指令胶囊：空对话用完整示例，已有对话用继续指令；点击只填入输入框。
-        // Suggestion pills: full examples for an empty chat, continue-prompts afterwards; clicking
-        // only fills the composer.
-        let prompts: &[&str] = if self.ai_chat.messages.is_empty() {
-            &EMPTY_PROMPTS
+        // 快捷指令胶囊：空对话用短标签，已有对话用继续指令；换行而非横向滚动，避免首项被裁掉。
+        // Suggestion pills: short labels while empty, continue-prompts afterwards; they wrap instead
+        // of scrolling horizontally so the first pill is never clipped.
+        let prompts: &[(&str, &str)] = if self.ai_chat.messages.is_empty() {
+            &EMPTY_SUGGESTIONS
         } else {
             &QUICK_PROMPTS
         };
         let mut picked: Option<&str> = None;
-        egui::ScrollArea::horizontal()
-            .id_salt("ai_suggestion_chips")
-            .auto_shrink([false, true])
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    for prompt in prompts {
-                        if ui
-                            .add(
-                                egui::Button::new(
-                                    RichText::new(*prompt)
-                                        .size(theme::FONT_MICRO)
-                                        .color(theme::TEXT_DIM),
-                                )
-                                .fill(theme::PANEL)
-                                .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
-                                .corner_radius(13)
-                                .min_size(egui::vec2(0.0, 26.0)),
-                            )
-                            .clicked()
-                        {
-                            picked = Some(prompt);
-                        }
-                    }
-                });
-            });
+        ui.horizontal_wrapped(|ui| {
+            for (label, prompt) in prompts {
+                if ui
+                    .add(
+                        egui::Button::new(
+                            RichText::new(*label)
+                                .size(theme::FONT_MICRO)
+                                .color(theme::TEXT_DIM),
+                        )
+                        .fill(theme::PANEL)
+                        .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
+                        .corner_radius(13)
+                        .min_size(egui::vec2(0.0, 26.0)),
+                    )
+                    .clicked()
+                {
+                    picked = Some(*prompt);
+                }
+            }
+        });
         if let Some(prompt) = picked {
             self.ai_chat.input = prompt.to_string();
         }
@@ -754,7 +773,7 @@ impl SurfingApp {
 
                 ui.add_space(theme::SPACE_SM);
                 ui.spacing_mut().item_spacing.x = 4.0;
-                ui.horizontal_wrapped(|ui| {
+                ui.horizontal(|ui| {
                     if ui
                         .add(
                             egui::Button::new(
@@ -1071,53 +1090,51 @@ impl SurfingApp {
                             }
                         });
 
-                    let remaining = ui.available_width() - 40.0;
-                    if remaining > 0.0 {
-                        ui.add_space(remaining);
-                    }
-                    if self.ai_chat.pending.is_some() {
-                        if ui
-                            .add(
-                                egui::Button::new(
-                                    RichText::new("■")
-                                        .size(13.0)
-                                        .color(egui::Color32::WHITE),
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if self.ai_chat.pending.is_some() {
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new("■")
+                                            .size(13.0)
+                                            .color(egui::Color32::WHITE),
+                                    )
+                                    .fill(theme::RED)
+                                    .corner_radius(16)
+                                    .min_size(egui::vec2(32.0, 32.0)),
                                 )
-                                .fill(theme::RED)
-                                .corner_radius(16)
-                                .min_size(egui::vec2(32.0, 32.0)),
-                            )
-                            .on_hover_text("停止等待当前回复")
-                            .clicked()
-                        {
-                            stop = true;
-                        }
-                    } else {
-                        let can_send = !self.ai_chat.input.trim().is_empty()
-                            || !self.ai_chat.attachments.is_empty();
-                        let fill = if can_send {
-                            theme::ACCENT
+                                .on_hover_text("停止等待当前回复")
+                                .clicked()
+                            {
+                                stop = true;
+                            }
                         } else {
-                            theme::PANEL_3
-                        };
-                        if ui
-                            .add(
-                                egui::Button::new(
-                                    RichText::new("↑")
-                                        .size(16.0)
-                                        .color(egui::Color32::WHITE),
+                            let can_send = !self.ai_chat.input.trim().is_empty()
+                                || !self.ai_chat.attachments.is_empty();
+                            let fill = if can_send {
+                                theme::ACCENT
+                            } else {
+                                theme::PANEL_3
+                            };
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new("↑")
+                                            .size(16.0)
+                                            .color(egui::Color32::WHITE),
+                                    )
+                                    .fill(fill)
+                                    .corner_radius(16)
+                                    .min_size(egui::vec2(32.0, 32.0)),
                                 )
-                                .fill(fill)
-                                .corner_radius(16)
-                                .min_size(egui::vec2(32.0, 32.0)),
-                            )
-                            .on_hover_text("发送（Ctrl+Enter）")
-                            .clicked()
-                            && can_send
-                        {
-                            send = true;
+                                .on_hover_text("发送（Ctrl+Enter）")
+                                .clicked()
+                                && can_send
+                            {
+                                send = true;
+                            }
                         }
-                    }
+                    });
                 });
             });
 
@@ -1412,10 +1429,11 @@ fn paint_assistant_header(
                     )
                     .frame(false),
                 );
-                theme::paint_dropdown(
+                let openness = state.openness(ui.ctx());
+                theme::paint_dropdown_angle(
                     ui.painter(),
                     egui::pos2(response.rect.right() + 6.0, response.rect.center().y),
-                    state.is_open(),
+                    std::f32::consts::FRAC_PI_2 * (1.0 - openness),
                     theme::TEXT_FAINT,
                 );
                 ui.add_space(10.0);

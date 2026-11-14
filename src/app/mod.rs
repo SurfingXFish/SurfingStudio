@@ -296,15 +296,9 @@ pub struct SurfingApp {
     /// 上一次清理失效项目的时间；避免每帧对全部项目做存在性检查。
     /// Last time missing projects were pruned; avoids checking every path every frame.
     home_project_sweep_at: Instant,
-    /// 主页插件页中被收起的品牌；默认全部展开。
-    /// Brands collapsed on the home plugin page; every brand is expanded by default.
-    pub home_plugin_collapsed: HashSet<String>,
     /// 主页插件页的类别筛选；`None` 表示全部。
     /// Kind filter on the home plugin page; `None` means all.
     pub home_plugin_kind: Option<PluginKind>,
-    /// 主页插件页右侧详情抽屉选中的插件路径；`None` 表示抽屉收起。
-    /// Plugin path selected in the home plugin drawer; `None` keeps the drawer closed.
-    pub home_plugin_selected: Option<PathBuf>,
     /// 独立设置窗口是否打开。
     /// Whether the standalone settings window is open.
     pub settings_open: bool,
@@ -1289,9 +1283,7 @@ impl SurfingApp {
             home_project_info: HashMap::new(),
             home_project_info_rx: None,
             home_project_sweep_at: Instant::now(),
-            home_plugin_collapsed: HashSet::new(),
             home_plugin_kind: None,
-            home_plugin_selected: None,
             settings_open: false,
             settings_page: settings::SettingsPage::default(),
             settings_folder_target: None,

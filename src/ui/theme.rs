@@ -11,7 +11,8 @@
 //! - 设计令牌：`SPACE_*` / `FONT_*` / `RADIUS_*` / `CARD_PAD` / `CONTROL_H` / `FIELD_H`。
 //! - 复用表面与控件：`card_frame` / `sheet_frame` / `floating_frame` / `field_label` /
 //!   `section_title` / `primary_button` / `quiet_button` / `danger_button` / `chip`。
-//! - 下拉指示：`paint_dropdown` / `dropdown_icon` / `dropdown_button` / `dropdown_button_filled`。
+//! - 下拉指示：`DropdownDir` / `dropdown_angle` / `paint_dropdown_angle` / `paint_dropdown_dir` /
+//!   `dropdown_icon` / `dropdown_button` / `dropdown_button_filled`；`DROPDOWN_ANIM_SECS` 为补间时长。
 //! - `level_meter` / `badge` / `toggle_switch` / `menu_button`：主题内的复用绘制。
 //!
 //! Module: ui / theme
@@ -28,7 +29,9 @@
 //! - Design tokens: `SPACE_*` / `FONT_*` / `RADIUS_*` / `CARD_PAD` / `CONTROL_H` / `FIELD_H`.
 //! - Shared surfaces and controls: `card_frame` / `sheet_frame` / `floating_frame` / `field_label` /
 //!   `section_title` / `primary_button` / `quiet_button` / `danger_button` / `chip`.
-//! - Dropdown indicators: `paint_dropdown` / `dropdown_icon` / `dropdown_button` / `dropdown_button_filled`.
+//! - Dropdown indicators: `DropdownDir` / `dropdown_angle` / `paint_dropdown_angle` /
+//!   `paint_dropdown_dir` / `dropdown_icon` / `dropdown_button` / `dropdown_button_filled`;
+//!   `DROPDOWN_ANIM_SECS` is the tween duration.
 //! - `level_meter` / `badge` / `toggle_switch` / `menu_button`: reusable painters owned by the theme.
 
 use eframe::egui::{self, Color32, CornerRadius, FontFamily, Stroke, Vec2};
@@ -126,6 +129,10 @@ pub const CARD_PAD: i8 = 16;
 /// Standard control and form-field heights.
 pub const CONTROL_H: f32 = 28.0;
 pub const FIELD_H: f32 = 36.0;
+
+/// 下拉/折叠箭头的补间时长（秒）。
+/// Tween duration for dropdown/disclosure arrows, in seconds.
+pub const DROPDOWN_ANIM_SECS: f32 = 0.18;
 
 // ----- 窗口 chrome 别名 ----------------------------------------------------
 // Window chrome aliases. They intentionally reuse the IDE palette so the custom title bar,
@@ -529,45 +536,97 @@ pub fn chip(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Response {
 }
 
 /// 所属模块：ui / 主题 / 下拉
-/// 功能：绘制下拉箭头（V 形细线）；展开时朝上，收起时朝下。
-/// 输入：`painter` 绘制器；`center` 箭头中心；`up` 是否朝上；`color` 线条颜色。
+/// 功能：下拉箭头的方向：向下、向左、向右。
+/// 输入：无。
+/// 输出/副作用：无。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: ui / theme / dropdown
+/// Purpose: Direction of a dropdown chevron: down, left or right.
+/// Inputs: none.
+/// Outputs / side effects: none.
+/// Complexity: O(1) time and space.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DropdownDir {
+    Down,
+    Left,
+    Right,
+}
+
+/// 所属模块：ui / 主题 / 下拉
+/// 功能：返回某个方向的箭头角度（弧度）：下 `0`、右 `-π/2`、左 `+π/2`。
+/// 输入：`dir` 方向。
+/// 输出/副作用：角度；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: ui / theme / dropdown
+/// Purpose: Return the chevron angle in radians: down `0`, right `-π/2`, left `+π/2`.
+/// Inputs: `dir`.
+/// Outputs / side effects: the angle; no state change.
+/// Complexity: O(1) time and space.
+pub fn dropdown_angle(dir: DropdownDir) -> f32 {
+    match dir {
+        DropdownDir::Down => 0.0,
+        DropdownDir::Right => -std::f32::consts::FRAC_PI_2,
+        DropdownDir::Left => std::f32::consts::FRAC_PI_2,
+    }
+}
+
+/// 所属模块：ui / 主题 / 下拉
+/// 功能：按角度绘制 V 形箭头；角度从向下的基准旋转，可用于展开/收起的补间动画。
+/// 输入：`painter` 绘制器；`center` 箭头中心；`angle` 弧度；`color` 线条颜色。
 /// 输出/副作用：写入绘制命令；不修改状态。
 /// 复杂度：时间 O(1)，空间 O(1)。
 ///
 /// Module: ui / theme / dropdown
-/// Purpose: Paint a thin V-shaped dropdown chevron; it points up while open and down while closed.
-/// Inputs: `painter`; `center`; `up`; `color`.
+/// Purpose: Paint a V-shaped chevron rotated from the down baseline; the angle can be tweened for
+/// open/close animations.
+/// Inputs: `painter`; `center`; `angle`; `color`.
 /// Outputs / side effects: emits paint commands; no state change.
 /// Complexity: O(1) time and space.
-pub fn paint_dropdown(painter: &egui::Painter, center: egui::Pos2, up: bool, color: Color32) {
-    let half = 4.0;
-    let dy = if up { -2.0 } else { 2.0 };
+pub fn paint_dropdown_angle(
+    painter: &egui::Painter,
+    center: egui::Pos2,
+    angle: f32,
+    color: Color32,
+) {
+    let (sin, cos) = angle.sin_cos();
+    let point =
+        |x: f32, y: f32| egui::pos2(center.x + x * cos - y * sin, center.y + x * sin + y * cos);
     let stroke = egui::Stroke::new(1.5_f32, color);
-    painter.line_segment(
-        [
-            egui::pos2(center.x - half, center.y - dy),
-            egui::pos2(center.x, center.y + dy),
-        ],
-        stroke,
-    );
-    painter.line_segment(
-        [
-            egui::pos2(center.x, center.y + dy),
-            egui::pos2(center.x + half, center.y - dy),
-        ],
-        stroke,
-    );
+    painter.line_segment([point(-4.0, -2.0), point(0.0, 2.0)], stroke);
+    painter.line_segment([point(0.0, 2.0), point(4.0, -2.0)], stroke);
 }
 
 /// 所属模块：ui / 主题 / 下拉
-/// 功能：ComboBox 自定义图标：始终绘制高对比度箭头，展开时翻转，避免默认小三角看不清。
+/// 功能：按方向绘制 V 形箭头。
+/// 输入：`painter`；`center`；`dir` 方向；`color`。
+/// 输出/副作用：写入绘制命令；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: ui / theme / dropdown
+/// Purpose: Paint a V-shaped chevron in one direction.
+/// Inputs: `painter`; `center`; `dir`; `color`.
+/// Outputs / side effects: emits paint commands; no state change.
+/// Complexity: O(1) time and space.
+pub fn paint_dropdown_dir(
+    painter: &egui::Painter,
+    center: egui::Pos2,
+    dir: DropdownDir,
+    color: Color32,
+) {
+    paint_dropdown_angle(painter, center, dropdown_angle(dir), color);
+}
+
+/// 所属模块：ui / 主题 / 下拉
+/// 功能：ComboBox 自定义图标：始终绘制高对比度向下箭头（选择菜单展开方向固定向下）。
 /// 输入：`ui`；`rect` 图标区域；`visuals` 当前控件视觉；`is_open` 弹出层是否展开。
 /// 输出/副作用：只绘制；不修改状态。
 /// 复杂度：时间 O(1)，空间 O(1)。
 ///
 /// Module: ui / theme / dropdown
-/// Purpose: Custom ComboBox icon: always draw a high-contrast chevron and flip it while open, so the
-/// default tiny triangle can never disappear.
+/// Purpose: Custom ComboBox icon: always draw a high-contrast down chevron (select menus always open
+/// downwards).
 /// Inputs: `ui`; `rect`; `visuals`; `is_open`.
 /// Outputs / side effects: paint only; no state change.
 /// Complexity: O(1) time and space.
@@ -575,12 +634,12 @@ pub fn dropdown_icon(
     ui: &egui::Ui,
     rect: egui::Rect,
     visuals: &egui::style::WidgetVisuals,
-    is_open: bool,
+    _is_open: bool,
 ) {
-    paint_dropdown(
+    paint_dropdown_dir(
         ui.painter(),
         rect.center(),
-        is_open,
+        DropdownDir::Down,
         if visuals.fg_stroke.color == Color32::TRANSPARENT {
             TEXT_DIM
         } else {
@@ -671,10 +730,10 @@ fn dropdown_button_impl(
         galley,
         TEXT_DIM,
     );
-    paint_dropdown(
+    paint_dropdown_dir(
         ui.painter(),
         egui::pos2(rect.right() - 10.0, rect.center().y),
-        false,
+        DropdownDir::Down,
         if hovered { TEXT } else { TEXT_DIM },
     );
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
