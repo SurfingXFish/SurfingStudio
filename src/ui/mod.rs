@@ -18,6 +18,7 @@ pub mod export;
 pub mod help;
 pub mod inspector;
 pub mod instrument_picker;
+pub mod markdown;
 pub mod piano_roll;
 pub mod theme;
 pub mod track_render;

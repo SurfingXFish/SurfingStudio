@@ -1,4 +1,4 @@
-//! 所属模块：ui / 导出窗口
+﻿//! 所属模块：ui / 导出窗口
 //! 文件用途：
 //! - 绘制独立导出窗口：摘要、格式、采样与声道、范围、选项与目标路径。
 //! - 桌面使用独立视口，单窗口平台（安卓）退回窗口内模态面板。
@@ -938,6 +938,7 @@ fn export_combo(
     body: impl FnOnce(&mut egui::Ui),
 ) {
     egui::ComboBox::from_id_salt(id)
+        .icon(crate::ui::theme::dropdown_icon)
         .width(ui.available_width().max(120.0))
         .selected_text(selected)
         .show_ui(ui, body);

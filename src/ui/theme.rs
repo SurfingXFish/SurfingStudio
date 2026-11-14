@@ -8,6 +8,11 @@
 //! - `apply_style`：把 IDEA New UI 的配色、圆角、间距与文字尺寸写入全局样式。
 //! - `track_color` / `palette_color` / `hsv_to_rgb`：轨道色与 16×16 片段调色板。
 //! - `with_alpha`：给颜色附加透明度。
+//! - 设计令牌：`SPACE_*` / `FONT_*` / `RADIUS_*` / `CARD_PAD` / `CONTROL_H` / `FIELD_H`。
+//! - 复用表面与控件：`card_frame` / `sheet_frame` / `floating_frame` / `field_label` /
+//!   `section_title` / `primary_button` / `quiet_button` / `danger_button` / `chip`。
+//! - 下拉指示：`DropdownDir` / `dropdown_angle` / `paint_dropdown_angle` / `paint_dropdown_dir` /
+//!   `dropdown_icon` / `dropdown_button` / `dropdown_button_filled`；`DROPDOWN_ANIM_SECS` 为补间时长。
 //! - `level_meter` / `badge` / `toggle_switch` / `menu_button`：主题内的复用绘制。
 //!
 //! Module: ui / theme
@@ -21,6 +26,12 @@
 //! - `apply_style`: write the IDEA New UI colors, radii, spacing and text sizes into the global style.
 //! - `track_color` / `palette_color` / `hsv_to_rgb`: track colors and the 16×16 clip palette.
 //! - `with_alpha`: attach alpha to a color.
+//! - Design tokens: `SPACE_*` / `FONT_*` / `RADIUS_*` / `CARD_PAD` / `CONTROL_H` / `FIELD_H`.
+//! - Shared surfaces and controls: `card_frame` / `sheet_frame` / `floating_frame` / `field_label` /
+//!   `section_title` / `primary_button` / `quiet_button` / `danger_button` / `chip`.
+//! - Dropdown indicators: `DropdownDir` / `dropdown_angle` / `paint_dropdown_angle` /
+//!   `paint_dropdown_dir` / `dropdown_icon` / `dropdown_button` / `dropdown_button_filled`;
+//!   `DROPDOWN_ANIM_SECS` is the tween duration.
 //! - `level_meter` / `badge` / `toggle_switch` / `menu_button`: reusable painters owned by the theme.
 
 use eframe::egui::{self, Color32, CornerRadius, FontFamily, Stroke, Vec2};
@@ -84,6 +95,44 @@ pub const RED: Color32 = Color32::from_rgb(219, 92, 92);
 /// 次强调紫。
 /// Secondary violet.
 pub const VIOLET: Color32 = Color32::from_rgb(177, 138, 230);
+
+// ----- 设计令牌：间距 / 字号 / 圆角 ----------------------------------------
+// Design tokens: spacing, type scale and radii.
+// 主页、Agent 资料库与 AI 面板统一按这套令牌取间距与字号，避免同类页面各自写死数值。
+// The home pages, Agent library and AI panel share these tokens so similar pages cannot drift.
+
+/// 间距阶梯：4 / 8 / 12 / 16 / 24 / 32。
+/// Spacing scale: 4 / 8 / 12 / 16 / 24 / 32.
+pub const SPACE_XS: f32 = 4.0;
+pub const SPACE_SM: f32 = 8.0;
+pub const SPACE_MD: f32 = 12.0;
+pub const SPACE_LG: f32 = 16.0;
+pub const SPACE_XL: f32 = 24.0;
+pub const SPACE_2XL: f32 = 32.0;
+
+/// 字号阶梯：小字 / 标签 / 正文 / 小节标题 / 页面标题。
+/// Type scale: micro / label / body / section / page title.
+pub const FONT_MICRO: f32 = 10.5;
+pub const FONT_LABEL: f32 = 11.0;
+pub const FONT_BODY: f32 = 12.5;
+pub const FONT_SECTION: f32 = 15.0;
+pub const FONT_TITLE: f32 = 18.0;
+pub const FONT_PAGE: f32 = 22.0;
+
+/// 卡片与容器圆角、内边距。
+/// Card and sheet radii plus inner padding.
+pub const RADIUS_CARD: u8 = 10;
+pub const RADIUS_SHEET: u8 = 12;
+pub const CARD_PAD: i8 = 16;
+
+/// 标准控件与表单输入高度。
+/// Standard control and form-field heights.
+pub const CONTROL_H: f32 = 28.0;
+pub const FIELD_H: f32 = 36.0;
+
+/// 下拉/折叠箭头的补间时长（秒）。
+/// Tween duration for dropdown/disclosure arrows, in seconds.
+pub const DROPDOWN_ANIM_SECS: f32 = 0.18;
 
 // ----- 窗口 chrome 别名 ----------------------------------------------------
 // Window chrome aliases. They intentionally reuse the IDE palette so the custom title bar,
@@ -303,6 +352,393 @@ pub fn with_alpha(color: Color32, alpha: u8) -> Color32 {
     Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)
 }
 
+/// 所属模块：ui / 主题 / 卡片
+/// 功能：返回统一的行/卡片表面（`PANEL_2`、10 点圆角、16 点内边距、无边框）。
+/// 输入：无。
+/// 输出/副作用：新的 `Frame`；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: ui / theme / card
+/// Purpose: Return the shared row/card surface (`PANEL_2`, 10 pt radius, 16 pt padding, no border).
+/// Inputs: none.
+/// Outputs / side effects: a new `Frame`; no state change.
+/// Complexity: O(1) time and space.
+pub fn card_frame() -> egui::Frame {
+    egui::Frame::NONE
+        .fill(PANEL_2)
+        .corner_radius(RADIUS_CARD)
+        .inner_margin(egui::Margin::same(CARD_PAD))
+}
+
+/// 所属模块：ui / 主题 / 卡片
+/// 功能：返回页面级容器表面（`PANEL`、12 点圆角、16 点内边距、无边框），用于列表与编辑区。
+/// 输入：无。
+/// 输出/副作用：新的 `Frame`；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: ui / theme / card
+/// Purpose: Return the page-level sheet surface (`PANEL`, 12 pt radius, 16 pt padding, no border)
+/// used by lists and editors.
+/// Inputs: none.
+/// Outputs / side effects: a new `Frame`; no state change.
+/// Complexity: O(1) time and space.
+pub fn sheet_frame() -> egui::Frame {
+    egui::Frame::NONE
+        .fill(PANEL)
+        .corner_radius(RADIUS_SHEET)
+        .inner_margin(egui::Margin::same(CARD_PAD))
+}
+
+/// 所属模块：ui / 主题 / 卡片
+/// 功能：返回浮动面板表面：`PANEL` 底、12 点圆角与柔和投影，让 AI 面板从编辑区里“浮”起来。
+/// 输入：无。
+/// 输出/副作用：新的 `Frame`；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: ui / theme / card
+/// Purpose: Return the floating panel surface: `PANEL` fill, 12 pt radius and a soft drop shadow so
+/// the AI panel lifts off the editor.
+/// Inputs: none.
+/// Outputs / side effects: a new `Frame`; no state change.
+/// Complexity: O(1) time and space.
+pub fn floating_frame() -> egui::Frame {
+    sheet_frame().shadow(egui::epaint::Shadow {
+        offset: [0, 6],
+        blur: 24,
+        spread: 0,
+        color: Color32::from_black_alpha(140),
+    })
+}
+
+/// 所属模块：ui / 主题 / 文字
+/// 功能：绘制表单字段标签（11 点、次要色，位于输入框上方）。
+/// 输入：`ui`；`text` 标签文本。
+/// 输出/副作用：只绘制；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: ui / theme / text
+/// Purpose: Draw a form-field label (11 pt, secondary color, above the input).
+/// Inputs: `ui`; `text`.
+/// Outputs / side effects: paint only; no state change.
+/// Complexity: O(1) time and space.
+pub fn field_label(ui: &mut egui::Ui, text: &str) {
+    ui.label(egui::RichText::new(text).size(FONT_LABEL).color(TEXT_DIM));
+}
+
+/// 所属模块：ui / 主题 / 文字
+/// 功能：绘制小节标题（15 点、主文本、字重加强）。
+/// 输入：`ui`；`text` 标题文本。
+/// 输出/副作用：只绘制；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: ui / theme / text
+/// Purpose: Draw a section heading (15 pt, primary text, strong).
+/// Inputs: `ui`; `text`.
+/// Outputs / side effects: paint only; no state change.
+/// Complexity: O(1) time and space.
+pub fn section_title(ui: &mut egui::Ui, text: &str) {
+    ui.label(
+        egui::RichText::new(text)
+            .size(FONT_SECTION)
+            .strong()
+            .color(TEXT),
+    );
+}
+
+/// 所属模块：ui / 主题 / 按钮
+/// 功能：绘制主按钮：蓝色实底、白字、8 点圆角，一屏只保留一个。
+/// 输入：`ui`；`label` 文本。
+/// 输出/副作用：返回点击响应；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: ui / theme / button
+/// Purpose: Draw the primary button: solid accent fill, white text, 8 pt radius; one per view.
+/// Inputs: `ui`; `label`.
+/// Outputs / side effects: the click response; no state change.
+/// Complexity: O(1) time and space.
+pub fn primary_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    ui.add(
+        egui::Button::new(
+            egui::RichText::new(label)
+                .size(FONT_BODY)
+                .color(Color32::WHITE),
+        )
+        .fill(ACCENT)
+        .corner_radius(8)
+        .min_size(egui::Vec2::new(72.0, CONTROL_H)),
+    )
+}
+
+/// 所属模块：ui / 主题 / 按钮
+/// 功能：绘制文字按钮：无背景、次要色，用于取消/导出等次要操作。
+/// 输入：`ui`；`label` 文本。
+/// 输出/副作用：返回点击响应；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: ui / theme / button
+/// Purpose: Draw a text button (no fill, secondary color) for cancel/export-style actions.
+/// Inputs: `ui`; `label`.
+/// Outputs / side effects: the click response; no state change.
+/// Complexity: O(1) time and space.
+pub fn quiet_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    ui.add(
+        egui::Button::new(egui::RichText::new(label).size(FONT_LABEL).color(TEXT_DIM))
+            .frame(false)
+            .min_size(egui::Vec2::new(0.0, CONTROL_H)),
+    )
+}
+
+/// 所属模块：ui / 主题 / 按钮
+/// 功能：绘制危险文字按钮（红色文字、无背景）。
+/// 输入：`ui`；`label` 文本。
+/// 输出/副作用：返回点击响应；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: ui / theme / button
+/// Purpose: Draw a danger text button (red text, no fill).
+/// Inputs: `ui`; `label`.
+/// Outputs / side effects: the click response; no state change.
+/// Complexity: O(1) time and space.
+pub fn danger_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    ui.add(
+        egui::Button::new(egui::RichText::new(label).size(FONT_LABEL).color(RED))
+            .frame(false)
+            .min_size(egui::Vec2::new(0.0, CONTROL_H)),
+    )
+}
+
+/// 所属模块：ui / 主题 / 按钮
+/// 功能：绘制筛选胶囊：选中时蓝底白字，未选中时浅表面、次要文字，无边框。
+/// 输入：`ui`；`label` 文本；`selected` 是否选中。
+/// 输出/副作用：返回点击响应；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: ui / theme / chip
+/// Purpose: Draw a filter chip: accent fill with white text when selected, a quiet surface otherwise,
+/// and no border.
+/// Inputs: `ui`; `label`; `selected`.
+/// Outputs / side effects: the click response; no state change.
+/// Complexity: O(1) time and space.
+pub fn chip(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Response {
+    let (fill, color) = if selected {
+        (ACCENT_DARK, Color32::WHITE)
+    } else {
+        (PANEL_2, TEXT_DIM)
+    };
+    ui.add(
+        egui::Button::new(egui::RichText::new(label).size(FONT_LABEL).color(color))
+            .fill(fill)
+            .stroke(egui::Stroke::NONE)
+            .corner_radius(8)
+            .min_size(egui::Vec2::new(0.0, 26.0)),
+    )
+    .on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// 所属模块：ui / 主题 / 下拉
+/// 功能：下拉箭头的方向：向下、向左、向右。
+/// 输入：无。
+/// 输出/副作用：无。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: ui / theme / dropdown
+/// Purpose: Direction of a dropdown chevron: down, left or right.
+/// Inputs: none.
+/// Outputs / side effects: none.
+/// Complexity: O(1) time and space.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DropdownDir {
+    Down,
+    Left,
+    Right,
+}
+
+/// 所属模块：ui / 主题 / 下拉
+/// 功能：返回某个方向的箭头角度（弧度）：下 `0`、右 `-π/2`、左 `+π/2`。
+/// 输入：`dir` 方向。
+/// 输出/副作用：角度；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: ui / theme / dropdown
+/// Purpose: Return the chevron angle in radians: down `0`, right `-π/2`, left `+π/2`.
+/// Inputs: `dir`.
+/// Outputs / side effects: the angle; no state change.
+/// Complexity: O(1) time and space.
+pub fn dropdown_angle(dir: DropdownDir) -> f32 {
+    match dir {
+        DropdownDir::Down => 0.0,
+        DropdownDir::Right => -std::f32::consts::FRAC_PI_2,
+        DropdownDir::Left => std::f32::consts::FRAC_PI_2,
+    }
+}
+
+/// 所属模块：ui / 主题 / 下拉
+/// 功能：按角度绘制 V 形箭头；角度从向下的基准旋转，可用于展开/收起的补间动画。
+/// 输入：`painter` 绘制器；`center` 箭头中心；`angle` 弧度；`color` 线条颜色。
+/// 输出/副作用：写入绘制命令；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: ui / theme / dropdown
+/// Purpose: Paint a V-shaped chevron rotated from the down baseline; the angle can be tweened for
+/// open/close animations.
+/// Inputs: `painter`; `center`; `angle`; `color`.
+/// Outputs / side effects: emits paint commands; no state change.
+/// Complexity: O(1) time and space.
+pub fn paint_dropdown_angle(
+    painter: &egui::Painter,
+    center: egui::Pos2,
+    angle: f32,
+    color: Color32,
+) {
+    let (sin, cos) = angle.sin_cos();
+    let point =
+        |x: f32, y: f32| egui::pos2(center.x + x * cos - y * sin, center.y + x * sin + y * cos);
+    let stroke = egui::Stroke::new(1.5_f32, color);
+    painter.line_segment([point(-4.0, -2.0), point(0.0, 2.0)], stroke);
+    painter.line_segment([point(0.0, 2.0), point(4.0, -2.0)], stroke);
+}
+
+/// 所属模块：ui / 主题 / 下拉
+/// 功能：按方向绘制 V 形箭头。
+/// 输入：`painter`；`center`；`dir` 方向；`color`。
+/// 输出/副作用：写入绘制命令；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: ui / theme / dropdown
+/// Purpose: Paint a V-shaped chevron in one direction.
+/// Inputs: `painter`; `center`; `dir`; `color`.
+/// Outputs / side effects: emits paint commands; no state change.
+/// Complexity: O(1) time and space.
+pub fn paint_dropdown_dir(
+    painter: &egui::Painter,
+    center: egui::Pos2,
+    dir: DropdownDir,
+    color: Color32,
+) {
+    paint_dropdown_angle(painter, center, dropdown_angle(dir), color);
+}
+
+/// 所属模块：ui / 主题 / 下拉
+/// 功能：ComboBox 自定义图标：始终绘制高对比度向下箭头（选择菜单展开方向固定向下）。
+/// 输入：`ui`；`rect` 图标区域；`visuals` 当前控件视觉；`is_open` 弹出层是否展开。
+/// 输出/副作用：只绘制；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: ui / theme / dropdown
+/// Purpose: Custom ComboBox icon: always draw a high-contrast down chevron (select menus always open
+/// downwards).
+/// Inputs: `ui`; `rect`; `visuals`; `is_open`.
+/// Outputs / side effects: paint only; no state change.
+/// Complexity: O(1) time and space.
+pub fn dropdown_icon(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    visuals: &egui::style::WidgetVisuals,
+    _is_open: bool,
+) {
+    paint_dropdown_dir(
+        ui.painter(),
+        rect.center(),
+        DropdownDir::Down,
+        if visuals.fg_stroke.color == Color32::TRANSPARENT {
+            TEXT_DIM
+        } else {
+            visuals.fg_stroke.color
+        },
+    );
+}
+
+/// 所属模块：ui / 主题 / 下拉
+/// 功能：绘制一个带可见下拉箭头的文本按钮，用于工具栏里的模型/推理等选择器。
+/// 输入：`ui`；`label` 当前值；`with_dot` 是否在文字前画一个强调色圆点。
+/// 输出/副作用：返回点击响应；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: ui / theme / dropdown
+/// Purpose: Draw a text button with a visible dropdown chevron for toolbar selectors such as model
+/// and reasoning.
+/// Inputs: `ui`; `label`; `with_dot`.
+/// Outputs / side effects: the click response; no state change.
+/// Complexity: O(1) time and space.
+pub fn dropdown_button(ui: &mut egui::Ui, label: &str, with_dot: bool) -> egui::Response {
+    dropdown_button_impl(ui, label, with_dot, None)
+}
+
+/// 所属模块：ui / 主题 / 下拉
+/// 功能：绘制一个填充底色的下拉按钮，用于扫描菜单与乐器选择器。
+/// 输入：`ui`；`label` 文本。
+/// 输出/副作用：返回点击响应；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: ui / theme / dropdown
+/// Purpose: Draw a filled dropdown button for scan menus and instrument pickers.
+/// Inputs: `ui`; `label`.
+/// Outputs / side effects: the click response; no state change.
+/// Complexity: O(1) time and space.
+pub fn dropdown_button_filled(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    dropdown_button_impl(ui, label, false, Some(PANEL_2))
+}
+
+/// 所属模块：ui / 主题 / 下拉
+/// 功能：下拉按钮的共用实现：文字 + 预留箭头区域 + 悬停底色。
+/// 输入：`ui`；`label`；`with_dot`；`fill`（`None` 表示透明）。
+/// 输出/副作用：分配矩形并绘制；返回点击响应。
+/// 复杂度：时间 O(文本长度)，空间 O(1)。
+///
+/// Module: ui / theme / dropdown
+/// Purpose: Shared dropdown-button implementation: text + reserved chevron area + hover fill.
+/// Inputs: `ui`; `label`; `with_dot`; `fill` (`None` means transparent).
+/// Outputs / side effects: allocates and paints; returns the click response.
+/// Complexity: O(text length) time and O(1) space.
+fn dropdown_button_impl(
+    ui: &mut egui::Ui,
+    label: &str,
+    with_dot: bool,
+    fill: Option<Color32>,
+) -> egui::Response {
+    let galley =
+        egui::WidgetText::from(egui::RichText::new(label).size(FONT_LABEL).color(TEXT_DIM))
+            .into_galley(
+                ui,
+                Some(egui::TextWrapMode::Extend),
+                f32::INFINITY,
+                egui::TextStyle::Button,
+            );
+    let dot_width = if with_dot { 10.0 } else { 0.0 };
+    let width = galley.size().x + dot_width + 30.0;
+    let (rect, response) =
+        ui.allocate_exact_size(egui::Vec2::new(width, CONTROL_H), egui::Sense::click());
+    let hovered = response.hovered();
+    if let Some(fill) = fill {
+        ui.painter().rect_filled(
+            rect,
+            egui::CornerRadius::from(8),
+            if hovered { PANEL_3 } else { fill },
+        );
+    } else if hovered {
+        ui.painter()
+            .rect_filled(rect, egui::CornerRadius::from(6), PANEL_3);
+    }
+    let mut text_left = rect.left() + 9.0;
+    if with_dot {
+        ui.painter()
+            .circle_filled(egui::pos2(text_left + 3.0, rect.center().y), 2.5, ACCENT);
+        text_left += dot_width;
+    }
+    ui.painter().galley(
+        egui::pos2(text_left, rect.center().y - galley.size().y * 0.5),
+        galley,
+        TEXT_DIM,
+    );
+    paint_dropdown_dir(
+        ui.painter(),
+        egui::pos2(rect.right() - 10.0, rect.center().y),
+        DropdownDir::Down,
+        if hovered { TEXT } else { TEXT_DIM },
+    );
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
 /// Draw a horizontal or vertical peak meter.
 pub fn level_meter(painter: &egui::Painter, rect: egui::Rect, level: f32, vertical: bool) {
     painter.rect_filled(rect, CornerRadius::from(2), BG_DEEP);
@@ -330,11 +766,12 @@ pub fn level_meter(painter: &egui::Painter, rect: egui::Rect, level: f32, vertic
 }
 
 pub fn badge(ui: &mut egui::Ui, text: &str, color: Color32) {
+    // 标签只做低饱和底色，不再加描边：避免页面出现一圈圈细边框。
+    // Tags use a low-saturation fill without a stroke so pages do not fill up with hairlines.
     egui::Frame::NONE
-        .fill(with_alpha(color, 32))
-        .stroke(Stroke::new(1.0_f32, with_alpha(color, 130)))
-        .corner_radius(4)
-        .inner_margin(egui::Margin::symmetric(5, 1))
+        .fill(with_alpha(color, 28))
+        .corner_radius(6)
+        .inner_margin(egui::Margin::symmetric(6, 2))
         .show(ui, |ui| {
             ui.label(egui::RichText::new(text).color(color).size(10.0));
         });

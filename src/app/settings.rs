@@ -1,4 +1,4 @@
-//! 所属模块：app / 全局设置
+﻿//! 所属模块：app / 全局设置
 //! 文件用途：
 //! - 定义可持久化的全局设置：界面缩放、项目列表、存储、音频、控制器、渲染、插件与收藏。
 //! - 读写本机配置文件（`%APPDATA%/SurfingStudio/settings.json` 或对应平台目录）。
@@ -3230,6 +3230,7 @@ fn settings_combo(
         .inner_margin(egui::Margin::symmetric(8, 2))
         .show(ui, |ui| {
             egui::ComboBox::from_id_salt(id)
+                .icon(crate::ui::theme::dropdown_icon)
                 .selected_text(selected)
                 .show_ui(ui, add);
         });
