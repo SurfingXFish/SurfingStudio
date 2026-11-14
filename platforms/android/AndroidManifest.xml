@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <!-- 所属模块：platforms/android / 应用清单
      文件用途：声明 NativeActivity 启动的应用与桌面入口；SAF 需要的 `MainActivity` 子类随
      `classes.dex` 一起打包，因此 hasCode=true。
@@ -8,7 +8,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.surfingstudio.app"
     android:versionCode="10"
-    android:versionName="1.3.3a">
+    android:versionName="1.3.4a">
 
     <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="35" />
 
