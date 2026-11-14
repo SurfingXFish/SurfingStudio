@@ -2,7 +2,7 @@
 //! 文件用途：
 //! - 绘制主页：左侧为软件图标/名称/版本、项目/模板/插件/提示菜单与底部设置入口；右侧为具体内容。
 //! - 项目页按最近保存时间列出全部打开过的工程，自动清理失效路径，并可下拉查看工程信息与历史版本。
-//! - 插件页按品牌下拉分组（默认展开），乐器在上、效果器在下，行内显示类型标签并可下拉查看详情。
+//! - 插件页按类别胶囊筛选、按品牌分组，行内只保留名称/厂商/格式与一个类别标签，详情在右侧抽屉。
 //! - 模板页与提示页保持原有内容。
 //!
 //! 函数清单：
@@ -17,7 +17,8 @@
 //! - `SurfingApp::open_recent_project` / `request_project_from_template`：打开项目 / 从模板创建。
 //! - `load_project_summary` / `format_bytes` / `format_version_name`：工程摘要与展示文本。
 //! - `home_logo` / `home_nav_item` / `home_nav_icon` / `home_page_label`：侧栏控件。
-//! - `ui_home_project_row` / `plugin_brand_header` / `home_plugin_row` / `paint_chevron` / `path_hash` / `project_display_name`：列表行与命名。
+//! - `ui_home_project_row` / `plugin_brand_header` / `home_plugin_row` / `plugin_detail_drawer` /
+//!   `plugin_detail_field` / `paint_chevron` / `path_hash` / `project_display_name`：列表行与命名。
 //! - `template_card` / `example_card` / `template_family_filter` / `template_filter_chip`：模板与范例卡片。
 //!
 //! Module: app / home page
@@ -26,8 +27,8 @@
 //!   tips menu and a settings entry at the bottom; the right column shows the selected content.
 //! - The projects page lists every opened project by last-saved time, prunes missing paths and
 //!   exposes project info plus history versions in a dropdown.
-//! - The plugins page groups plugins by brand (expanded by default), instruments first and effects
-//!   below, with type tags and per-plugin detail dropdowns.
+//! - The plugins page filters by kind chips, groups by brand, keeps only name/vendor/format plus one
+//!   kind tag per row, and shows the details in a right-hand drawer.
 //! - The templates and tips pages keep their previous content.
 //!
 //! Functions:
@@ -40,7 +41,8 @@
 //! - `SurfingApp::open_recent_project` / `request_project_from_template`: open a project / create from a template.
 //! - `load_project_summary` / `format_bytes` / `format_version_name`: project summary and display text.
 //! - `home_logo` / `home_nav_item` / `home_nav_icon` / `home_page_label`: sidebar widgets.
-//! - `home_project_row` / `plugin_brand_header` / `home_plugin_row` / `plugin_tag` / `path_hash` / `project_display_name`: rows and names.
+//! - `home_project_row` / `plugin_brand_header` / `home_plugin_row` / `plugin_detail_drawer` /
+//!   `plugin_detail_field` / `path_hash` / `project_display_name`: rows and names.
 //! - `template_card` / `example_card` / `template_family_filter` / `template_filter_chip`: template and example cards.
 
 use super::panels::{icon_button, paint_gear, paint_studio_logo};
@@ -66,19 +68,23 @@ const NAV_H: f32 = 34.0;
 const HOME_PAD: i8 = 24;
 /// 项目行高度（逻辑点）。
 /// Height of one project row in logical points.
-const PROJECT_ROW_H: f32 = 52.0;
+const PROJECT_ROW_H: f32 = 56.0;
 /// 插件品牌行高度（逻辑点）。
 /// Height of one plugin brand header in logical points.
-const PLUGIN_BRAND_H: f32 = 34.0;
+const PLUGIN_BRAND_H: f32 = 40.0;
 /// 插件行高度（逻辑点）。
 /// Height of one plugin row in logical points.
-const PLUGIN_ROW_H: f32 = 40.0;
-/// 插件行名称列宽（逻辑点）：固定宽度让右侧标签纵向对齐。
-/// Width of the plugin name column in logical points; a fixed width keeps tags aligned.
-const PLUGIN_NAME_W: f32 = 210.0;
-/// 主页顶部标题字号（逻辑点）。
-/// Home page heading size in logical points.
-const HOME_TITLE_SIZE: f32 = 19.0;
+const PLUGIN_ROW_H: f32 = 52.0;
+/// 插件详情抽屉最小/最大宽度（逻辑点）。
+/// Minimum and maximum width of the plugin detail drawer in logical points.
+const PLUGIN_DRAWER_MIN_W: f32 = 280.0;
+const PLUGIN_DRAWER_MAX_W: f32 = 340.0;
+/// 插件列表在抽屉打开时保留的最小宽度（逻辑点）。
+/// Minimum list width kept while the detail drawer is open.
+const PLUGIN_LIST_MIN_W: f32 = 320.0;
+/// 主页顶部标题字号（逻辑点），与 Agent 资料库页头统一。
+/// Home page heading size in logical points; matches the Agent library header.
+const HOME_TITLE_SIZE: f32 = 22.0;
 /// 侧栏软件图标边长（逻辑点）。
 /// Sidebar logo side length in logical points.
 const HOME_LOGO_SIZE: f32 = 32.0;
@@ -377,30 +383,28 @@ impl SurfingApp {
             // Place the search field first (it takes the space left of the buttons); the button
             // group is then right-aligned so the RTL layout cannot affect the text input.
             let buttons_width = 306.0;
-            let search_width = (ui.available_width() - buttons_width - 12.0).max(160.0);
+            let search_width = (ui.available_width() - buttons_width - theme::SPACE_MD).max(160.0);
             ui.add_sized(
-                [search_width, 28.0],
+                [search_width, 32.0],
                 egui::TextEdit::singleline(&mut self.home_search)
                     .hint_text("搜索项目")
                     .desired_width(search_width),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let new_project = egui::Button::new(
-                    egui::RichText::new("新建项目")
-                        .size(12.0)
-                        .color(egui::Color32::WHITE),
-                )
-                .fill(theme::ACCENT)
-                .min_size(egui::vec2(84.0, 28.0));
-                if ui
-                    .add(new_project)
+                if theme::primary_button(ui, "新建项目")
                     .on_hover_text(self.settings.shortcut_label(ShortcutAction::New))
                     .clicked()
                 {
                     self.request_new_project();
                 }
                 if ui
-                    .add(egui::Button::new("打开项目").min_size(egui::vec2(84.0, 28.0)))
+                    .add(
+                        egui::Button::new(egui::RichText::new("打开项目").size(theme::FONT_BODY))
+                            .fill(theme::PANEL_2)
+                            .stroke(egui::Stroke::NONE)
+                            .corner_radius(8)
+                            .min_size(egui::vec2(84.0, theme::CONTROL_H)),
+                    )
                     .on_hover_text(self.settings.shortcut_label(ShortcutAction::Open))
                     .clicked()
                 {
@@ -411,9 +415,11 @@ impl SurfingApp {
                         self.can_resume_project,
                         egui::Button::new(
                             egui::RichText::new("继续当前工程")
-                                .size(11.0)
+                                .size(theme::FONT_LABEL)
                                 .color(theme::TEXT_DIM),
-                        ),
+                        )
+                        .frame(false)
+                        .min_size(egui::vec2(0.0, theme::CONTROL_H)),
                     )
                     .on_hover_text(if self.can_resume_project {
                         "返回最近使用的工程窗口"
@@ -426,7 +432,7 @@ impl SurfingApp {
                 }
             });
         });
-        ui.add_space(10.0);
+        ui.add_space(theme::SPACE_MD);
 
         let filter = self.home_search.trim().to_lowercase();
         let mut entries: Vec<(PathBuf, SystemTime)> = self
@@ -762,7 +768,7 @@ impl SurfingApp {
         }
         let painter = ui.painter();
         if hovered {
-            painter.rect_filled(rect, egui::CornerRadius::from(4), theme::PANEL_2);
+            painter.rect_filled(rect, egui::CornerRadius::from(8), theme::PANEL_2);
         }
         let icon_rect = egui::Rect::from_min_size(
             egui::pos2(rect.left() + 6.0, rect.center().y - 12.0),
@@ -901,10 +907,9 @@ impl SurfingApp {
         let summary = self.home_project_info.get(path).cloned();
         let mut open_version: Option<PathBuf> = None;
         egui::Frame::NONE
-            .fill(theme::PANEL)
-            .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
-            .corner_radius(5)
-            .inner_margin(egui::Margin::symmetric(12, 9))
+            .fill(theme::PANEL_2)
+            .corner_radius(theme::RADIUS_CARD)
+            .inner_margin(egui::Margin::same(theme::CARD_PAD))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
@@ -1129,14 +1134,14 @@ impl SurfingApp {
 
         let search_width = ui.available_width().max(160.0);
         ui.add_sized(
-            [search_width, 28.0],
+            [search_width, 32.0],
             egui::TextEdit::singleline(&mut self.home_template_search)
                 .hint_text("搜索风格、标签或音色")
                 .desired_width(search_width),
         );
-        ui.add_space(8.0);
+        ui.add_space(theme::SPACE_SM);
         template_family_filter(ui, &mut self.home_template_family);
-        ui.add_space(10.0);
+        ui.add_space(theme::SPACE_MD);
 
         let filter = self.home_template_search.trim().to_lowercase();
         let family = self.home_template_family;
@@ -1276,7 +1281,7 @@ impl SurfingApp {
     /// Outputs / side effects: edits the search text and expansion state; may start a plugin scan.
     /// Complexity: O(visible plugins + brands) per frame.
     fn ui_home_plugins(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(2.0);
+        ui.add_space(theme::SPACE_XS);
         ui.label(
             egui::RichText::new("插件")
                 .size(HOME_TITLE_SIZE)
@@ -1284,63 +1289,79 @@ impl SurfingApp {
                 .color(theme::TEXT),
         );
         ui.label(
-            egui::RichText::new(
-                "按品牌查看已扫描的插件：乐器在上、效果器在下，点击“详情”查看路径与格式。",
-            )
-            .size(10.5)
-            .color(theme::TEXT_DIM),
+            egui::RichText::new("按品牌浏览已扫描的插件；选择一行后在右侧查看路径与能力。")
+                .size(theme::FONT_MICRO)
+                .color(theme::TEXT_DIM),
         );
-        ui.add_space(12.0);
+        ui.add_space(theme::SPACE_LG);
 
+        // 工具栏只保留类别胶囊与一个“扫描插件”下拉，避免搜索框和三个按钮挤在一行。
+        // The toolbar keeps only kind chips and one scan menu, so the search field and three scan
+        // buttons no longer compete for one row.
         ui.horizontal(|ui| {
-            // 搜索框在左、扫描按钮在右，与项目页保持一致。
-            // The search field sits on the left and the scan buttons on the right, matching the
-            // projects page.
-            let buttons_width = 300.0;
-            let search_width = (ui.available_width() - buttons_width - 12.0).max(160.0);
-            ui.add_sized(
-                [search_width, 28.0],
-                egui::TextEdit::singleline(&mut self.home_plugin_search)
-                    .hint_text("搜索插件、品牌或类型")
-                    .desired_width(search_width),
-            );
+            for (kind, label) in [
+                (None, "全部"),
+                (Some(PluginKind::Instrument), "乐器"),
+                (Some(PluginKind::Effect), "效果器"),
+            ] {
+                if theme::chip(ui, label, self.home_plugin_kind == kind).clicked() {
+                    self.home_plugin_kind = kind;
+                }
+                ui.add_space(theme::SPACE_XS);
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .add_enabled(!self.scanning, egui::Button::new("扫描全部"))
-                    .clicked()
-                {
-                    self.start_scan();
-                }
-                if ui
-                    .add_enabled(!self.scanning, egui::Button::new("仅 VST3"))
-                    .clicked()
-                {
-                    self.scan_vst3_only();
-                }
-                if ui
-                    .add_enabled(!self.scanning, egui::Button::new("仅 VST2 / VST"))
-                    .clicked()
-                {
-                    self.scan_legacy_only();
-                }
                 if self.scanning {
                     ui.add(egui::Spinner::new().size(14.0));
+                    ui.add_space(theme::SPACE_SM);
                 }
+                let scan = ui.add(
+                    egui::Button::new(
+                        egui::RichText::new("扫描插件  ▾")
+                            .size(theme::FONT_LABEL)
+                            .color(theme::TEXT_DIM),
+                    )
+                    .fill(theme::PANEL_2)
+                    .stroke(egui::Stroke::NONE)
+                    .corner_radius(8)
+                    .min_size(egui::vec2(0.0, theme::CONTROL_H)),
+                );
+                egui::Popup::menu(&scan).show(|ui| {
+                    ui.set_min_width(150.0);
+                    if theme::menu_button(ui, "扫描全部", "").clicked() {
+                        self.start_scan();
+                        ui.close();
+                    }
+                    if theme::menu_button(ui, "仅 VST3", "").clicked() {
+                        self.scan_vst3_only();
+                        ui.close();
+                    }
+                    if theme::menu_button(ui, "仅 VST2 / VST", "").clicked() {
+                        self.scan_legacy_only();
+                        ui.close();
+                    }
+                });
             });
         });
-        ui.add_space(8.0);
+        ui.add_space(theme::SPACE_MD);
+        ui.add_sized(
+            [ui.available_width(), 32.0],
+            egui::TextEdit::singleline(&mut self.home_plugin_search)
+                .hint_text("搜索插件、品牌或类型")
+                .desired_width(f32::INFINITY),
+        );
+        ui.add_space(theme::SPACE_SM);
 
         let filter = self.home_plugin_search.trim().to_lowercase();
+        let kind_filter = self.home_plugin_kind;
         let plugins: Vec<ScannedPlugin> = self
             .plugin_cache
             .iter()
             .filter(|plugin| {
-                if filter.is_empty() {
-                    return true;
-                }
-                plugin.name.to_lowercase().contains(&filter)
-                    || plugin.vendor.to_lowercase().contains(&filter)
-                    || plugin.category.to_lowercase().contains(&filter)
+                kind_filter.is_none_or(|kind| plugin.kind == kind)
+                    && (filter.is_empty()
+                        || plugin.name.to_lowercase().contains(&filter)
+                        || plugin.vendor.to_lowercase().contains(&filter)
+                        || plugin.category.to_lowercase().contains(&filter))
             })
             .cloned()
             .collect();
@@ -1352,50 +1373,50 @@ impl SurfingApp {
             .iter()
             .filter(|plugin| plugin.kind == PluginKind::Effect)
             .count();
-
         ui.label(
             egui::RichText::new(format!(
-                "共 {} 个插件：乐器 {instruments} · 效果器 {effects} · 未知 {}",
-                plugins.len(),
-                plugins.len().saturating_sub(instruments + effects)
+                "共 {} 个插件 · 乐器 {instruments} · 效果器 {effects}",
+                plugins.len()
             ))
-            .size(10.0)
+            .size(theme::FONT_MICRO)
             .color(theme::TEXT_FAINT),
         );
-        ui.add_space(4.0);
+        ui.add_space(theme::SPACE_SM);
 
         if plugins.is_empty() {
-            ui.add_space(50.0);
-            ui.vertical_centered(|ui| {
-                ui.label(
-                    egui::RichText::new(if self.scanning {
-                        "正在扫描插件…"
-                    } else {
-                        "还没有插件记录"
-                    })
-                    .size(13.0)
-                    .color(theme::TEXT_DIM),
-                );
-                ui.add_space(4.0);
-                ui.label(
-                    egui::RichText::new("点击右上角按钮扫描默认插件目录。")
-                        .size(10.5)
-                        .color(theme::TEXT_FAINT),
-                );
+            theme::card_frame().show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.add_space(theme::SPACE_LG);
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        egui::RichText::new(if self.scanning {
+                            "正在扫描插件…"
+                        } else {
+                            "还没有插件记录"
+                        })
+                        .size(theme::FONT_BODY)
+                        .color(theme::TEXT_DIM),
+                    );
+                    ui.add_space(theme::SPACE_XS);
+                    ui.label(
+                        egui::RichText::new("点击右上角「扫描插件」选择扫描范围。")
+                            .size(theme::FONT_MICRO)
+                            .color(theme::TEXT_FAINT),
+                    );
+                });
+                ui.add_space(theme::SPACE_LG);
             });
             return;
         }
 
-        // 按品牌分组：品牌内再分乐器、效果器与未知，满足“乐器在上、效果器在下”。
-        // Group by brand, then split into instruments, effects and unknown so instruments stay on top.
+        // 按品牌分组；组内乐器在上、效果器在下，同类按名称排序。
+        // Group by brand; instruments go before effects inside a group and each kind sorts by name.
         struct BrandGroup {
             brand: String,
-            instruments: Vec<ScannedPlugin>,
-            effects: Vec<ScannedPlugin>,
-            unknown: Vec<ScannedPlugin>,
+            plugins: Vec<ScannedPlugin>,
         }
         let mut groups: Vec<BrandGroup> = Vec::new();
-        for plugin in plugins {
+        for plugin in &plugins {
             let brand = if plugin.vendor.trim().is_empty() {
                 UNLABELED_VENDOR.to_string()
             } else {
@@ -1407,94 +1428,107 @@ impl SurfingApp {
                 .unwrap_or_else(|| {
                     groups.push(BrandGroup {
                         brand,
-                        instruments: Vec::new(),
-                        effects: Vec::new(),
-                        unknown: Vec::new(),
+                        plugins: Vec::new(),
                     });
                     groups.len() - 1
                 });
-            match plugin.kind {
-                PluginKind::Instrument => groups[index].instruments.push(plugin),
-                PluginKind::Effect => groups[index].effects.push(plugin),
-                PluginKind::Unknown => groups[index].unknown.push(plugin),
-            }
+            groups[index].plugins.push(plugin.clone());
         }
-        // 每帧都会重建列表：缓存排序键，避免每次比较都分配一个小写字符串。
-        // The list is rebuilt every frame: cache sort keys instead of allocating a lowercase
-        // string on every comparison.
         for group in &mut groups {
-            group
-                .instruments
-                .sort_by_cached_key(|plugin| plugin.name.to_lowercase());
-            group
-                .effects
-                .sort_by_cached_key(|plugin| plugin.name.to_lowercase());
-            group
-                .unknown
-                .sort_by_cached_key(|plugin| plugin.name.to_lowercase());
+            group.plugins.sort_by_cached_key(|plugin| {
+                (
+                    match plugin.kind {
+                        PluginKind::Instrument => 0,
+                        PluginKind::Effect => 1,
+                        PluginKind::Unknown => 2,
+                    },
+                    plugin.name.to_lowercase(),
+                )
+            });
         }
         groups.sort_by_cached_key(|group| group.brand.to_lowercase());
 
+        let selected_path = self.home_plugin_selected.clone();
+        let mut drawer_plugin = selected_path
+            .as_ref()
+            .and_then(|path| plugins.iter().find(|plugin| &plugin.path == path))
+            .cloned();
+        if drawer_plugin.is_none() {
+            self.home_plugin_selected = None;
+        }
+        let drawer_w =
+            (ui.available_width() * 0.38).clamp(PLUGIN_DRAWER_MIN_W, PLUGIN_DRAWER_MAX_W);
+        let list_w = (ui.available_width()
+            - if drawer_plugin.is_some() {
+                drawer_w + theme::SPACE_LG
+            } else {
+                0.0
+            })
+        .max(PLUGIN_LIST_MIN_W);
+        let height = ui.available_height();
         let mut toggle_brand: Option<String> = None;
-        let mut toggle_plugin: Vec<PathBuf> = Vec::new();
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                for group in &groups {
-                    let collapsed = self.home_plugin_collapsed.contains(&group.brand);
-                    if plugin_brand_header(
-                        ui,
-                        &group.brand,
-                        group.instruments.len(),
-                        group.effects.len(),
-                        group.unknown.len(),
-                        collapsed,
-                    )
-                    .clicked()
-                    {
-                        toggle_brand = Some(group.brand.clone());
-                    }
-                    if collapsed {
-                        continue;
-                    }
-                    for (label, entries) in [
-                        ("乐器", &group.instruments),
-                        ("效果器", &group.effects),
-                        ("未知", &group.unknown),
-                    ] {
-                        if entries.is_empty() {
-                            continue;
-                        }
-                        ui.add_space(4.0);
-                        ui.label(
-                            egui::RichText::new(format!("{label} · {}", entries.len()))
-                                .size(10.5)
-                                .strong()
-                                .color(if label == "乐器" {
-                                    theme::ACCENT
-                                } else {
-                                    theme::TEXT_DIM
-                                }),
-                        );
-                        for plugin in entries {
-                            let expanded = self.home_plugin_expanded.contains(&plugin.path);
-                            if home_plugin_row(ui, plugin, expanded) {
-                                toggle_plugin.push(plugin.path.clone());
+        let mut select: Option<PathBuf> = None;
+        let mut close_drawer = false;
+        ui.horizontal_top(|ui| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(list_w, height),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    ui.set_width(list_w);
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            for group in &groups {
+                                let collapsed = self.home_plugin_collapsed.contains(&group.brand);
+                                if plugin_brand_header(
+                                    ui,
+                                    &group.brand,
+                                    group.plugins.len(),
+                                    collapsed,
+                                )
+                                .clicked()
+                                {
+                                    toggle_brand = Some(group.brand.clone());
+                                }
+                                if collapsed {
+                                    continue;
+                                }
+                                ui.add_space(theme::SPACE_XS);
+                                for plugin in &group.plugins {
+                                    let selected = selected_path.as_ref() == Some(&plugin.path);
+                                    if home_plugin_row(ui, plugin, selected) {
+                                        select = Some(plugin.path.clone());
+                                    }
+                                }
+                                ui.add_space(theme::SPACE_MD);
                             }
+                        });
+                },
+            );
+            if let Some(plugin) = drawer_plugin.take() {
+                ui.add_space(theme::SPACE_LG);
+                ui.allocate_ui_with_layout(
+                    egui::vec2(drawer_w, height),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        ui.set_width(drawer_w);
+                        if plugin_detail_drawer(ui, &plugin) {
+                            close_drawer = true;
                         }
-                    }
-                    ui.add_space(8.0);
-                }
-            });
+                    },
+                );
+            }
+        });
         if let Some(brand) = toggle_brand {
             if !self.home_plugin_collapsed.remove(&brand) {
                 self.home_plugin_collapsed.insert(brand);
             }
         }
-        for path in toggle_plugin {
-            if !self.home_plugin_expanded.remove(&path) {
-                self.home_plugin_expanded.insert(path);
-            }
+        if let Some(path) = select {
+            self.home_plugin_selected = Some(path);
+        }
+        if close_drawer {
+            self.home_plugin_selected = None;
         }
     }
 
@@ -2113,28 +2147,7 @@ fn template_family_filter(ui: &mut egui::Ui, selected: &mut Option<TemplateFamil
 /// Outputs / side effects: the button response; no state change.
 /// Complexity: O(1) time and space.
 fn template_filter_chip(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Response {
-    let fill = if selected {
-        theme::ACCENT_DARK
-    } else {
-        theme::PANEL_2
-    };
-    let stroke = if selected {
-        egui::Stroke::new(1.0_f32, theme::ACCENT)
-    } else {
-        egui::Stroke::new(1.0_f32, theme::LINE)
-    };
-    let color = if selected {
-        egui::Color32::WHITE
-    } else {
-        theme::TEXT_DIM
-    };
-    ui.add(
-        egui::Button::new(egui::RichText::new(label).size(11.0).color(color))
-            .fill(fill)
-            .stroke(stroke)
-            .min_size(egui::vec2(52.0, 22.0)),
-    )
-    .on_hover_cursor(egui::CursorIcon::PointingHand)
+    theme::chip(ui, label, selected)
 }
 
 /// 所属模块：app / 主页 / 模板页
@@ -2162,19 +2175,21 @@ fn template_card(ui: &mut egui::Ui, template: &MusicTemplate, width: f32) -> egu
     let painter = ui.painter();
     painter.rect_filled(
         rect,
-        egui::CornerRadius::from(6),
+        egui::CornerRadius::from(theme::RADIUS_CARD),
         if hovered {
             theme::PANEL_3
         } else {
             theme::PANEL_2
         },
     );
-    painter.rect_stroke(
-        rect,
-        egui::CornerRadius::from(6),
-        egui::Stroke::new(1.0_f32, if hovered { theme::ACCENT } else { theme::LINE }),
-        egui::StrokeKind::Inside,
-    );
+    if hovered {
+        painter.rect_stroke(
+            rect,
+            egui::CornerRadius::from(theme::RADIUS_CARD),
+            egui::Stroke::new(1.0_f32, theme::ACCENT),
+            egui::StrokeKind::Inside,
+        );
+    }
     painter.rect_filled(
         egui::Rect::from_min_size(
             egui::pos2(rect.left() + 10.0, rect.top() + 12.0),
@@ -2284,19 +2299,21 @@ fn example_card(ui: &mut egui::Ui, example: &ExampleProject, width: f32) -> egui
     let painter = ui.painter();
     painter.rect_filled(
         rect,
-        egui::CornerRadius::from(6),
+        egui::CornerRadius::from(theme::RADIUS_CARD),
         if hovered {
             theme::PANEL_3
         } else {
             theme::PANEL_2
         },
     );
-    painter.rect_stroke(
-        rect,
-        egui::CornerRadius::from(6),
-        egui::Stroke::new(1.0_f32, if hovered { theme::ACCENT } else { theme::LINE }),
-        egui::StrokeKind::Inside,
-    );
+    if hovered {
+        painter.rect_stroke(
+            rect,
+            egui::CornerRadius::from(theme::RADIUS_CARD),
+            egui::Stroke::new(1.0_f32, theme::ACCENT),
+            egui::StrokeKind::Inside,
+        );
+    }
     painter.rect_filled(
         egui::Rect::from_min_size(
             egui::pos2(rect.left() + 10.0, rect.top() + 12.0),
@@ -2364,30 +2381,48 @@ fn example_card(ui: &mut egui::Ui, example: &ExampleProject, width: f32) -> egui
 }
 
 /// 所属模块：app / 主页 / 插件页
-/// 功能：绘制一个插件品牌标题行：展开箭头、品牌名与各类数量；默认展开。
+/// 功能：返回插件类别对应的强调色：乐器蓝、效果器琥珀、未知灰。
+/// 输入：`kind` 插件类别。
+/// 输出/副作用：颜色常量；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: app / home page / plugins
+/// Purpose: Return the accent color of a plugin kind: blue for instruments, amber for effects and
+/// grey for unknown.
+/// Inputs: `kind`.
+/// Outputs / side effects: a color constant; no state change.
+/// Complexity: O(1) time and space.
+fn plugin_kind_color(kind: PluginKind) -> egui::Color32 {
+    match kind {
+        PluginKind::Instrument => theme::ACCENT,
+        PluginKind::Effect => theme::AMBER,
+        PluginKind::Unknown => theme::TEXT_FAINT,
+    }
+}
+
+/// 所属模块：app / 主页 / 插件页
+/// 功能：绘制一个插件品牌标题行：展开箭头、品牌名与插件数量；无分割线。
 /// 输入：
 /// - `ui`：插件列表。
 /// - `brand`：品牌名。
-/// - `instruments` / `effects` / `unknown`：三类插件数量。
+/// - `count`：当前筛选下该品牌的插件数量。
 /// - `collapsed`：是否收起。
 /// 输出/副作用：分配整行并绘制；返回点击响应。
 /// 复杂度：时间 O(文本长度)，空间 O(文本长度)。
 ///
 /// Module: app / home page / plugins
-/// Purpose: Draw one plugin brand header: chevron, brand name and per-kind counts; expanded by default.
+/// Purpose: Draw one plugin brand header: chevron, brand name and plugin count; no divider line.
 /// Inputs:
 /// - `ui`: plugin list.
 /// - `brand`: brand name.
-/// - `instruments` / `effects` / `unknown`: plugin counts per kind.
+/// - `count`: plugins of this brand under the current filter.
 /// - `collapsed`: whether the brand is collapsed.
 /// Outputs / side effects: allocates and paints the row; returns the click response.
 /// Complexity: O(text length) time and space.
 fn plugin_brand_header(
     ui: &mut egui::Ui,
     brand: &str,
-    instruments: usize,
-    effects: usize,
-    unknown: usize,
+    count: usize,
     collapsed: bool,
 ) -> egui::Response {
     let width = ui.available_width();
@@ -2396,36 +2431,27 @@ fn plugin_brand_header(
     let hovered = response.hovered();
     let painter = ui.painter();
     if hovered {
-        painter.rect_filled(rect, egui::CornerRadius::from(4), theme::PANEL_2);
+        painter.rect_filled(rect, egui::CornerRadius::from(8), theme::PANEL_2);
     }
     paint_chevron(
         painter,
-        egui::pos2(rect.left() + 12.0, rect.center().y),
+        egui::pos2(rect.left() + 10.0, rect.center().y),
         !collapsed,
         theme::TEXT_DIM,
     );
     painter.text(
-        egui::pos2(rect.left() + 26.0, rect.center().y),
+        egui::pos2(rect.left() + 24.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
         brand,
-        egui::FontId::proportional(12.5),
+        egui::FontId::proportional(theme::FONT_BODY),
         theme::TEXT,
     );
-    let mut counts = format!("乐器 {instruments} · 效果器 {effects}");
-    if unknown > 0 {
-        counts.push_str(&format!(" · 未知 {unknown}"));
-    }
     painter.text(
         egui::pos2(rect.right() - 12.0, rect.center().y),
         egui::Align2::RIGHT_CENTER,
-        counts,
-        egui::FontId::proportional(10.0),
+        count.to_string(),
+        egui::FontId::proportional(theme::FONT_MICRO),
         theme::TEXT_FAINT,
-    );
-    painter.hline(
-        rect.left()..=rect.right(),
-        rect.bottom(),
-        egui::Stroke::new(1.0_f32, theme::LINE),
     );
     response
         .on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -2437,138 +2463,240 @@ fn plugin_brand_header(
 }
 
 /// 所属模块：app / 主页 / 插件页
-/// 功能：绘制一条插件：类型、分类、格式等标签 + 名称，右侧“详情”按钮展开路径与元数据。
+/// 功能：绘制一条紧凑插件行：类别圆点、名称、厂商 · 格式与一个类别标签；点击打开右侧详情。
 /// 输入：
 /// - `ui`：插件列表。
 /// - `plugin`：扫描记录。
-/// - `expanded`：是否展开详情。
-/// 输出/副作用：分配卡片并绘制；返回是否点击了“详情”。
-/// 复杂度：时间 O(文本长度)，空间 O(文本长度)。
+/// - `selected`：是否为详情抽屉中的插件。
+/// 输出/副作用：分配整行并绘制；返回是否点击。
+/// 复杂度：时间 O(文本长度)，空间 O(1)。
 ///
 /// Module: app / home page / plugins
-/// Purpose: Draw one plugin: kind/category/format tags + name, with a “detail” button that expands
-/// the path and metadata.
+/// Purpose: Draw one compact plugin row: kind dot, name, vendor · format and a single kind tag;
+/// clicking opens the right-hand detail drawer.
 /// Inputs:
 /// - `ui`: plugin list.
 /// - `plugin`: scan record.
-/// - `expanded`: whether the details are open.
-/// Outputs / side effects: allocates and paints the card; returns whether “detail” was clicked.
-/// Complexity: O(text length) time and space.
-fn home_plugin_row(ui: &mut egui::Ui, plugin: &ScannedPlugin, expanded: bool) -> bool {
+/// - `selected`: whether the drawer shows this plugin.
+/// Outputs / side effects: allocates and paints the row; returns whether it was clicked.
+/// Complexity: O(text length) time and O(1) space.
+fn home_plugin_row(ui: &mut egui::Ui, plugin: &ScannedPlugin, selected: bool) -> bool {
     let width = ui.available_width();
     let (rect, response) =
         ui.allocate_exact_size(egui::vec2(width, PLUGIN_ROW_H), egui::Sense::click());
     let hovered = response.hovered();
-    if hovered || expanded {
-        ui.painter()
-            .rect_filled(rect, egui::CornerRadius::from(4), theme::PANEL_2);
+    let painter = ui.painter();
+    if selected {
+        painter.rect_filled(rect, egui::CornerRadius::from(8), theme::ACCENT_DARK);
+        painter.rect_filled(
+            egui::Rect::from_min_size(
+                egui::pos2(rect.left(), rect.top() + 14.0),
+                egui::vec2(3.0, rect.height() - 28.0),
+            ),
+            egui::CornerRadius::from(2),
+            theme::ACCENT,
+        );
+    } else if hovered {
+        painter.rect_filled(rect, egui::CornerRadius::from(8), theme::PANEL_2);
     }
-    let content_rect = rect.shrink2(egui::vec2(8.0, 0.0));
+    let kind_color = plugin_kind_color(plugin.kind);
+    let content_rect = rect.shrink2(egui::vec2(12.0, 0.0));
     ui.scope_builder(egui::UiBuilder::new().max_rect(content_rect), |ui| {
         ui.horizontal_centered(|ui| {
-            let kind_color = match plugin.kind {
-                PluginKind::Instrument => theme::ACCENT,
-                PluginKind::Effect => theme::AMBER,
-                PluginKind::Unknown => theme::TEXT_FAINT,
-            };
-            // 名称在前、标签在后：先读插件名，再读它的类型信息，符合从左到右的阅读顺序。
-            // Name first, tags afterwards: the plugin is identified before its metadata is read.
+            let (dot, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+            ui.painter().circle_filled(dot.center(), 3.5, kind_color);
+            ui.add_space(theme::SPACE_SM);
+            let text_width = (ui.available_width() - 84.0).max(80.0);
             ui.allocate_ui_with_layout(
-                egui::vec2(PLUGIN_NAME_W, ui.available_height()),
-                egui::Layout::left_to_right(egui::Align::Center),
+                egui::vec2(text_width, ui.available_height()),
+                egui::Layout::top_down(egui::Align::Min),
                 |ui| {
+                    ui.add_space(8.0);
                     ui.add(
                         egui::Label::new(
                             egui::RichText::new(&plugin.name)
-                                .size(11.5)
-                                .color(theme::TEXT),
+                                .size(theme::FONT_BODY)
+                                .color(if selected {
+                                    egui::Color32::WHITE
+                                } else {
+                                    theme::TEXT
+                                }),
                         )
                         .truncate(),
                     );
+                    let vendor = if plugin.vendor.trim().is_empty() {
+                        "未标注厂商"
+                    } else {
+                        plugin.vendor.trim()
+                    };
+                    ui.label(
+                        egui::RichText::new(format!("{vendor} · {}", plugin.format.label()))
+                            .size(theme::FONT_MICRO)
+                            .color(if selected {
+                                egui::Color32::from_rgb(200, 216, 255)
+                            } else {
+                                theme::TEXT_FAINT
+                            }),
+                    );
                 },
             );
-            theme::badge(ui, plugin.kind.label(), kind_color);
-            theme::badge(
-                ui,
-                plugin.format.label(),
-                if plugin.format == crate::core::model::PluginFormat::Vst3 {
-                    theme::ACCENT
-                } else {
-                    theme::AMBER
-                },
-            );
-            let category = if plugin.category.trim().is_empty() {
-                "未分类"
-            } else {
-                plugin.category.trim()
-            };
-            theme::badge(ui, category, theme::TEXT_DIM);
-            if plugin.has_midi_input {
-                theme::badge(ui, "MIDI", theme::TEXT_DIM);
-            }
-            if plugin.has_gui {
-                theme::badge(ui, "GUI", theme::ACCENT);
-            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                theme::badge(ui, plugin.kind.label(), kind_color);
+            });
         });
     });
     paint_chevron(
         ui.painter(),
         egui::pos2(rect.right() - 14.0, rect.center().y),
-        expanded,
-        theme::TEXT_DIM,
+        false,
+        if selected {
+            egui::Color32::WHITE
+        } else {
+            theme::TEXT_DIM
+        },
     );
-    let toggled = response
+    response
         .on_hover_cursor(egui::CursorIcon::PointingHand)
         .on_hover_text(format!(
             "{}\n{}\n点击查看插件详情",
             plugin.name,
             plugin.path.display()
         ))
-        .clicked();
-    if expanded {
-        egui::Frame::NONE
-            .fill(theme::PANEL)
-            .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
-            .corner_radius(4)
-            .inner_margin(egui::Margin::symmetric(12, 8))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                project_detail_row(ui, "路径", &plugin.path.display().to_string());
-                project_detail_row(
-                    ui,
-                    "厂商",
-                    if plugin.vendor.is_empty() {
-                        "未标注"
-                    } else {
-                        &plugin.vendor
-                    },
+        .clicked()
+}
+
+/// 所属模块：app / 主页 / 插件页
+/// 功能：绘制右侧插件详情抽屉：名称、厂商 · 格式、路径、分类、能力与标识。
+/// 输入：
+/// - `ui`：抽屉区域。
+/// - `plugin`：扫描记录。
+/// 输出/副作用：分配并绘制；返回是否点击了关闭按钮。
+/// 复杂度：时间 O(文本长度)，空间 O(文本长度)。
+///
+/// Module: app / home page / plugins
+/// Purpose: Draw the right-hand plugin drawer: name, vendor · format, path, category, capabilities and
+/// identifier.
+/// Inputs:
+/// - `ui`: drawer area.
+/// - `plugin`: scan record.
+/// Outputs / side effects: allocates and paints; returns whether the close button was clicked.
+/// Complexity: O(text length) time and space.
+fn plugin_detail_drawer(ui: &mut egui::Ui, plugin: &ScannedPlugin) -> bool {
+    let mut close = false;
+    theme::sheet_frame().show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal_top(|ui| {
+            ui.vertical(|ui| {
+                ui.label(
+                    egui::RichText::new(plugin.kind.label())
+                        .size(theme::FONT_MICRO)
+                        .strong()
+                        .color(plugin_kind_color(plugin.kind)),
                 );
-                project_detail_row(
-                    ui,
-                    "分类",
-                    if plugin.category.is_empty() {
-                        "未分类"
-                    } else {
-                        &plugin.category
-                    },
+                ui.add_space(theme::SPACE_XS);
+                ui.label(
+                    egui::RichText::new(&plugin.name)
+                        .size(theme::FONT_TITLE)
+                        .strong()
+                        .color(theme::TEXT),
                 );
-                project_detail_row(ui, "格式", plugin.format.label());
-                project_detail_row(
-                    ui,
-                    "能力",
-                    &format!(
-                        "MIDI 输入：{} · 原生界面：{}",
-                        if plugin.has_midi_input { "是" } else { "否" },
-                        if plugin.has_gui { "是" } else { "否" }
-                    ),
-                );
-                if !plugin.uid.is_empty() {
-                    project_detail_row(ui, "标识", &plugin.uid);
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                if ui
+                    .add(
+                        egui::Button::new(
+                            egui::RichText::new("×").size(16.0).color(theme::TEXT_DIM),
+                        )
+                        .frame(false)
+                        .min_size(egui::vec2(24.0, 24.0)),
+                    )
+                    .on_hover_text("关闭详情")
+                    .clicked()
+                {
+                    close = true;
                 }
             });
+        });
+        let vendor = if plugin.vendor.trim().is_empty() {
+            "未标注厂商"
+        } else {
+            plugin.vendor.trim()
+        };
+        ui.label(
+            egui::RichText::new(format!("{vendor} · {}", plugin.format.label()))
+                .size(theme::FONT_LABEL)
+                .color(theme::TEXT_DIM),
+        );
+        ui.add_space(theme::SPACE_LG);
+        plugin_detail_field(ui, "路径", &plugin.path.display().to_string(), true);
+        ui.add_space(theme::SPACE_MD);
+        plugin_detail_field(ui, "厂商", vendor, false);
+        ui.add_space(theme::SPACE_MD);
+        plugin_detail_field(
+            ui,
+            "分类",
+            if plugin.category.trim().is_empty() {
+                "未分类"
+            } else {
+                plugin.category.trim()
+            },
+            false,
+        );
+        ui.add_space(theme::SPACE_MD);
+        plugin_detail_field(
+            ui,
+            "能力",
+            &format!(
+                "MIDI 输入：{}    原生界面：{}",
+                if plugin.has_midi_input { "是" } else { "否" },
+                if plugin.has_gui { "是" } else { "否" }
+            ),
+            false,
+        );
+        if !plugin.uid.is_empty() {
+            ui.add_space(theme::SPACE_MD);
+            plugin_detail_field(ui, "标识", &plugin.uid, true);
+        }
+    });
+    close
+}
+
+/// 所属模块：app / 主页 / 插件页
+/// 功能：绘制详情抽屉中的一组“字段 + 值”；路径与标识使用深底等宽块。
+/// 输入：`ui`；`label` 字段名；`value` 字段值；`mono` 是否使用等宽深底块。
+/// 输出/副作用：只绘制；不修改状态。
+/// 复杂度：时间 O(文本长度)，空间 O(1)。
+///
+/// Module: app / home page / plugins
+/// Purpose: Draw one "field + value" pair in the drawer; paths and identifiers use a deep monospace
+/// block.
+/// Inputs: `ui`; `label`; `value`; `mono`.
+/// Outputs / side effects: paint only; no state change.
+/// Complexity: O(text length) time and O(1) space.
+fn plugin_detail_field(ui: &mut egui::Ui, label: &str, value: &str, mono: bool) {
+    theme::field_label(ui, label);
+    ui.add_space(theme::SPACE_XS);
+    if mono {
+        egui::Frame::NONE
+            .fill(theme::BG_DEEP)
+            .corner_radius(8)
+            .inner_margin(egui::Margin::symmetric(10, 8))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(
+                    egui::RichText::new(value)
+                        .size(theme::FONT_MICRO)
+                        .monospace()
+                        .color(theme::TEXT_DIM),
+                );
+            });
+    } else {
+        ui.label(
+            egui::RichText::new(value)
+                .size(theme::FONT_LABEL)
+                .color(theme::TEXT),
+        );
     }
-    ui.add_space(2.0);
-    toggled
 }
 
 /// 所属模块：app / 主页 / 项目页

@@ -149,6 +149,9 @@ pub struct AiLibraryUi {
     /// 新建后尚未保存的提示。
     /// Hint shown for a newly created entry that is not saved yet.
     pub notice: Option<String>,
+    /// 正文区域是否显示渲染后的 Markdown 预览；关闭时显示源码编辑框。
+    /// Whether the body area previews rendered Markdown; when off it shows the source editor.
+    pub body_preview: bool,
 }
 
 impl Default for AiLibraryUi {
@@ -173,6 +176,7 @@ impl Default for AiLibraryUi {
             instrument_pick_filter: String::new(),
             instrument_category_filter: "全部".into(),
             notice: None,
+            body_preview: true,
         }
     }
 }

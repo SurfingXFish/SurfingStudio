@@ -1,30 +1,33 @@
 //! 所属模块：ui / AI 编曲面板
 //! 文件用途：
 //! - 绘制右侧 AI 编曲工作台：左侧任务栏（新任务与项目内历史对话）与右侧对话区。
-//! - 输入区底部提供模型、智能体、附件与发送/停止按钮，接近聊天应用的编辑器样式。
+//! - 面板以带投影的浮动卡片呈现；输入区只保留输入框、附件、高级选项与发送，其余控件收进高级选项。
 //! - 只发出用户意图（发送、停止、添加附件、打开设置、跳转主页），网络与工程写入由 `app::ai` 完成。
 //!
 //! 函数清单：
-//! - `SurfingApp::ui_ai_panel` / `ui_ai_panel_main` / `ui_ai_task_rail`：两栏工作台、对话区与任务栏。
-//! - `SurfingApp::ui_ai_composer`：圆角输入区、附件、技能/可用乐器/必须乐器多选菜单（开关 + 全选 + 点击外部关闭）、剪贴板粘贴成引用、模型/智能体/推理选择与发送/停止。
+//! - `SurfingApp::ui_ai_panel` / `ui_ai_panel_main` / `ui_ai_task_rail`：浮动工作台、对话区与任务栏。
+//! - `SurfingApp::ui_ai_composer`：输入卡片、附件、高级选项弹出层（技能/乐器/智能体/模型/推理）与发送/停止。
 //! - `ai_task_card` / `paint_task_status`：任务卡片与状态图标。
 //! - `paint_ai_message` / `paint_ai_live` / `paint_message_meta` / `paint_thinking_block` /
 //!   `paint_change_card` / `paint_ai_empty`：气泡、流式生成、任务信息、折叠思考、工程改动卡片与空状态。
+//! - Markdown 富文本渲染已抽到 `ui/markdown.rs`，对话与 Agent 资料库共用。
 //!
 //! Module: ui / AI composition panel
 //! Purpose:
 //! - Draw the right-hand AI workspace: a left task rail (new task and project conversation history)
 //!   and the conversation area.
-//! - The composer bottom row offers model, agent, reasoning, attachment and send/stop controls.
+//! - The panel is a floating card with a shadow; the composer keeps only the input, attachments,
+//!   advanced options and send, with everything else folded into the advanced popup.
 //! - Only emits user intents; networking and project writes live in `app::ai`.
 //!
 //! Functions:
-//! - `SurfingApp::ui_ai_panel` / `ui_ai_panel_main` / `ui_ai_task_rail`: two-column workspace, conversation and rail.
-//! - `SurfingApp::ui_ai_composer`: rounded input, attachments, selectors and send/stop.
+//! - `SurfingApp::ui_ai_panel` / `ui_ai_panel_main` / `ui_ai_task_rail`: floating workspace, conversation and rail.
+//! - `SurfingApp::ui_ai_composer`: composer card, attachments, advanced popup and send/stop.
 //! - `ai_task_card` / `paint_task_status`: task card and status icon.
 //! - `paint_ai_message` / `paint_ai_live` / `paint_message_meta` / `paint_thinking_block` /
 //!   `paint_change_card` / `paint_ai_empty`: bubbles, streaming state, metadata, collapsible
 //!   reasoning, change card and empty state.
+//! - Markdown rendering lives in `ui/markdown.rs` and is shared with the Agent library.
 
 use crate::ai::{AiApplySummary, AiReasoning, AiRole, MODEL_PRESETS, find_preset};
 use crate::app::{
@@ -61,25 +64,33 @@ impl SurfingApp {
     /// Complexity: O(tasks + messages) per frame.
     pub fn ui_ai_panel(&mut self, ui: &mut egui::Ui) {
         self.ai_chat.ensure_active_conversation();
-        if ui.available_width() < 520.0 {
-            self.ui_ai_panel_main(ui);
-            return;
-        }
-        let height = ui.available_height();
-        ui.horizontal_top(|ui| {
-            ui.allocate_ui_with_layout(
-                egui::vec2(178.0, height),
-                egui::Layout::top_down(egui::Align::Min),
-                |ui| self.ui_ai_task_rail(ui),
-            );
-            ui.add_space(2.0);
-            ui.separator();
-            ui.add_space(2.0);
-            ui.allocate_ui_with_layout(
-                egui::vec2(ui.available_width(), height),
-                egui::Layout::top_down(egui::Align::Min),
-                |ui| self.ui_ai_panel_main(ui),
-            );
+        // 侧栏外留出阴影空间，内部再画一张浮动卡片：AI 面板因此从编辑区里“浮”起来。
+        // Leave room for the shadow, then draw a floating card inside so the AI workspace lifts off
+        // the editor instead of blending into it.
+        let outer = ui.available_size();
+        theme::floating_frame().show(ui, |ui| {
+            ui.set_width((outer.x - theme::CARD_PAD as f32 * 2.0).max(240.0));
+            ui.set_height((outer.y - theme::CARD_PAD as f32 * 2.0).max(240.0));
+            if ui.available_width() < 520.0 {
+                self.ui_ai_panel_main(ui);
+                return;
+            }
+            let height = ui.available_height();
+            ui.horizontal_top(|ui| {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(178.0, height),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| self.ui_ai_task_rail(ui),
+                );
+                ui.add_space(theme::SPACE_SM);
+                ui.separator();
+                ui.add_space(theme::SPACE_SM);
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), height),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| self.ui_ai_panel_main(ui),
+                );
+            });
         });
     }
 
@@ -238,18 +249,44 @@ impl SurfingApp {
     fn ui_ai_panel_main(&mut self, ui: &mut egui::Ui) {
         let mut close = false;
         let mut open_settings = false;
-        // 顶部只保留右侧的关闭与设置；任务列表在左栏。
-        // The top bar only keeps close/settings on the right; tasks live in the left rail.
-        let bar_width = ui.available_width();
-        ui.allocate_ui_with_layout(
-            egui::vec2(bar_width, 22.0),
-            egui::Layout::right_to_left(egui::Align::Center),
-            |ui| {
+        // 顶部：左侧标题与状态，右侧关闭/设置；插件数量降为状态副标题，不再单独占一行。
+        // Top bar: title and status on the left, close/settings on the right; the plugin count becomes
+        // part of the status line instead of its own row.
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.label(
+                    RichText::new("AI 编曲")
+                        .size(theme::FONT_SECTION)
+                        .strong()
+                        .color(theme::TEXT),
+                );
+                let status = if self.ai_chat.pending.is_some() {
+                    "正在生成"
+                } else {
+                    "就绪"
+                };
+                let status_text = if crate::platform::caps().plugin_hosting {
+                    let count = self.plugin_cache.len();
+                    if count > 0 {
+                        format!("{status} · 已连接 {count} 个 VST 插件")
+                    } else {
+                        format!("{status} · 使用内置音色")
+                    }
+                } else {
+                    status.to_string()
+                };
+                ui.label(
+                    RichText::new(status_text)
+                        .size(theme::FONT_MICRO)
+                        .color(theme::TEXT_FAINT),
+                );
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
                     .add(
-                        egui::Button::new(RichText::new("×").size(15.0))
-                            .fill(egui::Color32::TRANSPARENT)
-                            .min_size(egui::vec2(24.0, 22.0)),
+                        egui::Button::new(RichText::new("×").size(15.0).color(theme::TEXT_DIM))
+                            .frame(false)
+                            .min_size(egui::vec2(24.0, 24.0)),
                     )
                     .on_hover_text("关闭面板")
                     .clicked()
@@ -258,44 +295,23 @@ impl SurfingApp {
                 }
                 if ui
                     .add(
-                        egui::Button::new(RichText::new("⚙").size(12.0))
-                            .fill(egui::Color32::TRANSPARENT)
-                            .min_size(egui::vec2(24.0, 22.0)),
+                        egui::Button::new(RichText::new("⚙").size(12.0).color(theme::TEXT_DIM))
+                            .frame(false)
+                            .min_size(egui::vec2(24.0, 24.0)),
                     )
                     .on_hover_text("AI 设置（模型、API Key、联网检索、采样参数）")
                     .clicked()
                 {
                     open_settings = true;
                 }
-            },
-        );
+            });
+        });
         if close {
             self.close_side_panel();
             return;
         }
         if open_settings {
             self.open_ai_settings(ui.ctx());
-        }
-        ui.add_space(4.0);
-
-        // 让用户看到 AI 实际能调用多少 VST 插件，避免误以为只用了内置音色。
-        // Show how many VST plugins the AI can actually call, so built-in-only output is not mistaken
-        // for missing support.
-        if crate::platform::caps().plugin_hosting {
-            let plugin_count = self.plugin_cache.len();
-            let (text, color) = if plugin_count > 0 {
-                (
-                    format!("已连接 {plugin_count} 个 VST 插件 · AI 会优先使用"),
-                    theme::GREEN,
-                )
-            } else {
-                (
-                    "尚未扫描到 VST 插件 · AI 将使用内置音色".to_string(),
-                    theme::TEXT_FAINT,
-                )
-            };
-            ui.label(RichText::new(text).size(9.5).color(color));
-            ui.add_space(3.0);
         }
 
         // 缺少密钥时把入口放在面板内，避免用户只看到失败提示。
@@ -310,51 +326,86 @@ impl SurfingApp {
             })
             .unwrap_or(true);
         if missing_key {
+            ui.add_space(theme::SPACE_MD);
+            // 低饱和琥珀底 + 图标 + 纯文字按钮：提示存在感足够，但不和蓝色主操作抢焦点。
+            // Low-saturation amber surface, icon and text button: visible without competing with the
+            // single blue primary action.
             egui::Frame::NONE
-                .fill(theme::PANEL_2)
-                .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
-                .corner_radius(8)
-                .inner_margin(10.0)
+                .fill(theme::with_alpha(theme::AMBER, 24))
+                .corner_radius(theme::RADIUS_CARD)
+                .inner_margin(egui::Margin::symmetric(
+                    theme::SPACE_MD as i8,
+                    theme::SPACE_SM as i8,
+                ))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.label(
-                        RichText::new("尚未配置 API Key，AI 编曲无法发送请求")
-                            .size(11.5)
-                            .strong()
-                            .color(theme::TEXT),
-                    );
-                    ui.label(
-                        RichText::new("在 设置 → AI 里填写 DeepSeek / MiMo / 自定义密钥。")
-                            .size(10.0)
-                            .color(theme::TEXT_DIM),
-                    );
-                    ui.add_space(4.0);
-                    if ui
-                        .add(
-                            egui::Button::new(RichText::new("配置 API Key").size(10.5))
-                                .fill(theme::ACCENT_DARK)
-                                .stroke(egui::Stroke::new(1.0_f32, theme::ACCENT))
-                                .min_size(egui::vec2(0.0, 24.0)),
-                        )
-                        .clicked()
-                    {
-                        self.open_ai_settings(ui.ctx());
-                    }
+                    ui.horizontal(|ui| {
+                        let (icon, _) =
+                            ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::hover());
+                        ui.painter().circle_filled(
+                            icon.center(),
+                            9.0,
+                            theme::with_alpha(theme::AMBER, 55),
+                        );
+                        ui.painter().text(
+                            icon.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "!",
+                            egui::FontId::proportional(11.0),
+                            theme::AMBER,
+                        );
+                        ui.add_space(theme::SPACE_SM);
+                        ui.vertical(|ui| {
+                            ui.label(
+                                RichText::new("尚未配置 API Key")
+                                    .size(theme::FONT_LABEL)
+                                    .strong()
+                                    .color(theme::TEXT),
+                            );
+                            ui.label(
+                                RichText::new("配置后即可发送 AI 编曲请求")
+                                    .size(theme::FONT_MICRO)
+                                    .color(theme::TEXT_DIM),
+                            );
+                        });
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new("配置")
+                                            .size(theme::FONT_LABEL)
+                                            .color(theme::AMBER),
+                                    )
+                                    .frame(false)
+                                    .min_size(egui::vec2(0.0, 26.0)),
+                                )
+                                .clicked()
+                            {
+                                self.open_ai_settings(ui.ctx());
+                            }
+                        });
+                    });
                 });
-            ui.add_space(6.0);
         }
         if let Some(error) = self.ai_chat.error.clone() {
+            ui.add_space(theme::SPACE_SM);
             egui::Frame::NONE
-                .fill(theme::PANEL_2)
-                .stroke(egui::Stroke::new(1.0_f32, theme::RED))
-                .corner_radius(6)
-                .inner_margin(8.0)
+                .fill(theme::with_alpha(theme::RED, 24))
+                .corner_radius(theme::RADIUS_CARD)
+                .inner_margin(egui::Margin::symmetric(
+                    theme::SPACE_MD as i8,
+                    theme::SPACE_SM as i8,
+                ))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.label(RichText::new(error).size(10.5).color(theme::RED));
+                    ui.label(
+                        RichText::new(error)
+                            .size(theme::FONT_LABEL)
+                            .color(theme::RED),
+                    );
                 });
-            ui.add_space(4.0);
         }
+        ui.add_space(theme::SPACE_SM);
 
         // 输入区先作为底部停靠面板登记，保证任何窗口高度下都不会被消息区挤掉。
         // Register the composer as a bottom dock first so the transcript can never push it off screen.
@@ -556,11 +607,22 @@ impl SurfingApp {
                 self.attach_clipboard_to_ai();
             }
         }
+        // 输入卡片：只保留输入框、附件、高级选项与发送；技能/乐器/模型/智能体全部收进高级选项。
+        // Composer card: only the input, attachments, advanced options and send stay visible; skills,
+        // instruments, model and agent live in the advanced popup.
+        let advanced_total = displayed_skill_count + usable_count + required_count;
+        let advanced_label = if advanced_total > 0 {
+            format!("高级选项 · {advanced_total}")
+        } else {
+            "高级选项".to_string()
+        };
         egui::Frame::NONE
             .fill(theme::PANEL_2)
-            .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
-            .corner_radius(10)
-            .inner_margin(egui::Margin::symmetric(10, 8))
+            .corner_radius(theme::RADIUS_SHEET)
+            .inner_margin(egui::Margin::symmetric(
+                theme::SPACE_MD as i8,
+                theme::SPACE_MD as i8,
+            ))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 // 附件条：每个附件可单独移除。
@@ -572,11 +634,13 @@ impl SurfingApp {
                             if ui
                                 .add(
                                     egui::Button::new(
-                                        RichText::new(format!("{}  ×", attachment.name)).size(9.5),
+                                        RichText::new(format!("{}  ×", attachment.name))
+                                            .size(theme::FONT_MICRO),
                                     )
                                     .fill(theme::PANEL_3)
+                                    .stroke(egui::Stroke::NONE)
                                     .corner_radius(8)
-                                    .min_size(egui::vec2(0.0, 20.0)),
+                                    .min_size(egui::vec2(0.0, 22.0)),
                                 )
                                 .on_hover_text("点击移除该附件")
                                 .clicked()
@@ -590,7 +654,7 @@ impl SurfingApp {
                             self.ai_chat.attachments.remove(index);
                         }
                     }
-                    ui.add_space(2.0);
+                    ui.add_space(theme::SPACE_XS);
                 }
 
                 ui.add(
@@ -602,87 +666,125 @@ impl SurfingApp {
                         .hint_text("描述你想要的音乐；也可以说“用已安装的 Serum 做一个 Pad”…"),
                 );
 
-                ui.add_space(2.0);
-                // 技能 / 可用乐器 / 必须乐器：多选菜单，点击菜单内部不关闭，只在点击外部时收起。
-                // Skills / usable instruments / required instruments: multi-select menus that stay open
-                // while toggling and only close on an outside click.
-                ui.horizontal_wrapped(|ui| {
-                    let skill_response =
-                        compact_menu_button(ui, &format!("技能 {}", displayed_skill_count));
-                    egui::Popup::menu(&skill_response)
+                ui.add_space(theme::SPACE_SM);
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(
+                            egui::Button::new(RichText::new("+").size(16.0).color(theme::TEXT_DIM))
+                                .fill(theme::PANEL_3)
+                                .stroke(egui::Stroke::NONE)
+                                .corner_radius(8)
+                                .min_size(egui::vec2(28.0, 26.0)),
+                        )
+                        .on_hover_text("添加文本 / Markdown / JSON / MIDI 附件")
+                        .clicked()
+                    {
+                        attach = true;
+                    }
+                    ui.add_space(theme::SPACE_XS);
+                    let advanced = ui.add(
+                        egui::Button::new(
+                            RichText::new(advanced_label)
+                                .size(theme::FONT_LABEL)
+                                .color(theme::TEXT_DIM),
+                        )
+                        .fill(theme::PANEL_3)
+                        .stroke(egui::Stroke::NONE)
+                        .corner_radius(8)
+                        .min_size(egui::vec2(0.0, 26.0)),
+                    );
+                    egui::Popup::menu(&advanced)
                         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                         .show(|ui| {
-                            ui.set_min_width(280.0);
+                            ui.set_min_width(360.0);
                             ui.label(
-                                RichText::new("载入技能")
-                                    .size(12.0)
+                                RichText::new("高级选项")
+                                    .size(theme::FONT_BODY)
                                     .strong()
                                     .color(theme::TEXT),
                             );
                             ui.label(
-                                RichText::new("未手动修改时跟随智能体默认")
-                                    .size(9.0)
+                                RichText::new("技能未手动修改时跟随智能体默认")
+                                    .size(theme::FONT_MICRO)
                                     .color(theme::TEXT_FAINT),
                             );
-                            ui.separator();
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.ai_chat.skill_filter)
-                                    .hint_text("搜索技能")
-                                    .desired_width(f32::INFINITY),
+
+                            ui.add_space(theme::SPACE_MD);
+                            ui.label(
+                                RichText::new(format!("技能 · {displayed_skill_count}"))
+                                    .size(theme::FONT_LABEL)
+                                    .strong()
+                                    .color(theme::TEXT),
                             );
-                            let filter = self.ai_chat.skill_filter.trim().to_lowercase();
-                            let all_selected = basic_choices
-                                .iter()
-                                .chain(technique_choices.iter())
-                                .filter(|(_, title)| {
-                                    filter.is_empty() || title.to_lowercase().contains(&filter)
-                                })
-                                .all(|(id, _)| {
-                                    effective_skill_checked(
-                                        &self.ai_chat,
+                            ui.add_space(theme::SPACE_XS);
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut self.ai_chat.skill_filter)
+                                        .hint_text("搜索技能")
+                                        .desired_width(180.0)
+                                        .min_size(egui::vec2(0.0, 28.0)),
+                                );
+                                let filter = self.ai_chat.skill_filter.trim().to_lowercase();
+                                let all_selected = basic_choices
+                                    .iter()
+                                    .chain(technique_choices.iter())
+                                    .filter(|(_, title)| {
+                                        filter.is_empty() || title.to_lowercase().contains(&filter)
+                                    })
+                                    .all(|(id, _)| {
+                                        effective_skill_checked(
+                                            &self.ai_chat,
+                                            &default_skill_ids,
+                                            &default_technique_ids,
+                                            id,
+                                            true,
+                                        )
+                                    });
+                                if theme::quiet_button(
+                                    ui,
+                                    if all_selected { "清空" } else { "全选" },
+                                )
+                                .clicked()
+                                {
+                                    ensure_skill_selection(
+                                        &mut self.ai_chat,
                                         &default_skill_ids,
                                         &default_technique_ids,
-                                        id,
-                                        true,
-                                    )
-                                });
-                            if ui
-                                .small_button(if all_selected { "清空" } else { "全选" })
-                                .clicked()
-                            {
-                                ensure_skill_selection(
-                                    &mut self.ai_chat,
-                                    &default_skill_ids,
-                                    &default_technique_ids,
-                                );
-                                if all_selected {
-                                    self.ai_chat.selected_skills.clear();
-                                    self.ai_chat.selected_techniques.clear();
-                                } else {
-                                    for (id, title) in
-                                        basic_choices.iter().chain(technique_choices.iter())
-                                    {
-                                        if filter.is_empty()
-                                            || title.to_lowercase().contains(&filter)
+                                    );
+                                    if all_selected {
+                                        self.ai_chat.selected_skills.clear();
+                                        self.ai_chat.selected_techniques.clear();
+                                    } else {
+                                        for (id, title) in
+                                            basic_choices.iter().chain(technique_choices.iter())
                                         {
-                                            let target = if basic_choices
-                                                .iter()
-                                                .any(|(basic, _)| basic == id)
+                                            if filter.is_empty()
+                                                || title.to_lowercase().contains(&filter)
                                             {
-                                                &mut self.ai_chat.selected_skills
-                                            } else {
-                                                &mut self.ai_chat.selected_techniques
-                                            };
-                                            toggle_choice(target, id, true);
+                                                let target = if basic_choices
+                                                    .iter()
+                                                    .any(|(basic, _)| basic == id)
+                                                {
+                                                    &mut self.ai_chat.selected_skills
+                                                } else {
+                                                    &mut self.ai_chat.selected_techniques
+                                                };
+                                                toggle_choice(target, id, true);
+                                            }
                                         }
                                     }
                                 }
-                            }
+                            });
                             egui::ScrollArea::vertical()
-                                .max_height(300.0)
+                                .id_salt("ai_advanced_skills")
+                                .max_height(170.0)
+                                .auto_shrink([false, false])
                                 .show(ui, |ui| {
+                                    let filter = self.ai_chat.skill_filter.trim().to_lowercase();
                                     ui.label(
-                                        RichText::new("基础").size(9.5).color(theme::TEXT_DIM),
+                                        RichText::new("基础")
+                                            .size(theme::FONT_MICRO)
+                                            .color(theme::TEXT_FAINT),
                                     );
                                     for (id, title) in &basic_choices {
                                         if !filter.is_empty()
@@ -710,9 +812,11 @@ impl SurfingApp {
                                             );
                                         }
                                     }
-                                    ui.separator();
+                                    ui.add_space(theme::SPACE_XS);
                                     ui.label(
-                                        RichText::new("技巧").size(9.5).color(theme::TEXT_DIM),
+                                        RichText::new("技巧")
+                                            .size(theme::FONT_MICRO)
+                                            .color(theme::TEXT_FAINT),
                                     );
                                     for (id, title) in &technique_choices {
                                         if !filter.is_empty()
@@ -741,28 +845,17 @@ impl SurfingApp {
                                         }
                                     }
                                 });
-                            ui.separator();
-                            ui.label(
-                                RichText::new(format!(
-                                    "已选 {} 项",
-                                    self.ai_chat.selected_skills.len()
-                                        + self.ai_chat.selected_techniques.len()
-                                ))
-                                .size(9.0)
-                                .color(theme::TEXT_FAINT),
-                            );
-                        });
-                    for (target, count, label) in [
-                        (true, usable_count, "可用乐器"),
-                        (false, required_count, "必须乐器"),
-                    ] {
-                        let response = compact_menu_button(ui, &format!("{label} {count}"));
-                        egui::Popup::menu(&response)
-                            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                            .show(|ui| {
-                                ui.set_min_width(300.0);
+
+                            for (target, count, label) in [
+                                (true, usable_count, "可用乐器"),
+                                (false, required_count, "必须乐器"),
+                            ] {
+                                ui.add_space(theme::SPACE_MD);
                                 ui.label(
-                                    RichText::new(label).size(12.0).strong().color(theme::TEXT),
+                                    RichText::new(format!("{label} · {count}"))
+                                        .size(theme::FONT_LABEL)
+                                        .strong()
+                                        .color(theme::TEXT),
                                 );
                                 ui.label(
                                     RichText::new(if target {
@@ -770,10 +863,10 @@ impl SurfingApp {
                                     } else {
                                         "要求 AI 至少各建一条轨道并使用"
                                     })
-                                    .size(9.0)
+                                    .size(theme::FONT_MICRO)
                                     .color(theme::TEXT_FAINT),
                                 );
-                                ui.separator();
+                                ui.add_space(theme::SPACE_XS);
                                 let filter_text = if target {
                                     &mut self.ai_chat.usable_filter
                                 } else {
@@ -782,7 +875,8 @@ impl SurfingApp {
                                 ui.add(
                                     egui::TextEdit::singleline(filter_text)
                                         .hint_text("搜索乐器")
-                                        .desired_width(f32::INFINITY),
+                                        .desired_width(f32::INFINITY)
+                                        .min_size(egui::vec2(0.0, 28.0)),
                                 );
                                 let needle = filter_text.trim().to_lowercase();
                                 let selected = if target {
@@ -800,9 +894,11 @@ impl SurfingApp {
                                     && visible.iter().all(|(value, _)| {
                                         selected.iter().any(|entry| entry == value)
                                     });
-                                if ui
-                                    .small_button(if all_selected { "清空" } else { "全选" })
-                                    .clicked()
+                                if theme::quiet_button(
+                                    ui,
+                                    if all_selected { "清空" } else { "全选" },
+                                )
+                                .clicked()
                                 {
                                     if all_selected {
                                         selected.clear();
@@ -813,7 +909,9 @@ impl SurfingApp {
                                     }
                                 }
                                 egui::ScrollArea::vertical()
-                                    .max_height(300.0)
+                                    .id_salt(("ai_advanced_instruments", target))
+                                    .max_height(150.0)
+                                    .auto_shrink([false, false])
                                     .show(ui, |ui| {
                                         for (value, name) in visible {
                                             let mut checked = selected.contains(value);
@@ -822,95 +920,98 @@ impl SurfingApp {
                                             }
                                         }
                                     });
-                                ui.separator();
-                                ui.label(
-                                    RichText::new(format!("已选 {} 项", selected.len()))
-                                        .size(9.0)
-                                        .color(theme::TEXT_FAINT),
-                                );
+                            }
+
+                            ui.add_space(theme::SPACE_MD);
+                            ui.label(
+                                RichText::new("智能体与模型")
+                                    .size(theme::FONT_LABEL)
+                                    .strong()
+                                    .color(theme::TEXT),
+                            );
+                            ui.add_space(theme::SPACE_XS);
+                            ui.horizontal(|ui| {
+                                let agent_label = agents
+                                    .iter()
+                                    .find(|(id, _)| id == &selected_agent)
+                                    .map(|(_, name)| name.as_str())
+                                    .unwrap_or("智能体");
+                                egui::ComboBox::from_id_salt("ai_agent")
+                                    .width(110.0)
+                                    .selected_text(
+                                        RichText::new(agent_label).size(theme::FONT_LABEL),
+                                    )
+                                    .show_ui(ui, |ui| {
+                                        for (id, name) in &agents {
+                                            ui.selectable_value(
+                                                &mut selected_agent,
+                                                id.clone(),
+                                                name,
+                                            );
+                                        }
+                                    });
+                                if selected_agent != self.ai_chat.agent {
+                                    self.ai_chat.select_agent(&selected_agent);
+                                }
+
+                                let mut preset_id = self.settings.ai.model_preset.clone();
+                                let preset_label = find_preset(&preset_id)
+                                    .map(|preset| preset.label)
+                                    .unwrap_or("自定义");
+                                egui::ComboBox::from_id_salt("ai_model_preset")
+                                    .width(120.0)
+                                    .selected_text(
+                                        RichText::new(preset_label).size(theme::FONT_LABEL),
+                                    )
+                                    .show_ui(ui, |ui| {
+                                        for entry in MODEL_PRESETS {
+                                            ui.selectable_value(
+                                                &mut preset_id,
+                                                entry.id.to_string(),
+                                                entry.label,
+                                            );
+                                        }
+                                    });
+                                if preset_id != self.settings.ai.model_preset {
+                                    self.settings.ai.model_preset = preset_id;
+                                    preset_changed = true;
+                                }
+
+                                let current_reasoning =
+                                    AiReasoning::from_id(&self.settings.ai.reasoning);
+                                let mut reasoning = current_reasoning;
+                                egui::ComboBox::from_id_salt("ai_reasoning")
+                                    .width(96.0)
+                                    .selected_text(
+                                        RichText::new(format!("推理 {}", reasoning.label()))
+                                            .size(theme::FONT_LABEL),
+                                    )
+                                    .show_ui(ui, |ui| {
+                                        for entry in AiReasoning::ALL {
+                                            ui.selectable_value(
+                                                &mut reasoning,
+                                                entry,
+                                                entry.label(),
+                                            );
+                                        }
+                                    });
+                                if reasoning != current_reasoning {
+                                    self.settings.ai.reasoning = reasoning.id().to_string();
+                                    reasoning_changed = true;
+                                }
                             });
-                    }
-                });
-
-                ui.add_space(2.0);
-                ui.horizontal(|ui| {
-                    if ui
-                        .add(
-                            egui::Button::new(RichText::new("+").size(16.0).color(theme::TEXT_DIM))
-                                .fill(theme::PANEL_3)
-                                .corner_radius(6)
-                                .min_size(egui::vec2(24.0, 24.0)),
-                        )
-                        .on_hover_text("添加文本 / Markdown / JSON / MIDI 附件")
-                        .clicked()
-                    {
-                        attach = true;
-                    }
-                    let agent_label = agents
-                        .iter()
-                        .find(|(id, _)| id == &selected_agent)
-                        .map(|(_, name)| name.as_str())
-                        .unwrap_or("智能体");
-                    egui::ComboBox::from_id_salt("ai_agent")
-                        .width(80.0)
-                        .selected_text(RichText::new(agent_label).size(9.5))
-                        .show_ui(ui, |ui| {
-                            for (id, name) in &agents {
-                                ui.selectable_value(&mut selected_agent, id.clone(), name);
-                            }
                         });
-                    if selected_agent != self.ai_chat.agent {
-                        self.ai_chat.select_agent(&selected_agent);
-                    }
-
-                    let mut preset_id = self.settings.ai.model_preset.clone();
-                    let preset_label = find_preset(&preset_id)
-                        .map(|preset| preset.label)
-                        .unwrap_or("自定义");
-                    egui::ComboBox::from_id_salt("ai_model_preset")
-                        .width(100.0)
-                        .selected_text(RichText::new(preset_label).size(9.5))
-                        .show_ui(ui, |ui| {
-                            for entry in MODEL_PRESETS {
-                                ui.selectable_value(
-                                    &mut preset_id,
-                                    entry.id.to_string(),
-                                    entry.label,
-                                );
-                            }
-                        });
-                    if preset_id != self.settings.ai.model_preset {
-                        self.settings.ai.model_preset = preset_id;
-                        preset_changed = true;
-                    }
-
-                    let current_reasoning = AiReasoning::from_id(&self.settings.ai.reasoning);
-                    let mut reasoning = current_reasoning;
-                    egui::ComboBox::from_id_salt("ai_reasoning")
-                        .width(58.0)
-                        .selected_text(
-                            RichText::new(format!("推理 {}", reasoning.label())).size(9.0),
-                        )
-                        .show_ui(ui, |ui| {
-                            for entry in AiReasoning::ALL {
-                                ui.selectable_value(&mut reasoning, entry, entry.label());
-                            }
-                        });
-                    if reasoning != current_reasoning {
-                        self.settings.ai.reasoning = reasoning.id().to_string();
-                        reasoning_changed = true;
-                    }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if self.ai_chat.pending.is_some() {
                             if ui
                                 .add(
                                     egui::Button::new(
-                                        RichText::new("■").size(12.0).color(egui::Color32::WHITE),
+                                        RichText::new("■").size(13.0).color(egui::Color32::WHITE),
                                     )
                                     .fill(theme::RED)
-                                    .corner_radius(16)
-                                    .min_size(egui::vec2(32.0, 32.0)),
+                                    .corner_radius(17)
+                                    .min_size(egui::vec2(34.0, 34.0)),
                                 )
                                 .on_hover_text("停止等待当前回复")
                                 .clicked()
@@ -928,11 +1029,11 @@ impl SurfingApp {
                             if ui
                                 .add(
                                     egui::Button::new(
-                                        RichText::new("↑").size(15.0).color(egui::Color32::WHITE),
+                                        RichText::new("↑").size(16.0).color(egui::Color32::WHITE),
                                     )
                                     .fill(fill)
-                                    .corner_radius(16)
-                                    .min_size(egui::vec2(32.0, 32.0)),
+                                    .corner_radius(17)
+                                    .min_size(egui::vec2(34.0, 34.0)),
                                 )
                                 .on_hover_text("发送（Ctrl+Enter）")
                                 .clicked()
@@ -1197,7 +1298,7 @@ fn paint_ai_message(
     } else {
         paint_assistant_header(ui, index, meta, reasoning);
         ui.separator();
-        render_markdown(ui, content);
+        crate::ui::markdown::render(ui, content, theme::FONT_MICRO);
     }
     if let Some(summary) = changes {
         ui.add_space(6.0);
@@ -1303,179 +1404,6 @@ fn paint_assistant_header(
                 paint_message_meta(ui, meta);
             }
         });
-    }
-}
-
-/// 所属模块：ui / AI 编曲面板 / 助手输出
-/// 功能：把助手回复按 Markdown 轻量渲染到深色背景：标题、列表、加粗、行内代码与分割线。
-/// 输入：`ui`、Markdown 文本。
-/// 输出/副作用：只绘制；不修改状态。
-/// 复杂度：时间 O(文本长度)，空间 O(行数)。
-///
-/// Module: ui / AI composition panel / assistant output
-/// Purpose: Lightweight Markdown rendering on the dark canvas: headings, lists, bold, inline code and rules.
-/// Inputs: `ui`, Markdown text.
-/// Outputs / side effects: paints only; no state change.
-/// Complexity: O(text length) time and O(lines) space.
-fn render_markdown(ui: &mut egui::Ui, text: &str) {
-    let mut in_code = false;
-    for line in text.lines() {
-        let trimmed = line.trim_end();
-        if trimmed.trim_start().starts_with("```") {
-            in_code = !in_code;
-            ui.add_space(2.0);
-            continue;
-        }
-        if in_code {
-            egui::Frame::NONE
-                .fill(theme::PANEL_2)
-                .corner_radius(4)
-                .inner_margin(egui::Margin::symmetric(6, 3))
-                .show(ui, |ui| {
-                    ui.label(
-                        RichText::new(line)
-                            .monospace()
-                            .size(9.5)
-                            .color(theme::TEXT_DIM),
-                    );
-                });
-            continue;
-        }
-        let trimmed_start = trimmed.trim_start();
-        if trimmed.trim().is_empty() {
-            ui.add_space(4.0);
-            continue;
-        }
-        if trimmed_start == "---" || trimmed_start == "***" {
-            ui.separator();
-            continue;
-        }
-        if let Some(rest) = trimmed_start.strip_prefix("### ") {
-            render_inline(ui, rest, 12.0, true);
-            continue;
-        }
-        if let Some(rest) = trimmed_start.strip_prefix("## ") {
-            render_inline(ui, rest, 13.0, true);
-            continue;
-        }
-        if let Some(rest) = trimmed_start.strip_prefix("# ") {
-            render_inline(ui, rest, 14.0, true);
-            continue;
-        }
-        if let Some(rest) = trimmed_start
-            .strip_prefix("- ")
-            .or_else(|| trimmed_start.strip_prefix("* "))
-        {
-            ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new("•").size(10.5).color(theme::TEXT_DIM));
-                render_inline(ui, rest, 10.5, false);
-            });
-            continue;
-        }
-        if let Some((number, rest)) = split_numbered(trimmed_start) {
-            ui.horizontal_wrapped(|ui| {
-                ui.label(
-                    RichText::new(format!("{number}."))
-                        .size(10.5)
-                        .color(theme::TEXT_DIM),
-                );
-                render_inline(ui, rest, 10.5, false);
-            });
-            continue;
-        }
-        render_inline(ui, trimmed_start, 10.5, false);
-    }
-}
-
-/// 所属模块：ui / AI 编曲面板 / Markdown
-/// 功能：解析 `**加粗**` 与 `` `行内代码` `` 后按行内片段绘制。
-/// 输入：`ui`、文本、字号、是否整体加粗。
-/// 输出/副作用：只绘制；不修改状态。
-/// 复杂度：时间 O(字符数)，空间 O(片段数)。
-///
-/// Module: ui / AI composition panel / Markdown
-/// Purpose: Parse `**bold**` and `` `inline code` `` then draw inline spans.
-/// Inputs: `ui`, text, size, whole-line bold flag.
-/// Outputs / side effects: paints only; no state change.
-/// Complexity: O(characters) time and O(spans) space.
-fn render_inline(ui: &mut egui::Ui, text: &str, size: f32, bold: bool) {
-    let spans = parse_inline(text);
-    ui.horizontal_wrapped(|ui| {
-        for (span, span_bold, span_code) in spans {
-            let mut rich = RichText::new(span).size(size).color(theme::TEXT);
-            if bold || span_bold {
-                rich = rich.strong();
-            }
-            if span_code {
-                rich = rich.monospace().background_color(theme::PANEL_2);
-            }
-            ui.label(rich);
-        }
-    });
-}
-
-/// 所属模块：ui / AI 编曲面板 / Markdown
-/// 功能：把一行文本拆成普通、加粗与行内代码片段。
-/// 输入：`text` 单行文本。
-/// 输出/副作用：片段列表；不修改输入。
-/// 复杂度：时间 O(字符数)，空间 O(片段数)。
-///
-/// Module: ui / AI composition panel / Markdown
-/// Purpose: Split one line into normal, bold and inline-code spans.
-/// Inputs: `text`.
-/// Outputs / side effects: spans; the input is unchanged.
-/// Complexity: O(characters) time and O(spans) space.
-fn parse_inline(text: &str) -> Vec<(String, bool, bool)> {
-    let mut spans = Vec::new();
-    let mut buffer = String::new();
-    let mut bold = false;
-    let mut code = false;
-    let chars: Vec<char> = text.chars().collect();
-    let mut index = 0;
-    while index < chars.len() {
-        if chars[index] == '`' {
-            if !buffer.is_empty() {
-                spans.push((std::mem::take(&mut buffer), bold, code));
-            }
-            code = !code;
-            index += 1;
-            continue;
-        }
-        if chars[index] == '*' && index + 1 < chars.len() && chars[index + 1] == '*' {
-            if !buffer.is_empty() {
-                spans.push((std::mem::take(&mut buffer), bold, code));
-            }
-            bold = !bold;
-            index += 2;
-            continue;
-        }
-        buffer.push(chars[index]);
-        index += 1;
-    }
-    if !buffer.is_empty() {
-        spans.push((buffer, bold, code));
-    }
-    spans
-}
-
-/// 所属模块：ui / AI 编曲面板 / Markdown
-/// 功能：识别 `1. ` 形式的有序列表前缀。
-/// 输入：`text` 单行文本。
-/// 输出/副作用：序号与剩余文本；不是有序列表返回 `None`。
-/// 复杂度：时间 O(数字位数)，空间 O(1)。
-///
-/// Module: ui / AI composition panel / Markdown
-/// Purpose: Recognise a `1. ` ordered-list prefix.
-/// Inputs: `text`.
-/// Outputs / side effects: number and remainder, or `None`.
-/// Complexity: O(digits) time and O(1) space.
-fn split_numbered(text: &str) -> Option<(&str, &str)> {
-    let dot = text.find(". ")?;
-    let (number, rest) = text.split_at(dot);
-    if !number.is_empty() && number.chars().all(|character| character.is_ascii_digit()) {
-        Some((number, &rest[2..]))
-    } else {
-        None
     }
 }
 

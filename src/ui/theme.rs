@@ -8,6 +8,9 @@
 //! - `apply_style`：把 IDEA New UI 的配色、圆角、间距与文字尺寸写入全局样式。
 //! - `track_color` / `palette_color` / `hsv_to_rgb`：轨道色与 16×16 片段调色板。
 //! - `with_alpha`：给颜色附加透明度。
+//! - 设计令牌：`SPACE_*` / `FONT_*` / `RADIUS_*` / `CARD_PAD` / `CONTROL_H` / `FIELD_H`。
+//! - 复用表面与控件：`card_frame` / `sheet_frame` / `floating_frame` / `field_label` /
+//!   `section_title` / `primary_button` / `quiet_button` / `danger_button` / `chip`。
 //! - `level_meter` / `badge` / `toggle_switch` / `menu_button`：主题内的复用绘制。
 //!
 //! Module: ui / theme
@@ -21,6 +24,9 @@
 //! - `apply_style`: write the IDEA New UI colors, radii, spacing and text sizes into the global style.
 //! - `track_color` / `palette_color` / `hsv_to_rgb`: track colors and the 16×16 clip palette.
 //! - `with_alpha`: attach alpha to a color.
+//! - Design tokens: `SPACE_*` / `FONT_*` / `RADIUS_*` / `CARD_PAD` / `CONTROL_H` / `FIELD_H`.
+//! - Shared surfaces and controls: `card_frame` / `sheet_frame` / `floating_frame` / `field_label` /
+//!   `section_title` / `primary_button` / `quiet_button` / `danger_button` / `chip`.
 //! - `level_meter` / `badge` / `toggle_switch` / `menu_button`: reusable painters owned by the theme.
 
 use eframe::egui::{self, Color32, CornerRadius, FontFamily, Stroke, Vec2};
@@ -84,6 +90,40 @@ pub const RED: Color32 = Color32::from_rgb(219, 92, 92);
 /// 次强调紫。
 /// Secondary violet.
 pub const VIOLET: Color32 = Color32::from_rgb(177, 138, 230);
+
+// ----- 设计令牌：间距 / 字号 / 圆角 ----------------------------------------
+// Design tokens: spacing, type scale and radii.
+// 主页、Agent 资料库与 AI 面板统一按这套令牌取间距与字号，避免同类页面各自写死数值。
+// The home pages, Agent library and AI panel share these tokens so similar pages cannot drift.
+
+/// 间距阶梯：4 / 8 / 12 / 16 / 24 / 32。
+/// Spacing scale: 4 / 8 / 12 / 16 / 24 / 32.
+pub const SPACE_XS: f32 = 4.0;
+pub const SPACE_SM: f32 = 8.0;
+pub const SPACE_MD: f32 = 12.0;
+pub const SPACE_LG: f32 = 16.0;
+pub const SPACE_XL: f32 = 24.0;
+pub const SPACE_2XL: f32 = 32.0;
+
+/// 字号阶梯：小字 / 标签 / 正文 / 小节标题 / 页面标题。
+/// Type scale: micro / label / body / section / page title.
+pub const FONT_MICRO: f32 = 10.5;
+pub const FONT_LABEL: f32 = 11.0;
+pub const FONT_BODY: f32 = 12.5;
+pub const FONT_SECTION: f32 = 15.0;
+pub const FONT_TITLE: f32 = 18.0;
+pub const FONT_PAGE: f32 = 22.0;
+
+/// 卡片与容器圆角、内边距。
+/// Card and sheet radii plus inner padding.
+pub const RADIUS_CARD: u8 = 10;
+pub const RADIUS_SHEET: u8 = 12;
+pub const CARD_PAD: i8 = 16;
+
+/// 标准控件与表单输入高度。
+/// Standard control and form-field heights.
+pub const CONTROL_H: f32 = 28.0;
+pub const FIELD_H: f32 = 36.0;
 
 // ----- 窗口 chrome 别名 ----------------------------------------------------
 // Window chrome aliases. They intentionally reuse the IDE palette so the custom title bar,
@@ -303,6 +343,189 @@ pub fn with_alpha(color: Color32, alpha: u8) -> Color32 {
     Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)
 }
 
+/// 所属模块：ui / 主题 / 卡片
+/// 功能：返回统一的行/卡片表面（`PANEL_2`、10 点圆角、16 点内边距、无边框）。
+/// 输入：无。
+/// 输出/副作用：新的 `Frame`；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: ui / theme / card
+/// Purpose: Return the shared row/card surface (`PANEL_2`, 10 pt radius, 16 pt padding, no border).
+/// Inputs: none.
+/// Outputs / side effects: a new `Frame`; no state change.
+/// Complexity: O(1) time and space.
+pub fn card_frame() -> egui::Frame {
+    egui::Frame::NONE
+        .fill(PANEL_2)
+        .corner_radius(RADIUS_CARD)
+        .inner_margin(egui::Margin::same(CARD_PAD))
+}
+
+/// 所属模块：ui / 主题 / 卡片
+/// 功能：返回页面级容器表面（`PANEL`、12 点圆角、16 点内边距、无边框），用于列表与编辑区。
+/// 输入：无。
+/// 输出/副作用：新的 `Frame`；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: ui / theme / card
+/// Purpose: Return the page-level sheet surface (`PANEL`, 12 pt radius, 16 pt padding, no border)
+/// used by lists and editors.
+/// Inputs: none.
+/// Outputs / side effects: a new `Frame`; no state change.
+/// Complexity: O(1) time and space.
+pub fn sheet_frame() -> egui::Frame {
+    egui::Frame::NONE
+        .fill(PANEL)
+        .corner_radius(RADIUS_SHEET)
+        .inner_margin(egui::Margin::same(CARD_PAD))
+}
+
+/// 所属模块：ui / 主题 / 卡片
+/// 功能：返回浮动面板表面：`PANEL` 底、12 点圆角与柔和投影，让 AI 面板从编辑区里“浮”起来。
+/// 输入：无。
+/// 输出/副作用：新的 `Frame`；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: ui / theme / card
+/// Purpose: Return the floating panel surface: `PANEL` fill, 12 pt radius and a soft drop shadow so
+/// the AI panel lifts off the editor.
+/// Inputs: none.
+/// Outputs / side effects: a new `Frame`; no state change.
+/// Complexity: O(1) time and space.
+pub fn floating_frame() -> egui::Frame {
+    sheet_frame().shadow(egui::epaint::Shadow {
+        offset: [0, 6],
+        blur: 24,
+        spread: 0,
+        color: Color32::from_black_alpha(140),
+    })
+}
+
+/// 所属模块：ui / 主题 / 文字
+/// 功能：绘制表单字段标签（11 点、次要色，位于输入框上方）。
+/// 输入：`ui`；`text` 标签文本。
+/// 输出/副作用：只绘制；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: ui / theme / text
+/// Purpose: Draw a form-field label (11 pt, secondary color, above the input).
+/// Inputs: `ui`; `text`.
+/// Outputs / side effects: paint only; no state change.
+/// Complexity: O(1) time and space.
+pub fn field_label(ui: &mut egui::Ui, text: &str) {
+    ui.label(egui::RichText::new(text).size(FONT_LABEL).color(TEXT_DIM));
+}
+
+/// 所属模块：ui / 主题 / 文字
+/// 功能：绘制小节标题（15 点、主文本、字重加强）。
+/// 输入：`ui`；`text` 标题文本。
+/// 输出/副作用：只绘制；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: ui / theme / text
+/// Purpose: Draw a section heading (15 pt, primary text, strong).
+/// Inputs: `ui`; `text`.
+/// Outputs / side effects: paint only; no state change.
+/// Complexity: O(1) time and space.
+pub fn section_title(ui: &mut egui::Ui, text: &str) {
+    ui.label(
+        egui::RichText::new(text)
+            .size(FONT_SECTION)
+            .strong()
+            .color(TEXT),
+    );
+}
+
+/// 所属模块：ui / 主题 / 按钮
+/// 功能：绘制主按钮：蓝色实底、白字、8 点圆角，一屏只保留一个。
+/// 输入：`ui`；`label` 文本。
+/// 输出/副作用：返回点击响应；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: ui / theme / button
+/// Purpose: Draw the primary button: solid accent fill, white text, 8 pt radius; one per view.
+/// Inputs: `ui`; `label`.
+/// Outputs / side effects: the click response; no state change.
+/// Complexity: O(1) time and space.
+pub fn primary_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    ui.add(
+        egui::Button::new(
+            egui::RichText::new(label)
+                .size(FONT_BODY)
+                .color(Color32::WHITE),
+        )
+        .fill(ACCENT)
+        .corner_radius(8)
+        .min_size(egui::Vec2::new(72.0, CONTROL_H)),
+    )
+}
+
+/// 所属模块：ui / 主题 / 按钮
+/// 功能：绘制文字按钮：无背景、次要色，用于取消/导出等次要操作。
+/// 输入：`ui`；`label` 文本。
+/// 输出/副作用：返回点击响应；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: ui / theme / button
+/// Purpose: Draw a text button (no fill, secondary color) for cancel/export-style actions.
+/// Inputs: `ui`; `label`.
+/// Outputs / side effects: the click response; no state change.
+/// Complexity: O(1) time and space.
+pub fn quiet_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    ui.add(
+        egui::Button::new(egui::RichText::new(label).size(FONT_LABEL).color(TEXT_DIM))
+            .frame(false)
+            .min_size(egui::Vec2::new(0.0, CONTROL_H)),
+    )
+}
+
+/// 所属模块：ui / 主题 / 按钮
+/// 功能：绘制危险文字按钮（红色文字、无背景）。
+/// 输入：`ui`；`label` 文本。
+/// 输出/副作用：返回点击响应；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: ui / theme / button
+/// Purpose: Draw a danger text button (red text, no fill).
+/// Inputs: `ui`; `label`.
+/// Outputs / side effects: the click response; no state change.
+/// Complexity: O(1) time and space.
+pub fn danger_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    ui.add(
+        egui::Button::new(egui::RichText::new(label).size(FONT_LABEL).color(RED))
+            .frame(false)
+            .min_size(egui::Vec2::new(0.0, CONTROL_H)),
+    )
+}
+
+/// 所属模块：ui / 主题 / 按钮
+/// 功能：绘制筛选胶囊：选中时蓝底白字，未选中时浅表面、次要文字，无边框。
+/// 输入：`ui`；`label` 文本；`selected` 是否选中。
+/// 输出/副作用：返回点击响应；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: ui / theme / chip
+/// Purpose: Draw a filter chip: accent fill with white text when selected, a quiet surface otherwise,
+/// and no border.
+/// Inputs: `ui`; `label`; `selected`.
+/// Outputs / side effects: the click response; no state change.
+/// Complexity: O(1) time and space.
+pub fn chip(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Response {
+    let (fill, color) = if selected {
+        (ACCENT_DARK, Color32::WHITE)
+    } else {
+        (PANEL_2, TEXT_DIM)
+    };
+    ui.add(
+        egui::Button::new(egui::RichText::new(label).size(FONT_LABEL).color(color))
+            .fill(fill)
+            .stroke(egui::Stroke::NONE)
+            .corner_radius(8)
+            .min_size(egui::Vec2::new(0.0, 26.0)),
+    )
+    .on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
 /// Draw a horizontal or vertical peak meter.
 pub fn level_meter(painter: &egui::Painter, rect: egui::Rect, level: f32, vertical: bool) {
     painter.rect_filled(rect, CornerRadius::from(2), BG_DEEP);
@@ -330,11 +553,12 @@ pub fn level_meter(painter: &egui::Painter, rect: egui::Rect, level: f32, vertic
 }
 
 pub fn badge(ui: &mut egui::Ui, text: &str, color: Color32) {
+    // 标签只做低饱和底色，不再加描边：避免页面出现一圈圈细边框。
+    // Tags use a low-saturation fill without a stroke so pages do not fill up with hairlines.
     egui::Frame::NONE
-        .fill(with_alpha(color, 32))
-        .stroke(Stroke::new(1.0_f32, with_alpha(color, 130)))
-        .corner_radius(4)
-        .inner_margin(egui::Margin::symmetric(5, 1))
+        .fill(with_alpha(color, 28))
+        .corner_radius(6)
+        .inner_margin(egui::Margin::symmetric(6, 2))
         .show(ui, |ui| {
             ui.label(egui::RichText::new(text).color(color).size(10.0));
         });
