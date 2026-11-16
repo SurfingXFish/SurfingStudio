@@ -1,6 +1,6 @@
 ﻿[package]
 name = "surfing-ai-data"
-version = "1.3.6-a"
+version = "1.3.7"
 edition = "2024"
 rust-version = "1.85"
 description = "SurfingStudio AI library storage DLL: agents as JSON, skills as Markdown"
