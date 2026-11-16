@@ -3501,7 +3501,7 @@ dependencies = [
 
 [[package]]
 name = "surfing-studio"
-version = "1.3.4-a"
+version = "1.3.5-a"
 dependencies = [
  "cpal",
  "crc32fast",
