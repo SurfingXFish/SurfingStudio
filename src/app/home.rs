@@ -45,7 +45,7 @@
 //!   `plugin_detail_field` / `path_hash` / `project_display_name`: rows and names.
 //! - `template_card` / `example_card` / `template_family_filter` / `template_filter_chip`: template and example cards.
 
-use super::i18n::{t, t_args, t_owned};
+use super::i18n::{t, t_args};
 use super::panels::{icon_button, paint_gear, paint_studio_logo};
 use super::time_fmt;
 use super::*;
