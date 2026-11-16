@@ -9,11 +9,12 @@
 //! - `PlatformRuntime::info` / `caps`：后端标识与能力描述。
 //! - `PlatformRuntime::system_locale`：系统区域标识（首次启动选择界面语言）。
 //! - `PlatformRuntime::install_dir` / `config_dir` / `cache_dir` / `data_dir` / `log_dir` /
-//!   `temp_dir`：平台存储目录（桌面端全部位于安装目录 `data/` 下）。
+//!   `temp_dir` / `documents_dir`：平台存储目录（桌面端使用系统用户目录）。
 //! - `PlatformRuntime::pick_file` / `pick_folder` / `save_file`：原生文件对话框。
 //! - `PlatformRuntime::exit_process`：确定性退出（各平台自行选择实现）。
-//! - `install_dir` / `caps` / `config_dir` / `cache_dir` / `log_dir` / `temp_dir` / `pick_file` /
-//!   `pick_folder` / `save_file` / `exit_process`：对运行时的模块级快捷方式。
+//! - `install_dir` / `caps` / `config_dir` / `cache_dir` / `log_dir` / `temp_dir` / `documents_dir` /
+//!   `pick_file` / `pick_folder` / `save_file` / `exit_process`：对运行时的模块级快捷方式。
+//! - `legacy_data_dir`：旧版安装目录下的 `data/`（仅用于升级迁移）。
 //!
 //! Module: platform / platform runtime
 //! Purpose:
@@ -28,11 +29,12 @@
 //! - `PlatformRuntime::info` / `caps`: backend identity and capabilities.
 //! - `PlatformRuntime::system_locale`: system locale id (used to pick the UI language on first launch).
 //! - `PlatformRuntime::install_dir` / `config_dir` / `cache_dir` / `data_dir` / `log_dir` /
-//!   `temp_dir`: platform storage (all under `<install>/data` on desktop).
+//!   `temp_dir` / `documents_dir`: platform storage (system user directories on desktop).
 //! - `PlatformRuntime::pick_file` / `pick_folder` / `save_file`: native file dialogs.
 //! - `PlatformRuntime::exit_process`: deterministic exit (each platform picks its own mechanism).
-//! - `install_dir` / `caps` / `config_dir` / `cache_dir` / `log_dir` / `temp_dir` / `pick_file` /
-//!   `pick_folder` / `save_file` / `exit_process`: module-level shortcuts over the runtime.
+//! - `install_dir` / `caps` / `config_dir` / `cache_dir` / `log_dir` / `temp_dir` / `documents_dir` /
+//!   `pick_file` / `pick_folder` / `save_file` / `exit_process`: module-level shortcuts.
+//! - `legacy_data_dir`: the old `<install>/data` directory (upgrade migration only).
 
 mod backend;
 mod backends;
@@ -49,17 +51,17 @@ use std::path::{Path, PathBuf};
 /// 全局配置目录名（安卓平台使用）。
 /// Global configuration directory name (used by the Android platform).
 pub const APP_DIR_NAME: &str = "SurfingStudio";
-/// 数据子目录名（位于安装目录下）。
-/// Data sub-directory name under the install directory.
+/// 数据子目录名（旧版安装目录下，仅用于升级迁移）。
+/// Data sub-directory name under the legacy install directory (upgrade migration only).
 pub const DATA_DIR_SUFFIX: &str = "data";
-/// 缓存子目录名（位于数据目录下）。
-/// Cache sub-directory name under the data directory.
+/// 缓存子目录名（位于应用用户缓存根下）。
+/// Cache sub-directory name under the app user cache root.
 pub const CACHE_DIR_SUFFIX: &str = "cache";
-/// 日志子目录名（位于数据目录下）。
-/// Log sub-directory name under the data directory.
+/// 日志子目录名（位于应用用户缓存根下）。
+/// Log sub-directory name under the app user cache root.
 pub const LOG_DIR_SUFFIX: &str = "logs";
-/// 临时子目录名（位于数据目录下）。
-/// Temp sub-directory name under the data directory.
+/// 临时子目录名（位于应用用户缓存根下）。
+/// Temp sub-directory name under the app user cache root.
 pub const TEMP_DIR_SUFFIX: &str = "temp";
 
 /// 平台运行时：持有当前系统后端，暴露唯一的上层入口。
@@ -223,6 +225,22 @@ impl PlatformRuntime {
     /// Complexity: O(path length) time and space.
     pub fn temp_dir(&self) -> PathBuf {
         self.backend.temp_dir()
+    }
+
+    /// 所属模块：platform / 存储目录
+    /// 功能：返回系统“文档”目录，用作默认工程目录的根；不支持的后端返回 `None`。
+    /// 输入：`self`。
+    /// 输出/副作用：目录路径或 `None`；不创建目录。
+    /// 复杂度：时间 O(路径长度)，空间 O(路径长度)。
+    ///
+    /// Module: platform / storage directories
+    /// Purpose: Return the system "Documents" directory used as the root of the default project
+    /// directory; unsupported backends return `None`.
+    /// Inputs: `self`.
+    /// Outputs / side effects: the path or `None`; nothing is created.
+    /// Complexity: O(path length) time and space.
+    pub fn documents_dir(&self) -> Option<PathBuf> {
+        self.backend.documents_dir()
     }
 
     /// 所属模块：platform / 文件对话框
@@ -448,6 +466,45 @@ pub fn log_dir() -> PathBuf {
 /// Complexity: O(path length) time and space.
 pub fn temp_dir() -> PathBuf {
     PlatformRuntime::standard().temp_dir()
+}
+
+/// 所属模块：platform / 快捷入口
+/// 功能：返回系统“文档”目录；等价于 `PlatformRuntime::standard().documents_dir()`。
+/// 输入：无。
+/// 输出/副作用：目录路径或 `None`；不创建目录。
+/// 复杂度：时间 O(路径长度)，空间 O(路径长度)。
+///
+/// Module: platform / shortcuts
+/// Purpose: Return the system "Documents" directory; same as
+/// `PlatformRuntime::standard().documents_dir()`.
+/// Inputs: none.
+/// Outputs / side effects: the path or `None`; nothing is created.
+/// Complexity: O(path length) time and space.
+pub fn documents_dir() -> Option<PathBuf> {
+    PlatformRuntime::standard().documents_dir()
+}
+
+/// 所属模块：platform / 快捷入口
+/// 功能：返回旧版安装目录下的 `data/`，仅用于升级迁移旧设置与 AI 资料；安卓返回 `None`。
+/// 输入：无。
+/// 输出/副作用：目录路径或 `None`；不创建目录。
+/// 复杂度：时间 O(路径长度)，空间 O(路径长度)。
+///
+/// Module: platform / shortcuts
+/// Purpose: Return the legacy `<install>/data` directory used only to migrate old settings and AI
+/// data during upgrades; Android returns `None`.
+/// Inputs: none.
+/// Outputs / side effects: the path or `None`; nothing is created.
+/// Complexity: O(path length) time and space.
+pub fn legacy_data_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "android")]
+    {
+        None
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        install_dir().map(|base| base.join(DATA_DIR_SUFFIX))
+    }
 }
 
 /// 所属模块：platform / 快捷入口

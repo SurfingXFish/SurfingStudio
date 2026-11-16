@@ -23,8 +23,9 @@ AppPublisher=SurfingStudio
 DefaultDirName={autopf}\SurfingStudio
 DefaultGroupName=SurfingStudio
 DisableProgramGroupPage=yes
-; 安装到 Program Files 需要管理员权限；数据目录在 [Dirs] 中授予普通用户修改权限。
-; Installing into Program Files requires elevation; [Dirs] grants users modify rights on data.
+; 安装到 Program Files 需要管理员权限；运行期数据写入用户目录，安装目录保持只读。
+; Installing into Program Files requires elevation; runtime data goes to user directories and the
+; install directory stays read-only.
 PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -51,25 +52,9 @@ Name: "desktopicon"; Description: "创建桌面快捷方式 (Create a desktop sh
 ; by relative path.
 Source: "{#StageDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
-[Dirs]
-; 强制数据目录：用户配置、工程、日志、缓存与 AI 技能/智能体都写入这里。
-; Enforced data directory: settings, projects, logs, cache and AI agents/skills all live here.
-Name: "{app}\data"; Permissions: users-modify
-Name: "{app}\data\ai"; Permissions: users-modify
-Name: "{app}\data\logs"; Permissions: users-modify
-Name: "{app}\data\cache"; Permissions: users-modify
-Name: "{app}\data\temp"; Permissions: users-modify
-Name: "{app}\data\Projects"; Permissions: users-modify
-
 [Icons]
 Name: "{group}\SurfingStudio"; Filename: "{app}\SurfingStudio.exe"; WorkingDir: "{app}"
 Name: "{autodesktop}\SurfingStudio"; Filename: "{app}\SurfingStudio.exe"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\SurfingStudio.exe"; Description: "启动 SurfingStudio (Launch SurfingStudio)"; Flags: nowait postinstall skipifsilent
-
-[UninstallDelete]
-; 只清理可再生的缓存与临时文件；settings、ai、Projects 与 logs 保留给用户。
-; Only remove regenerable cache/temp files; keep settings, ai, Projects and logs for the user.
-Type: filesandordirs; Name: "{app}\data\temp"
-Type: filesandordirs; Name: "{app}\data\cache"

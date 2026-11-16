@@ -6,7 +6,7 @@
 - **以 MIDI 为中心**：编曲、钢琴卷帘、控制器自动化是主路径，音频片段作为补充。
 - **开箱即用**：内置复音合成器、鼓机与 128 件采样乐器，即使没有安装任何插件也能发声。
 - **专业能力**：VST3 原生编辑器、VST2 支持、插件状态持久化、实时渲染、多通道 / 环绕声路由与独立导出窗口。
-- **便携数据**：设置、工程、日志与 AI 智能体 / 技能全部位于安装目录 `data/` 下。
+- **规范存储**：设置与 AI 资料位于 `%APPDATA%\SurfingStudio`，缓存、日志与临时文件位于 `%LOCALAPPDATA%\SurfingStudio`，默认工程目录为 `文档\SurfingStudio\Projects`；安装目录只读。
 
 当前版本 `1.3.5a`（内部构建版），主要面向 Windows 桌面，也可在安卓平板 / 手机上运行（NativeActivity + OpenGL ES，单窗口模式）。
 
@@ -52,8 +52,9 @@ powershell -ExecutionPolicy Bypass -File tools\package.ps1
 # 产物：dist\SurfingStudio-<版本>-setup.exe
 ```
 
-安装包默认安装到 `Program Files\SurfingStudio`，并授予普通用户对 `data\` 的修改权限；
-智能体、技能、设置、工程与日志都保存在该目录下。
+安装包默认安装到 `Program Files\SurfingStudio`，安装目录只包含程序文件；
+设置与 AI 资料写入 `%APPDATA%\SurfingStudio`，缓存、日志与临时文件写入 `%LOCALAPPDATA%\SurfingStudio`，
+默认工程保存在 `文档\SurfingStudio\Projects`，卸载不会删除这些用户数据。
 
 打开工程支持 `.sfsd` 与 SoundBug `.sndp`（导入后需另存为 `.sfsd`）。
 
@@ -89,21 +90,33 @@ vendor/vst3-host/   # 本地 patch 的 VST3 宿主库
 doc/                # 项目简介、技术文档、代码规范、关键常量、框架工作流
 ```
 
-安装目录结构（`data/` 在首次运行时自动创建）：
+安装目录结构（只包含程序文件，运行期不再写入）：
 
 ```text
 SurfingStudio.exe        # 瘦启动器
 surfing_studio.dll       # 运行时（全部业务逻辑）
 surfing_ai_data.dll      # AI 资料存储与导入导出
-data/
+```
+
+用户数据目录（Windows）：
+
+```text
+%APPDATA%\SurfingStudio\
 ├─ settings.json
 ├─ ai/
 │  ├─ library.json                       # 结构版本与条目顺序
 │  ├─ agents/<id>.json                   # 智能体
-│  └─ skills/basics|techniques/*.md      # 基础技能 / 编曲技巧
-│     skills/instruments/*.json          # 乐器资料
-├─ logs/  cache/  temp/  Projects/
+│  ├─ skills/basics|techniques/*.md      # 基础技能 / 编曲技巧
+│  └─ skills/instruments/*.json          # 乐器资料
+%LOCALAPPDATA%\SurfingStudio\
+├─ cache/plugin-cache.json
+├─ logs/surfing-*.sflog
+└─ temp/{export,recovery}/
+文档\SurfingStudio\Projects\              # 默认工程目录
 ```
+
+macOS / Linux 使用 XDG 目录：`$XDG_CONFIG_HOME/SurfingStudio`、`$XDG_CACHE_HOME/SurfingStudio/{cache,logs}`、
+系统临时目录下的 `SurfingStudio/{export,recovery}`，默认工程目录为 `~/Documents/SurfingStudio/Projects`。
 
 ## 文档
 

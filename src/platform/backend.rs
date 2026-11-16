@@ -9,6 +9,7 @@
 //! - `locale_from_env`：从环境变量读取区域标识的通用实现。
 //! - `PlatformBackend::install_dir` / `config_dir` / `cache_dir` / `data_dir` / `log_dir` /
 //!   `temp_dir`：存储目录。
+//! - `PlatformBackend::documents_dir`：系统“文档”目录（默认工程目录的根）。
 //! - `PlatformBackend::pick_file` / `pick_folder` / `save_file`：文件对话框。
 //! - `PlatformBackend::exit_process`：确定性退出。
 //!
@@ -23,6 +24,8 @@
 //! - `locale_from_env`: shared environment-variable locale reader.
 //! - `PlatformBackend::install_dir` / `config_dir` / `cache_dir` / `data_dir` / `log_dir` /
 //!   `temp_dir`: storage.
+//! - `PlatformBackend::documents_dir`: the system "Documents" directory (root of the default
+//!   project directory).
 //! - `PlatformBackend::pick_file` / `pick_folder` / `save_file`: file dialogs.
 //! - `PlatformBackend::exit_process`: deterministic exit.
 
@@ -307,6 +310,22 @@ pub trait PlatformBackend: Send + Sync {
     /// Outputs / side effects: the path; nothing is created.
     /// Complexity: O(path length) time and space.
     fn temp_dir(&self) -> PathBuf;
+
+    /// 所属模块：platform / 后端接口 / 存储
+    /// 功能：返回系统“文档”目录，用作默认工程目录的根；不支持的后端返回 `None`。
+    /// 输入：`self`。
+    /// 输出/副作用：目录路径或 `None`；不创建目录。
+    /// 复杂度：时间 O(路径长度)，空间 O(路径长度)。
+    ///
+    /// Module: platform / backend interface / storage
+    /// Purpose: Return the system "Documents" directory used as the root of the default project
+    /// directory; unsupported backends return `None`.
+    /// Inputs: `self`.
+    /// Outputs / side effects: the path or `None`; nothing is created.
+    /// Complexity: O(path length) time and space.
+    fn documents_dir(&self) -> Option<PathBuf> {
+        None
+    }
 
     /// 所属模块：platform / 后端接口 / 对话框
     /// 功能：打开“选择文件”对话框；不支持时返回 `None`。

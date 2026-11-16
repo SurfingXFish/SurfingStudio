@@ -1,14 +1,16 @@
 //! 所属模块：app / AI 资料文件存储
 //! 文件用途：
-//! - 把 AI 资料库的持久化从 `settings.json` 迁移到安装目录 `data/ai`：
+//! - 把 AI 资料库的持久化从 `settings.json` 迁移到用户数据目录 `ai/`：
 //!   智能体 JSON、技能 Markdown、乐器 JSON 与顺序清单分类存放。
-//! - 首次运行（或资料库目录不存在）时把内存中的资料释放到安装目录。
+//! - 首次运行（或资料库目录不存在）时把内存中的资料释放到用户目录；升级时从旧安装目录迁移。
 //! - 通过运行时加载 `surfing_ai_data.dll`，由该 DLL 负责 markdown/json 文件格式与导入导出。
 //! - 安卓不使用 DLL，继续以 `settings.json` 内的资料库为准。
 //!
 //! 函数清单：
-//! - `ai_root`：返回 `<安装目录>/data/ai`。
-//! - `load`：从文件加载资料库；目录不存在时释放默认资料。
+//! - `ai_root`：返回用户数据目录下的 `ai/`。
+//! - `legacy_ai_root`：返回旧版 `<安装目录>/data/ai`（升级迁移）。
+//! - `load_library_from`：从指定目录读取有效资料库。
+//! - `load`：从文件加载资料库；新目录无效时迁移旧数据或在缺失时释放默认资料。
 //! - `save`：把资料库写回分类文件。
 //! - `import_file`：解析导入文件并返回 `(类型, 条目 JSON)`。
 //! - `export_entry`：导出单条资料。
@@ -16,15 +18,18 @@
 //!
 //! Module: app / AI library file storage
 //! Purpose:
-//! - Move AI-library persistence from `settings.json` to `<install>/data/ai`: agent JSON, skill
-//!   Markdown, instrument JSON and an order manifest stored by category.
-//! - Release the in-memory library into the install directory on first run (or when absent).
+//! - Move AI-library persistence from `settings.json` to the user data directory `ai/`: agent JSON,
+//!   skill Markdown, instrument JSON and an order manifest stored by category.
+//! - Release the in-memory library into the user directory on first run (or when absent); migrate
+//!   from the legacy install directory during upgrades.
 //! - Load `surfing_ai_data.dll` at runtime; that DLL owns the markdown/json formats and import/export.
 //! - Android stays on `settings.json` because it has no DLL.
 //!
 //! Functions:
-//! - `ai_root`: return `<install>/data/ai`.
-//! - `load`: load the library from files, releasing the defaults when the directory is absent.
+//! - `ai_root`: return `ai/` under the user data directory.
+//! - `legacy_ai_root`: return the legacy `<install>/data/ai` (upgrade migration).
+//! - `load_library_from`: read a valid library from the given directory.
+//! - `load`: load the library from files, migrating legacy data or releasing defaults when needed.
 //! - `save`: write the library back into categorized files.
 //! - `import_file`: parse an import file into `(kind, entry JSON)`.
 //! - `export_entry`: export one entry.
@@ -39,13 +44,14 @@ use crate::ai::AiLibrary;
 const AI_DIR: &str = "ai";
 
 /// 所属模块：app / AI 资料文件存储
-/// 功能：返回资料库根目录 `<安装目录>/data/ai`。
+/// 功能：返回资料库根目录：用户数据目录（Windows 为 `%APPDATA%\SurfingStudio`）下的 `ai/`。
 /// 输入：无。
 /// 输出/副作用：目录路径或 `None`；不创建目录。
 /// 复杂度：时间 O(路径长度)，空间 O(路径长度)。
 ///
 /// Module: app / AI library file storage
-/// Purpose: Return the library root `<install>/data/ai`.
+/// Purpose: Return the library root: `ai/` under the user data directory
+/// (`%APPDATA%\SurfingStudio` on Windows).
 /// Inputs: none.
 /// Outputs / side effects: the path or `None`; nothing is created.
 /// Complexity: O(path length) time and space.
@@ -53,17 +59,79 @@ pub(super) fn ai_root() -> Option<PathBuf> {
     crate::platform::data_dir().map(|base| base.join(AI_DIR))
 }
 
+/// 所属模块：app / AI 资料文件存储 / 升级迁移
+/// 功能：返回旧版安装目录下的资料库根 `<安装目录>/data/ai`；安卓没有旧布局时返回 `None`。
+/// 输入：无。
+/// 输出/副作用：目录路径或 `None`；不创建目录。
+/// 复杂度：时间 O(路径长度)，空间 O(路径长度)。
+///
+/// Module: app / AI library file storage / upgrade migration
+/// Purpose: Return the legacy library root `<install>/data/ai`; `None` when Android has no legacy
+/// layout.
+/// Inputs: none.
+/// Outputs / side effects: the path or `None`; nothing is created.
+/// Complexity: O(path length) time and space.
+#[cfg(not(target_os = "android"))]
+fn legacy_ai_root() -> Option<PathBuf> {
+    crate::platform::legacy_data_dir().map(|base| base.join(AI_DIR))
+}
+
 /// 所属模块：app / AI 资料文件存储
-/// 功能：从安装目录加载资料库；目录不存在时把 `fallback` 释放为默认文件。
-/// 输入：`fallback`：`settings.json` 中的旧资料库（也是首次释放的内容）。
-/// 输出/副作用：资料库；创建默认文件并写盘；失败时回退到 `fallback`。
+/// 功能：从指定目录读取资料库；目录缺失、读取失败、解析失败或没有任何有效条目时返回 `None`。
+/// 输入：`root`：资料库根目录。
+/// 输出/副作用：有效资料库或 `None`；只读文件，失败写入诊断日志。
 /// 复杂度：时间 O(文件数 × 文件大小)，空间 O(资料库大小)。
 ///
 /// Module: app / AI library file storage
-/// Purpose: Load the library from the install directory; release `fallback` as default files when the
-/// directory is absent.
+/// Purpose: Read the library from the given directory; returns `None` when the directory is absent,
+/// reading fails, parsing fails, or the library has no entries.
+/// Inputs: `root`: library root directory.
+/// Outputs / side effects: a valid library or `None`; reads files and logs failures.
+/// Complexity: O(files × file size) time and O(library size) space.
+#[cfg(not(target_os = "android"))]
+fn load_library_from(root: &Path) -> Option<AiLibrary> {
+    let json = match bridge::load(root) {
+        Ok(json) => json,
+        Err(error) => {
+            warn(&format!(
+                "读取 AI 资料库失败（{}）：{error}",
+                root.display()
+            ));
+            return None;
+        }
+    };
+    let mut library: AiLibrary = match serde_json::from_str(&json) {
+        Ok(library) => library,
+        Err(error) => {
+            warn(&format!("解析 AI 资料库失败，已忽略该目录：{error}"));
+            return None;
+        }
+    };
+    if library.agents.is_empty()
+        && library.basics.is_empty()
+        && library.techniques.is_empty()
+        && library.instruments.is_empty()
+    {
+        return None;
+    }
+    library.migrate();
+    Some(library)
+}
+
+/// 所属模块：app / AI 资料文件存储
+/// 功能：从用户数据目录加载资料库；新目录没有有效条目时优先从旧安装目录迁移，仍无数据则把
+/// `fallback` 释放为默认文件。
+/// 输入：`fallback`：`settings.json` 中的旧资料库（也是首次释放的内容）。
+/// 输出/副作用：资料库；可能创建目录、写盘并迁移旧数据；失败时回退到 `fallback`。
+/// 复杂度：时间 O(文件数 × 文件大小)，空间 O(资料库大小)。
+///
+/// Module: app / AI library file storage
+/// Purpose: Load the library from the user data directory; when the new directory has no valid
+/// entries, migrate from the legacy install directory first and otherwise release `fallback` as the
+/// default files.
 /// Inputs: `fallback`: the legacy library from `settings.json` (also the seed on first release).
-/// Outputs / side effects: the library; creates default files and writes disk; falls back on failure.
+/// Outputs / side effects: the library; may create directories, write disk and migrate legacy data;
+/// falls back on failure.
 /// Complexity: O(files × file size) time and O(library size) space.
 pub(super) fn load(fallback: AiLibrary) -> AiLibrary {
     #[cfg(target_os = "android")]
@@ -76,51 +144,38 @@ pub(super) fn load(fallback: AiLibrary) -> AiLibrary {
         let Some(root) = ai_root() else {
             return fallback;
         };
-        if !root.is_dir() {
-            save(&fallback);
-            return fallback;
-        }
-        match bridge::load(&root) {
-            Ok(json) => match serde_json::from_str::<AiLibrary>(&json) {
-                Ok(mut library) => {
-                    if library.agents.is_empty()
-                        && library.basics.is_empty()
-                        && library.techniques.is_empty()
-                        && library.instruments.is_empty()
-                    {
-                        // 目录存在但没有有效条目（例如安装包只创建了空目录）：重新释放默认资料。
-                        // The directory exists but holds no entries (the installer may only create it):
-                        // release the defaults again.
-                        save(&fallback);
-                        return fallback;
-                    }
-                    library.migrate();
-                    library
-                }
-                Err(error) => {
-                    warn(&format!("解析 AI 资料库失败，已保留内存资料：{error}"));
-                    save(&fallback);
-                    fallback
-                }
-            },
-            Err(error) => {
-                warn(&format!(
-                    "读取 AI 资料库失败，已保留内存资料（请检查安装目录是否完整）：{error}"
-                ));
-                fallback
+        // 新目录不存在时直接进入迁移/释放流程，避免对空目录产生读取失败日志。
+        // When the new directory is absent go straight to migration/release so an empty location does
+        // not produce a read-failure log.
+        if root.is_dir() {
+            if let Some(library) = load_library_from(&root) {
+                return library;
             }
         }
+        // 新位置没有有效条目：先迁移旧安装目录的数据，避免升级后丢失自定义智能体与技能。
+        // The new location has no valid entries: migrate the legacy install directory first so
+        // custom agents and skills survive an upgrade.
+        if let Some(library) = legacy_ai_root()
+            .filter(|legacy| legacy.is_dir())
+            .and_then(|legacy| load_library_from(&legacy))
+        {
+            save(&library);
+            return library;
+        }
+        save(&fallback);
+        fallback
     }
 }
 
 /// 所属模块：app / AI 资料文件存储
-/// 功能：把资料库写回安装目录的分类文件；失败只记录诊断日志。
+/// 功能：把资料库写回用户数据目录的分类文件；失败只记录诊断日志。
 /// 输入：`library` 当前资料库。
 /// 输出/副作用：创建目录并写文件；不修改内存状态。
 /// 复杂度：时间 O(条目数 × 条目大小)，空间 O(资料库 JSON)。
 ///
 /// Module: app / AI library file storage
-/// Purpose: Write the library back into categorized files; failures only go to the diagnostic log.
+/// Purpose: Write the library back into categorized files under the user data directory; failures
+/// only go to the diagnostic log.
 /// Inputs: `library`.
 /// Outputs / side effects: creates directories and writes files; no in-memory change.
 /// Complexity: O(entries × entry size) time and O(library JSON) space.

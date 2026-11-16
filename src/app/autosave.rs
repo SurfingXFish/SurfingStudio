@@ -46,9 +46,10 @@ const RECOVERY_SAVE_INTERVAL: Duration = Duration::from_secs(20);
 /// 崩溃恢复快照的最小推送间隔：避免每次编辑都克隆整个工程。
 /// Minimum interval between recovery snapshots, so editing does not clone the project every frame.
 const RECOVERY_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(5);
-/// 未保存工程恢复文件所在的临时目录名。
-/// Name of the temporary directory holding recovery files of never-saved projects.
-const RECOVERY_DIR_NAME: &str = "SurfingStudio";
+/// 未保存工程恢复文件所在的临时子目录名（应用临时目录下的 `recovery`）。
+/// Name of the temp sub-directory holding recovery files of never-saved projects (`recovery` under
+/// the app temp directory).
+const RECOVERY_DIR_NAME: &str = "recovery";
 /// 恢复文件后缀：紧邻工程文件，明确区分自动生成的备份。
 /// Recovery-file suffix; it sits next to the project file and marks an automatically generated copy.
 const RECOVERY_SUFFIX: &str = "autosave";
@@ -616,8 +617,9 @@ impl SurfingApp {
 mod tests {
     use super::*;
 
-    /// 覆盖：从未保存的工程把恢复文件写入应用临时目录，并用窗口编号区分。
-    /// Covers: never-saved projects put the recovery file in the app temp directory, keyed by window id.
+    /// 覆盖：从未保存的工程把恢复文件写入应用临时目录的 `recovery` 子目录，并用窗口编号区分。
+    /// Covers: never-saved projects put the recovery file in the `recovery` sub-directory of the app
+    /// temp directory, keyed by window id.
     #[test]
     fn unsaved_projects_use_the_temp_directory() {
         let target = recovery_target_path(None, "我的 工程", 7);

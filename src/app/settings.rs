@@ -5,13 +5,14 @@
 //! - 绘制独立的两栏设置窗口：左侧八类分类、右侧当前分类内容。
 //!
 //! 函数清单：
-//! - `AppSettings::load` / `save`：读取与写入配置文件（缺失或损坏时回退默认值）。
+//! - `AppSettings::load` / `save`：读取与写入配置文件（缺失或损坏时回退默认值，升级时迁移旧文件）。
 //! - `AppSettings::push_recent` / `remove_recent`：维护项目列表。
 //! - `AppSettings::audio_options` / `gpu_audio_config`：把设置转换为音频与 GPU 渲染选项。
 //! - `SettingsPage::label`：设置分类名称。
 //! - `GpuRenderApi::id` / `label` / `from_id`：GPU 界面渲染 API 标识。
 //! - `gpu_render_startup`：启动阶段读取 GPU 界面渲染偏好。
 //! - `settings_path` / `default_cache_dir`：配置与缓存目录。
+//! - `legacy_settings_text`：新配置文件不存在时迁移旧安装目录中的设置。
 //! - `SurfingApp::open_settings`：打开独立设置窗口并置前。
 //! - `SurfingApp::ui_settings_window`：创建独立视口并绘制设置内容。
 //! - `SurfingApp::ui_settings_content`：两栏内容与分类切换。
@@ -33,7 +34,8 @@
 //! - Draw the standalone two-column settings window with eight categories.
 //!
 //! Functions:
-//! - `AppSettings::load` / `save`: read and write the configuration (defaults when missing/corrupt).
+//! - `AppSettings::load` / `save`: read and write the configuration (defaults when missing/corrupt,
+//!   migrating the legacy file during upgrades).
 //! - `AppSettings::push_recent` / `remove_recent`: maintain the project list.
 //! - `AppSettings::audio_options` / `gpu_audio_config`: convert settings into audio and GPU render
 //!   options.
@@ -41,6 +43,8 @@
 //! - `GpuRenderApi::id` / `label` / `from_id`: GPU UI-render API identity.
 //! - `gpu_render_startup`: read the GPU UI-render preference at startup.
 //! - `settings_path` / `default_cache_dir`: config and cache directories.
+//! - `legacy_settings_text`: migrate settings from the legacy install directory when the new file is
+//!   absent.
 //! - `SurfingApp::open_settings`: open and focus the standalone settings window.
 //! - `SurfingApp::ui_settings_window`: create the standalone viewport and paint settings.
 //! - `SurfingApp::ui_settings_content`: two-column content and category switching.
@@ -609,20 +613,30 @@ impl AppSettings {
     }
 
     /// 所属模块：app / 全局设置
-    /// 功能：读取本机配置文件；文件缺失、损坏或数值越界时回退到默认值。
+    /// 功能：读取本机配置文件；文件缺失、损坏或数值越界时回退到默认值。新位置没有文件时先尝试
+    /// 迁移旧安装目录 `data/settings.json`，保证升级不丢设置。
     /// 输入：无。
-    /// 输出/副作用：返回设置快照；只读文件系统，不创建文件。
+    /// 输出/副作用：返回设置快照；可能复制旧配置文件并创建配置目录。
     /// 复杂度：时间 O(配置文件大小)，空间 O(项目数)。
     ///
     /// Module: app / global settings
     /// Purpose: Read the local configuration; fall back to defaults when the file is missing,
-    /// corrupt or out of range.
+    /// corrupt or out of range. When the new location has no file, first try to migrate the legacy
+    /// `<install>/data/settings.json` so upgrades never lose settings.
     /// Inputs: none.
-    /// Outputs / side effects: returns a settings snapshot; reads the file system, creates nothing.
+    /// Outputs / side effects: returns a settings snapshot; may copy the legacy file and create the
+    /// config directory.
     /// Complexity: O(config size) time and O(projects) space.
     pub fn load() -> Self {
-        let mut settings = settings_path()
+        let path = settings_path();
+        // 先读新位置；缺失时回退旧安装目录，迁移失败也直接使用旧文件内容。
+        // Read the new location first; when absent fall back to the legacy install directory and use
+        // the old file content even if copying fails.
+        let text = path
+            .as_ref()
             .and_then(|path| std::fs::read_to_string(path).ok())
+            .or_else(|| legacy_settings_text(path.as_deref()));
+        let mut settings = text
             // 兼容记事本等编辑器写入的 UTF-8 BOM，避免整份设置被回退为默认值。
             // Tolerate a UTF-8 BOM written by editors such as Notepad so the file is not discarded.
             .and_then(|text| serde_json::from_str::<Self>(text.trim_start_matches('\u{feff}')).ok())
@@ -671,9 +685,9 @@ impl AppSettings {
         // 资料库可能被手工编辑或来自旧版本；迁移并统一去重、丢弃空 id 与裁剪名称。
         // The library may be hand-edited or come from an older build; migrate and normalise it.
         settings.ai.library.migrate();
-        // 新版本以安装目录 `data/ai` 下的分类文件为准；首次运行会把当前资料释放为默认文件。
-        // New builds treat the categorized files under `<install>/data/ai` as the source of truth; the
-        // first run releases the current library as the default files.
+        // 新版本以用户数据目录 `ai/` 下的分类文件为准；首次运行会把当前资料释放为默认文件。
+        // New builds treat the categorized files under the user data directory `ai/` as the source of
+        // truth; the first run releases the current library as the default files.
         settings.ai.library = super::ai_data::load(settings.ai.library.clone());
         settings
     }
@@ -700,9 +714,9 @@ impl AppSettings {
         if let Ok(text) = serde_json::to_string_pretty(self) {
             let _ = std::fs::write(path, text);
         }
-        // 智能体 / 技能同时写入安装目录的分类 JSON + Markdown，保证文件形式始终最新。
-        // Agents and skills are also written to the install directory as categorized JSON + Markdown,
-        // keeping the file form up to date.
+        // 智能体 / 技能同时写入用户数据目录的分类 JSON + Markdown，保证文件形式始终最新。
+        // Agents and skills are also written to the user data directory as categorized JSON +
+        // Markdown, keeping the file form up to date.
         super::ai_data::save(&self.ai.library);
     }
 
@@ -1041,6 +1055,39 @@ impl Default for AppSettings {
 /// Complexity: O(1) time and O(path length) space.
 pub(super) fn settings_path() -> Option<PathBuf> {
     crate::platform::config_dir().map(|base| base.join("settings.json"))
+}
+
+/// 所属模块：app / 全局设置 / 升级迁移
+/// 功能：新配置文件不存在时，把旧安装目录 `data/settings.json` 复制到新位置并返回其文本；
+/// 复制失败时直接读取旧文件，保证升级后设置不丢失。
+/// 输入：`target`：新配置文件路径；`None` 时无法迁移。
+/// 输出/副作用：可能创建配置目录并复制文件；返回旧配置文本或 `None`。
+/// 复杂度：时间 O(配置文件大小)，空间 O(配置文件大小)。
+///
+/// Module: app / global settings / upgrade migration
+/// Purpose: When the new config file is absent, copy the legacy `<install>/data/settings.json` to
+/// the new location and return its text; if copying fails, read the old file directly so upgrades
+/// never lose settings.
+/// Inputs: `target`: the new config file path; `None` disables migration.
+/// Outputs / side effects: may create the config directory and copy the file; returns the legacy text
+/// or `None`.
+/// Complexity: O(config size) time and O(config size) space.
+fn legacy_settings_text(target: Option<&std::path::Path>) -> Option<String> {
+    let target = target?;
+    let legacy = crate::platform::legacy_data_dir()?.join("settings.json");
+    if !legacy.is_file() {
+        return None;
+    }
+    if let Some(parent) = target.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    // 复制成功后从新位置读取，确保后续保存自然写在新目录；复制失败则直接读旧文件。
+    // After a successful copy read from the new location so later saves stay there; on copy failure
+    // read the legacy file directly.
+    match std::fs::copy(&legacy, target) {
+        Ok(_) => std::fs::read_to_string(target).ok(),
+        Err(_) => std::fs::read_to_string(&legacy).ok(),
+    }
 }
 
 /// 所属模块：app / 全局设置
