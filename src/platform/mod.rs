@@ -7,6 +7,7 @@
 //! 函数清单：
 //! - `PlatformRuntime::standard`：返回进程内唯一的平台运行时。
 //! - `PlatformRuntime::info` / `caps`：后端标识与能力描述。
+//! - `PlatformRuntime::system_locale`：系统区域标识（首次启动选择界面语言）。
 //! - `PlatformRuntime::install_dir` / `config_dir` / `cache_dir` / `data_dir` / `log_dir` /
 //!   `temp_dir`：平台存储目录（桌面端全部位于安装目录 `data/` 下）。
 //! - `PlatformRuntime::pick_file` / `pick_folder` / `save_file`：原生文件对话框。
@@ -25,6 +26,7 @@
 //! Functions:
 //! - `PlatformRuntime::standard`: return the process-wide platform runtime.
 //! - `PlatformRuntime::info` / `caps`: backend identity and capabilities.
+//! - `PlatformRuntime::system_locale`: system locale id (used to pick the UI language on first launch).
 //! - `PlatformRuntime::install_dir` / `config_dir` / `cache_dir` / `data_dir` / `log_dir` /
 //!   `temp_dir`: platform storage (all under `<install>/data` on desktop).
 //! - `PlatformRuntime::pick_file` / `pick_folder` / `save_file`: native file dialogs.
@@ -116,6 +118,21 @@ impl PlatformRuntime {
     /// Complexity: O(1) time and space.
     pub fn caps(&self) -> PlatformCaps {
         self.backend.caps()
+    }
+
+    /// 所属模块：platform / 区域
+    /// 功能：返回系统区域标识（如 `zh-CN`），用于首次启动选择界面语言。
+    /// 输入：`self`。
+    /// 输出/副作用：区域标识或 `None`；不修改状态。
+    /// 复杂度：时间 O(系统调用)，空间 O(区域名长度)。
+    ///
+    /// Module: platform / locale
+    /// Purpose: Return the system locale id (e.g. `zh-CN`) used to pick the UI language on first launch.
+    /// Inputs: `self`.
+    /// Outputs / side effects: the locale id or `None`; no state change.
+    /// Complexity: O(system call) time and O(locale length) space.
+    pub fn system_locale(&self) -> Option<String> {
+        self.backend.system_locale()
     }
 
     /// 所属模块：platform / 存储目录
@@ -325,6 +342,21 @@ impl PlatformRuntime {
 /// Complexity: O(1) time and space.
 pub fn caps() -> PlatformCaps {
     PlatformRuntime::standard().caps()
+}
+
+/// 所属模块：platform / 快捷入口
+/// 功能：返回系统区域标识；等价于 `PlatformRuntime::standard().system_locale()`。
+/// 输入：无。
+/// 输出/副作用：区域标识或 `None`；不修改状态。
+/// 复杂度：时间 O(系统调用)，空间 O(区域名长度)。
+///
+/// Module: platform / shortcuts
+/// Purpose: Return the system locale; same as `PlatformRuntime::standard().system_locale()`.
+/// Inputs: none.
+/// Outputs / side effects: the locale id or `None`; no state change.
+/// Complexity: O(system call) time and O(locale length) space.
+pub fn system_locale() -> Option<String> {
+    PlatformRuntime::standard().system_locale()
 }
 
 /// 所属模块：platform / 快捷入口

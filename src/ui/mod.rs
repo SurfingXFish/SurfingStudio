@@ -23,6 +23,7 @@ pub mod piano_roll;
 pub mod theme;
 pub mod track_render;
 
+use crate::app::i18n::t;
 use crate::core::model::{ControllerKind, TrackId};
 
 /// Which editor is shown in the bottom panel.
@@ -89,15 +90,15 @@ impl EffectCategory {
     /// Complexity: O(1) time and space.
     pub fn label(self) -> &'static str {
         match self {
-            EffectCategory::All => "全部",
-            EffectCategory::Favorites => "收藏",
+            EffectCategory::All => t("全部"),
+            EffectCategory::Favorites => t("收藏"),
             EffectCategory::Eq => "EQ",
-            EffectCategory::Dynamics => "动态",
-            EffectCategory::Reverb => "混响",
-            EffectCategory::Delay => "延时",
-            EffectCategory::Distortion => "失真",
-            EffectCategory::Modulation => "调制",
-            EffectCategory::Other => "其他",
+            EffectCategory::Dynamics => t("动态"),
+            EffectCategory::Reverb => t("混响"),
+            EffectCategory::Delay => t("延时"),
+            EffectCategory::Distortion => t("失真"),
+            EffectCategory::Modulation => t("调制"),
+            EffectCategory::Other => t("其他"),
         }
     }
 }
@@ -105,10 +106,10 @@ impl EffectCategory {
 impl PluginFilter {
     pub fn label(&self) -> &'static str {
         match self {
-            PluginFilter::All => "全部",
-            PluginFilter::Instruments => "乐器",
-            PluginFilter::Effects => "效果器",
-            PluginFilter::Unknown => "未知",
+            PluginFilter::All => t("全部"),
+            PluginFilter::Instruments => t("乐器"),
+            PluginFilter::Effects => t("效果器"),
+            PluginFilter::Unknown => t("未知"),
         }
     }
 }
@@ -126,9 +127,9 @@ impl MouseMode {
 
     pub fn label(self) -> &'static str {
         match self {
-            MouseMode::Select => "选择",
-            MouseMode::Draw => "绘制",
-            MouseMode::Cut => "切割",
+            MouseMode::Select => t("选择"),
+            MouseMode::Draw => t("绘制"),
+            MouseMode::Cut => t("切割"),
         }
     }
 
