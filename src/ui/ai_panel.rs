@@ -100,15 +100,14 @@ impl SurfingApp {
         let panel_w = AI_PANEL_W.min((rect.width() - 48.0).max(480.0));
         let panel_pos = egui::pos2(rect.right() - panel_w, rect.top());
 
-        // 遮罩：只盖住工作区，保留应用栏与工具栏，窗口按钮仍可用。
-        // Scrim: covers the workspace only, so the app bar and toolbar stay usable.
+        // 遮罩只负责点击收起，不再压暗编曲区；否则轨道窗会像浮层背后的背景板。
+        // The scrim only captures clicks now; dimming the arrangement made the track window read as
+        // a backdrop behind a floating sheet.
         egui::Area::new(egui::Id::new("ai_workspace_scrim"))
             .order(egui::Order::Foreground)
             .fixed_pos(rect.min)
             .show(ctx, |ui| {
-                let (scrim, response) = ui.allocate_exact_size(rect.size(), egui::Sense::click());
-                ui.painter()
-                    .rect_filled(scrim, 0.0, egui::Color32::from_black_alpha(145));
+                let (_, response) = ui.allocate_exact_size(rect.size(), egui::Sense::click());
                 if response.clicked() {
                     close = true;
                 }
@@ -120,32 +119,31 @@ impl SurfingApp {
             .show(ctx, |ui| {
                 ui.set_width(panel_w);
                 ui.set_height(rect.height());
-                egui::Frame::NONE
-                    .fill(theme::BG)
-                    .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
-                    .shadow(egui::epaint::Shadow {
-                        offset: [-12, 0],
-                        blur: 32,
-                        spread: 0,
-                        color: egui::Color32::from_black_alpha(160),
-                    })
-                    .show(ui, |ui| {
-                        ui.set_width(panel_w - 1.0);
-                        ui.set_height(rect.height() - 1.0);
-                        ui.horizontal_top(|ui| {
-                            let height = ui.available_height();
-                            ui.allocate_ui_with_layout(
-                                egui::vec2(AI_SIDEBAR_W, height),
-                                egui::Layout::top_down(egui::Align::Min),
-                                |ui| self.ui_ai_sidebar(ui),
-                            );
-                            ui.allocate_ui_with_layout(
-                                egui::vec2(ui.available_width(), height),
-                                egui::Layout::top_down(egui::Align::Min),
-                                |ui| self.ui_ai_panel_main(ui),
-                            );
-                        });
+                egui::Frame::NONE.fill(theme::BG).show(ui, |ui| {
+                    ui.set_width(panel_w);
+                    ui.set_height(rect.height());
+                    ui.horizontal_top(|ui| {
+                        let height = ui.available_height();
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(AI_SIDEBAR_W, height),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| self.ui_ai_sidebar(ui),
+                        );
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(ui.available_width(), height),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| self.ui_ai_panel_main(ui),
+                        );
                     });
+                });
+                // 只保留左缘分割线，让面板贴合工作区右缘，而不是带投影的浮动卡片。
+                // Keep only the left divider so the panel sits flush against the workspace edge
+                // instead of looking like a floating card with a drop shadow.
+                ui.painter().vline(
+                    ui.min_rect().left(),
+                    rect.y_range(),
+                    egui::Stroke::new(1.0_f32, theme::LINE),
+                );
             });
 
         if close {
