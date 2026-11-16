@@ -139,8 +139,8 @@ const BUFFER_FRAMES_OPTIONS: [u32; 6] = [128, 256, 512, 1024, 2048, 4096];
 /// GPU 界面渲染可选 API：持久化标识与展示文本。
 /// Selectable GPU UI-render APIs: persisted id and display text.
 const DEFAULT_GPU_RENDER_API: &str = "auto";
-/// 默认 AI 模型预设 id；与 `ai::MODEL_PRESETS` 的第一项一致。
-/// Default AI model preset id; matches the first entry of `ai::MODEL_PRESETS`.
+/// 默认 AI 模型 id；与 `ai::builtin_models` 的第一项一致。
+/// Default AI model id; matches the first entry of `ai::builtin_models`.
 const DEFAULT_AI_MODEL_PRESET: &str = "deepseek-flash";
 /// 默认 AI 采样温度：略高以保留编曲创意。
 /// Default AI temperature: slightly high to keep compositional variety.
@@ -163,7 +163,7 @@ pub enum SettingsPage {
     Audio,
     Render,
     Controller,
-    Ai,
+    Models,
     Plugins,
     Shortcuts,
     About,
@@ -176,7 +176,7 @@ impl SettingsPage {
         SettingsPage::Audio,
         SettingsPage::Render,
         SettingsPage::Controller,
-        SettingsPage::Ai,
+        SettingsPage::Models,
         SettingsPage::Plugins,
         SettingsPage::Shortcuts,
         SettingsPage::About,
@@ -200,7 +200,7 @@ impl SettingsPage {
             SettingsPage::Audio => t("音频"),
             SettingsPage::Render => t("渲染"),
             SettingsPage::Controller => t("控制器"),
-            SettingsPage::Ai => "AI",
+            SettingsPage::Models => t("模型"),
             SettingsPage::Plugins => t("插件"),
             SettingsPage::Shortcuts => t("快捷键"),
             SettingsPage::About => t("软件信息"),
@@ -223,12 +223,12 @@ pub(super) enum SettingsFolderTarget {
     ProjectDir,
 }
 
-/// AI 编曲设置：模型预设、按服务商保存的 API Key、自定义接口与采样参数。
-/// AI composition settings: model preset, per-provider API keys, custom endpoint and sampling.
+/// AI 编曲设置：模型列表、当前模型、旧版兼容字段与资料库。
+/// AI composition settings: model list, active model, legacy-compatible fields and the library.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AiSettings {
-    /// 当前模型预设 id（`ai::MODEL_PRESETS`）。
-    /// Current model preset id (`ai::MODEL_PRESETS`).
+    /// 当前模型 id（`ai::AiModelConfig::id`）；旧版本写入的是预设 id。
+    /// Current model id (`ai::AiModelConfig::id`); older builds stored a preset id.
     #[serde(default = "default_ai_model_preset")]
     pub model_preset: String,
     /// 服务商 id → API Key。仅保存在本机设置文件中，不写入工程。
@@ -267,6 +267,15 @@ pub struct AiSettings {
     /// Agents, theory skills, techniques and instrument notes maintained by the home Agent column.
     #[serde(default)]
     pub library: crate::ai::AiLibrary,
+    /// 用户管理的模型列表（含内置种子）；旧版本没有该字段时由 `migrate_models` 生成。
+    /// User-managed models (including built-in seeds); old configurations generate it in
+    /// `migrate_models`.
+    #[serde(default)]
+    pub models: Vec<crate::ai::AiModelConfig>,
+    /// 当前选中的模型条目 id；空字符串表示尚未选择。
+    /// Id of the selected model entry; empty means none is selected yet.
+    #[serde(default)]
+    pub active_model: String,
 }
 
 impl Default for AiSettings {
@@ -293,6 +302,8 @@ impl Default for AiSettings {
             reasoning: default_ai_reasoning(),
             search_enabled: true,
             library: crate::ai::AiLibrary::default(),
+            models: crate::ai::builtin_models(),
+            active_model: DEFAULT_AI_MODEL_PRESET.to_string(),
         }
     }
 }
@@ -350,6 +361,326 @@ impl AiSettings {
             self.api_keys
                 .insert(provider.to_string(), trimmed.to_string());
         }
+    }
+
+    /// 所属模块：app / 全局设置 / 模型
+    /// 功能：迁移旧版 AI 设置：没有模型列表时生成四条内置模型，并把旧 API Key、自定义接口、
+    /// 采样参数与默认预设映射到条目；已有列表时统一去重、修剪文本并修正选中项。
+    /// 输入：`self` 可变引用。
+    /// 输出/副作用：修改 `models` 与 `active_model`；不写盘。
+    /// 复杂度：时间 O(模型数)，空间 O(模型数)。
+    ///
+    /// Module: app / global settings / models
+    /// Purpose: Migrate legacy AI settings: when no model list exists, seed the four built-ins and map
+    /// the old API keys, custom endpoint, sampling values and default preset; otherwise normalise,
+    /// de-duplicate and repair the selected entry.
+    /// Inputs: `self`: mutable reference.
+    /// Outputs / side effects: mutates `models` and `active_model`; does not write the file.
+    /// Complexity: O(models) time and space.
+    pub fn migrate_models(&mut self) {
+        if self.models.is_empty() {
+            let mut models = crate::ai::builtin_models();
+            for model in &mut models {
+                model.api_key = self.api_key(&model.provider_id).to_string();
+                model.temperature = self.temperature;
+                model.reasoning = self.reasoning.clone();
+            }
+            let custom_model = self.custom_model.trim();
+            let custom_base = self.custom_base_url.trim();
+            if !custom_model.is_empty() || !custom_base.is_empty() {
+                let mut custom = crate::ai::AiModelConfig::default();
+                custom.id = crate::ai::CUSTOM_PROVIDER_ID.to_string();
+                custom.provider_id = crate::ai::CUSTOM_PROVIDER_ID.to_string();
+                custom.model = custom_model.to_string();
+                custom.base_url = custom_base.to_string();
+                custom.display_name = if custom_model.is_empty() {
+                    "自定义模型".to_string()
+                } else {
+                    custom_model.to_string()
+                };
+                custom.api_key = self.api_key(crate::ai::CUSTOM_PROVIDER_ID).to_string();
+                custom.temperature = self.temperature;
+                custom.context_output = self.max_tokens;
+                custom.reasoning = self.reasoning.clone();
+                custom.sanitize();
+                models.push(custom);
+            }
+            self.models = models;
+        }
+        // 手工编辑或旧版本可能留下空 id、重复 id 与越界值，这里统一修正。
+        // Manual edits or old builds may leave empty/duplicate ids and out-of-range values.
+        let mut seen = std::collections::HashSet::new();
+        let mut normalized = Vec::with_capacity(self.models.len());
+        for (index, mut model) in std::mem::take(&mut self.models).into_iter().enumerate() {
+            model.sanitize();
+            if model.id.is_empty() {
+                model.id = format!("model-{}", index + 1);
+            }
+            while !seen.insert(model.id.clone()) {
+                model.id = format!("{}-2", model.id);
+            }
+            normalized.push(model);
+        }
+        self.models = normalized;
+        let active_exists = self
+            .models
+            .iter()
+            .any(|model| model.id == self.active_model);
+        if !active_exists {
+            // 旧配置用模型预设 id 选模型；内置条目的 id 与旧预设一致，可直接命中。
+            // Legacy configs selected a preset id; built-in ids match those presets, so they resolve.
+            if !self.model_preset.trim().is_empty()
+                && self
+                    .models
+                    .iter()
+                    .any(|model| model.id == self.model_preset)
+            {
+                self.active_model = self.model_preset.clone();
+            } else {
+                self.active_model = self
+                    .models
+                    .iter()
+                    .find(|model| model.enabled)
+                    .or_else(|| self.models.first())
+                    .map(|model| model.id.clone())
+                    .unwrap_or_default();
+            }
+        }
+    }
+
+    /// 所属模块：app / 全局设置 / 模型
+    /// 功能：返回当前选中的模型；选中 id 失效时回退到第一条启用条目。
+    /// 输入：`self`。
+    /// 输出/副作用：模型引用或 `None`；不修改状态。
+    /// 复杂度：时间 O(模型数)，空间 O(1)。
+    ///
+    /// Module: app / global settings / models
+    /// Purpose: Return the selected model; a stale id falls back to the first enabled entry.
+    /// Inputs: `self`.
+    /// Outputs / side effects: a model reference or `None`; no state change.
+    /// Complexity: O(models) time and O(1) space.
+    pub fn active_model(&self) -> Option<&crate::ai::AiModelConfig> {
+        self.models
+            .iter()
+            .find(|model| model.id == self.active_model)
+            .or_else(|| self.models.iter().find(|model| model.enabled))
+    }
+
+    /// 所属模块：app / 全局设置 / 模型
+    /// 功能：返回当前选中模型的可变引用。
+    /// 输入：`self` 可变引用。
+    /// 输出/副作用：模型可变引用或 `None`；不修改选中 id。
+    /// 复杂度：时间 O(模型数)，空间 O(1)。
+    ///
+    /// Module: app / global settings / models
+    /// Purpose: Return a mutable reference to the selected model.
+    /// Inputs: `self`: mutable reference.
+    /// Outputs / side effects: a mutable model reference or `None`; the active id is unchanged.
+    /// Complexity: O(models) time and O(1) space.
+    pub fn active_model_mut(&mut self) -> Option<&mut crate::ai::AiModelConfig> {
+        let active = self.active_model.clone();
+        match self.models.iter().position(|model| model.id == active) {
+            Some(index) => self.models.get_mut(index),
+            None => self.models.iter_mut().find(|model| model.enabled),
+        }
+    }
+
+    /// 所属模块：app / 全局设置 / 模型
+    /// 功能：按 id 查找模型。
+    /// 输入：`id`：模型条目 id。
+    /// 输出/副作用：模型引用或 `None`；不修改状态。
+    /// 复杂度：时间 O(模型数)，空间 O(1)。
+    ///
+    /// Module: app / global settings / models
+    /// Purpose: Find a model by id.
+    /// Inputs: `id`: model-entry id.
+    /// Outputs / side effects: a model reference or `None`; no state change.
+    /// Complexity: O(models) time and O(1) space.
+    pub fn model_by_id(&self, id: &str) -> Option<&crate::ai::AiModelConfig> {
+        self.models.iter().find(|model| model.id == id)
+    }
+
+    /// 所属模块：app / 全局设置 / 模型
+    /// 功能：按 id 查找模型的可变引用。
+    /// 输入：`id`：模型条目 id。
+    /// 输出/副作用：模型可变引用或 `None`；不修改状态。
+    /// 复杂度：时间 O(模型数)，空间 O(1)。
+    ///
+    /// Module: app / global settings / models
+    /// Purpose: Find a mutable model by id.
+    /// Inputs: `id`: model-entry id.
+    /// Outputs / side effects: a mutable model reference or `None`; no state change.
+    /// Complexity: O(models) time and O(1) space.
+    pub fn model_by_id_mut(&mut self, id: &str) -> Option<&mut crate::ai::AiModelConfig> {
+        self.models.iter_mut().find(|model| model.id == id)
+    }
+
+    /// 所属模块：app / 全局设置 / 模型
+    /// 功能：返回所有启用模型，供对话输入框的模型下拉使用。
+    /// 输入：`self`。
+    /// 输出/副作用：模型迭代器；不修改状态。
+    /// 复杂度：时间 O(模型数)，空间 O(1)。
+    ///
+    /// Module: app / global settings / models
+    /// Purpose: Iterate enabled models for the chat model selector.
+    /// Inputs: `self`.
+    /// Outputs / side effects: a model iterator; no state change.
+    /// Complexity: O(models) time and O(1) space.
+    pub fn enabled_models(&self) -> impl Iterator<Item = &crate::ai::AiModelConfig> {
+        self.models.iter().filter(|model| model.enabled)
+    }
+
+    /// 所属模块：app / 全局设置 / 模型
+    /// 功能：切换当前模型；id 不存在时忽略。
+    /// 输入：`id`：目标模型 id。
+    /// 输出/副作用：修改 `active_model`；返回是否切换成功。
+    /// 复杂度：时间 O(模型数)，空间 O(1)。
+    ///
+    /// Module: app / global settings / models
+    /// Purpose: Switch the active model; unknown ids are ignored.
+    /// Inputs: `id`: target model id.
+    /// Outputs / side effects: mutates `active_model`; returns whether it changed.
+    /// Complexity: O(models) time and O(1) space.
+    pub fn set_active_model(&mut self, id: &str) -> bool {
+        if self.models.iter().any(|model| model.id == id) {
+            self.active_model = id.to_string();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// 所属模块：app / 全局设置 / 模型
+    /// 功能：插入或替换模型条目；列表为空时同步设为当前模型。
+    /// 输入：`model`：完整模型条目。
+    /// 输出/副作用：修改 `models` 与 `active_model`；不写盘。
+    /// 复杂度：时间 O(模型数)，空间 O(1)。
+    ///
+    /// Module: app / global settings / models
+    /// Purpose: Insert or replace a model entry; an empty list selects it as active.
+    /// Inputs: `model`: the complete entry.
+    /// Outputs / side effects: mutates `models` and `active_model`; no disk write.
+    /// Complexity: O(models) time and O(1) space.
+    pub fn upsert_model(&mut self, model: crate::ai::AiModelConfig) {
+        if let Some(existing) = self
+            .models
+            .iter_mut()
+            .find(|existing| existing.id == model.id)
+        {
+            *existing = model;
+        } else {
+            self.models.push(model);
+        }
+        if self.active_model.trim().is_empty() {
+            self.active_model = self
+                .models
+                .iter()
+                .find(|model| model.enabled)
+                .map(|model| model.id.clone())
+                .unwrap_or_default();
+        }
+    }
+
+    /// 所属模块：app / 全局设置 / 模型
+    /// 功能：删除自定义模型；内置模型拒绝删除，删除当前模型时回退到第一条启用条目。
+    /// 输入：`id`：模型条目 id。
+    /// 输出/副作用：修改 `models` 与 `active_model`；返回是否删除。
+    /// 复杂度：时间 O(模型数)，空间 O(1)。
+    ///
+    /// Module: app / global settings / models
+    /// Purpose: Delete a custom model; built-ins are refused, and deleting the active model falls
+    /// back to the first enabled entry.
+    /// Inputs: `id`: model-entry id.
+    /// Outputs / side effects: mutates `models` and `active_model`; returns whether it was removed.
+    /// Complexity: O(models) time and O(1) space.
+    pub fn remove_model(&mut self, id: &str) -> bool {
+        let Some(index) = self.models.iter().position(|model| model.id == id) else {
+            return false;
+        };
+        if self.models[index].builtin {
+            return false;
+        }
+        self.models.remove(index);
+        if self.active_model == id {
+            self.active_model = self
+                .models
+                .iter()
+                .find(|model| model.enabled)
+                .or_else(|| self.models.first())
+                .map(|model| model.id.clone())
+                .unwrap_or_default();
+        }
+        true
+    }
+
+    /// 所属模块：app / 全局设置 / 模型
+    /// 功能：启用或停用模型；停用当前模型时回退到第一条启用条目。
+    /// 输入：`id` 模型 id；`enabled` 目标状态。
+    /// 输出/副作用：修改条目与 `active_model`；不写盘。
+    /// 复杂度：时间 O(模型数)，空间 O(1)。
+    ///
+    /// Module: app / global settings / models
+    /// Purpose: Enable or disable a model; disabling the active model falls back to the first
+    /// enabled entry.
+    /// Inputs: `id` model id; `enabled` target state.
+    /// Outputs / side effects: mutates the entry and `active_model`; no disk write.
+    /// Complexity: O(models) time and O(1) space.
+    pub fn set_model_enabled(&mut self, id: &str, enabled: bool) {
+        if let Some(model) = self.models.iter_mut().find(|model| model.id == id) {
+            model.enabled = enabled;
+        }
+        if !enabled && self.active_model == id {
+            self.active_model = self
+                .models
+                .iter()
+                .find(|model| model.enabled)
+                .map(|model| model.id.clone())
+                .unwrap_or_default();
+        }
+    }
+
+    /// 所属模块：app / 全局设置 / 模型
+    /// 功能：返回某服务商的第一个非空 API Key（优先模型列表，其次旧版按键表）；
+    /// 联网检索仍使用 DeepSeek 的密钥。
+    /// 输入：`provider`：服务商 id。
+    /// 输出/副作用：密钥文本；不修改状态。
+    /// 复杂度：时间 O(模型数)，空间 O(1)。
+    ///
+    /// Module: app / global settings / models
+    /// Purpose: Return the first non-empty API key of a provider (model entries first, then the
+    /// legacy key map); web search still uses the DeepSeek key.
+    /// Inputs: `provider`: provider id.
+    /// Outputs / side effects: key text; no state change.
+    /// Complexity: O(models) time and O(1) space.
+    pub fn provider_api_key(&self, provider: &str) -> &str {
+        self.models
+            .iter()
+            .find(|model| model.provider_id == provider && !model.api_key.trim().is_empty())
+            .map(|model| model.api_key.trim())
+            .unwrap_or_else(|| self.api_key(provider))
+    }
+
+    /// 所属模块：app / 全局设置 / 模型
+    /// 功能：生成不会与现有条目冲突的模型 id。
+    /// 输入：`base`：期望的前缀。
+    /// 输出/副作用：唯一 id；不修改状态。
+    /// 复杂度：时间 O(模型数)，空间 O(id 长度)。
+    ///
+    /// Module: app / global settings / models
+    /// Purpose: Generate a model id that does not collide with existing entries.
+    /// Inputs: `base`: preferred prefix.
+    /// Outputs / side effects: a unique id; no state change.
+    /// Complexity: O(models) time and O(id length) space.
+    pub fn unique_model_id(&self, base: &str) -> String {
+        let base = base.trim();
+        let base = if base.is_empty() { "model" } else { base };
+        let mut candidate = base.to_string();
+        let mut suffix = 2;
+        while self.models.iter().any(|model| model.id == candidate) {
+            candidate = format!("{base}-{suffix}");
+            suffix += 1;
+        }
+        candidate
     }
 }
 
@@ -702,6 +1033,10 @@ impl AppSettings {
         // New builds treat the categorized files under the user data directory `ai/` as the source of
         // truth; the first run releases the current library as the default files.
         settings.ai.library = super::ai_data::load(settings.ai.library.clone());
+        // 旧配置没有模型列表时生成内置条目并迁移密钥与自定义接口。
+        // Old configurations without a model list seed the built-ins and migrate keys and the custom
+        // endpoint.
+        settings.ai.migrate_models();
         settings
     }
 
@@ -1302,7 +1637,7 @@ impl SurfingApp {
                                 SettingsPage::Audio => self.ui_settings_audio(ui),
                                 SettingsPage::Render => self.ui_settings_render(ui),
                                 SettingsPage::Controller => self.ui_settings_controller(ui),
-                                SettingsPage::Ai => self.ui_settings_ai(ui),
+                                SettingsPage::Models => self.ui_settings_models(ui),
                                 SettingsPage::Plugins => self.ui_settings_plugins(ui),
                                 SettingsPage::Shortcuts => self.ui_settings_shortcuts(ui),
                                 SettingsPage::About => self.ui_settings_about(ui),
@@ -2239,235 +2574,6 @@ impl SurfingApp {
         }
     }
 
-    /// 所属模块：app / 全局设置 / AI
-    /// 功能：绘制 AI 页：模型预设、各服务商 API Key、自定义接口与采样参数。
-    /// 输入：`ui`：设置内容区。
-    /// 输出/副作用：修改全局 AI 设置并写盘；密钥只保存在本机设置文件。
-    /// 复杂度：每帧 O(服务商数 + 预设数)。
-    ///
-    /// Module: app / global settings / AI
-    /// Purpose: Draw the AI page: model presets, per-provider API keys, custom endpoint and sampling.
-    /// Inputs: `ui`: settings content area.
-    /// Outputs / side effects: updates global AI settings and writes them; keys stay in the local file.
-    /// Complexity: O(providers + presets) per frame.
-    fn ui_settings_ai(&mut self, ui: &mut egui::Ui) {
-        let mut changed = false;
-        settings_section(ui, t("模型"), |ui| {
-            ui.horizontal(|ui| {
-                settings_field_label(ui, t("默认模型"));
-                let current = crate::ai::find_preset(&self.settings.ai.model_preset)
-                    .map(|preset| preset.label)
-                    .unwrap_or(t("自定义"));
-                let mut preset = self.settings.ai.model_preset.clone();
-                settings_combo(ui, "settings_ai_preset", current.to_string(), |ui| {
-                    for entry in crate::ai::MODEL_PRESETS {
-                        ui.selectable_value(&mut preset, entry.id.to_string(), entry.label);
-                    }
-                });
-                if preset != self.settings.ai.model_preset {
-                    self.settings.ai.model_preset = preset;
-                    changed = true;
-                }
-            });
-            settings_hint(
-                ui,
-                t("对话输入框下方的“模型”下拉与此处同步；切换预设会使用对应服务商与模型。"),
-            );
-        });
-
-        settings_section(ui, "API Key", |ui| {
-            for provider in [
-                crate::ai::AiProvider::DeepSeek,
-                crate::ai::AiProvider::Mimo,
-                crate::ai::AiProvider::Custom,
-            ] {
-                ui.horizontal(|ui| {
-                    settings_field_label(ui, provider.label());
-                    let mut key = self.settings.ai.api_key(provider.id()).to_string();
-                    let response = ui.add(
-                        egui::TextEdit::singleline(&mut key)
-                            .password(true)
-                            .hint_text("sk-…")
-                            .desired_width(260.0),
-                    );
-                    if response.changed() {
-                        self.settings.ai.set_api_key(provider.id(), key.trim());
-                        changed = true;
-                    }
-                    if ui
-                        .add(
-                            egui::Button::new(egui::RichText::new(t("清除")).size(10.5))
-                                .min_size(egui::vec2(44.0, 22.0)),
-                        )
-                        .on_hover_text(t("删除该服务商保存的 API Key"))
-                        .clicked()
-                    {
-                        self.settings.ai.set_api_key(provider.id(), "");
-                        changed = true;
-                    }
-                });
-            }
-            settings_hint(
-                ui,
-                t(
-                    "密钥只写入本机设置文件（<安装目录>\\config\\settings.json），不会写入工程，也不会随工程分享。",
-                ),
-            );
-            settings_hint(
-                ui,
-                "DeepSeek：https://api-docs.deepseek.com　MiMo：https://platform.xiaomimimo.com",
-            );
-        });
-
-        settings_section(ui, t("自定义接口"), |ui| {
-            ui.horizontal(|ui| {
-                settings_field_label(ui, "Base URL");
-                let mut url = self.settings.ai.custom_base_url.clone();
-                if ui
-                    .add(
-                        egui::TextEdit::singleline(&mut url)
-                            .hint_text("https://example.com/v1")
-                            .desired_width(320.0),
-                    )
-                    .changed()
-                {
-                    self.settings.ai.custom_base_url = url;
-                    changed = true;
-                }
-            });
-            ui.horizontal(|ui| {
-                settings_field_label(ui, t("模型名"));
-                let mut model = self.settings.ai.custom_model.clone();
-                if ui
-                    .add(
-                        egui::TextEdit::singleline(&mut model)
-                            .hint_text(t("自定义模型 id"))
-                            .desired_width(320.0),
-                    )
-                    .changed()
-                {
-                    self.settings.ai.custom_model = model;
-                    changed = true;
-                }
-            });
-            settings_hint(
-                ui,
-                t("仅在选择“自定义”模型时使用；接口需兼容 OpenAI /chat/completions。"),
-            );
-        });
-
-        settings_section(ui, t("推理强度"), |ui| {
-            ui.horizontal(|ui| {
-                settings_field_label(ui, t("推理"));
-                let current = crate::ai::AiReasoning::from_id(&self.settings.ai.reasoning);
-                let mut reasoning = current;
-                settings_combo(
-                    ui,
-                    "settings_ai_reasoning",
-                    current.label().to_string(),
-                    |ui| {
-                        for entry in crate::ai::AiReasoning::ALL {
-                            ui.selectable_value(&mut reasoning, entry, entry.label());
-                        }
-                    },
-                );
-                if reasoning != current {
-                    self.settings.ai.reasoning = reasoning.id().to_string();
-                    changed = true;
-                }
-            });
-            settings_hint(
-                ui,
-                t(
-                    "关闭 = 不显示思考；低/中/高控制 DeepSeek 的 reasoning_effort。开启思考会增加等待时间与输出 token，但复杂编曲计划更稳。",
-                ),
-            );
-        });
-
-        settings_section(ui, t("联网搜索"), |ui| {
-            ui.horizontal(|ui| {
-                settings_field_label(ui, t("插件检索"));
-                let mut enabled = self.settings.ai.search_enabled;
-                if settings_switch(ui, &mut enabled) {
-                    self.settings.ai.search_enabled = enabled;
-                    changed = true;
-                }
-                ui.label(
-                    egui::RichText::new(t("允许 AI 在不确定插件特点时联网检索"))
-                        .size(11.0)
-                        .color(theme::TEXT),
-                );
-            });
-            settings_hint(
-                ui,
-                t(
-                    "使用 DeepSeek Search API（base https://api.deepseek.com/v1/tools/search），需要 DeepSeek API Key 并按次计费；没有 DeepSeek Key 时自动跳过检索。",
-                ),
-            );
-            settings_hint(
-                ui,
-                t("检索词只包含插件名称/厂商，不会发送工程内容或本机路径。"),
-            );
-        });
-
-        settings_section(ui, t("采样参数"), |ui| {
-            ui.horizontal(|ui| {
-                settings_field_label(ui, t("温度"));
-                let mut temperature = self.settings.ai.temperature;
-                ui.add_sized(
-                    [260.0, 24.0],
-                    egui::Slider::new(&mut temperature, 0.0..=2.0)
-                        .fixed_decimals(2)
-                        .text(t("创意程度")),
-                );
-                if (temperature - self.settings.ai.temperature).abs() > 0.001 {
-                    self.settings.ai.temperature = temperature;
-                    changed = true;
-                }
-            });
-            ui.horizontal(|ui| {
-                settings_field_label(ui, t("最大输出"));
-                let mut tokens = self.settings.ai.max_tokens;
-                if ui
-                    .add(
-                        egui::DragValue::new(&mut tokens)
-                            .range(1024..=131_072)
-                            .speed(256.0)
-                            .suffix(" tokens"),
-                    )
-                    .changed()
-                {
-                    self.settings.ai.max_tokens = tokens;
-                    changed = true;
-                }
-            });
-            ui.horizontal(|ui| {
-                settings_field_label(ui, t("超时"));
-                let mut seconds = self.settings.ai.timeout_seconds;
-                if ui
-                    .add(
-                        egui::DragValue::new(&mut seconds)
-                            .range(30..=600)
-                            .speed(10.0)
-                            .suffix(" 秒"),
-                    )
-                    .changed()
-                {
-                    self.settings.ai.timeout_seconds = seconds;
-                    changed = true;
-                }
-            });
-            settings_hint(
-                ui,
-                t("编曲计划可能包含大量音符；输出上限过低会导致 JSON 被截断。"),
-            );
-        });
-
-        if changed {
-            self.commit_settings();
-        }
-    }
-
     /// 所属模块：app / 全局设置 / 插件
     /// 功能：绘制插件页：扫描目录列表、重新扫描与已扫描插件列表。
     /// 输入：`ui`：设置内容区。
@@ -3394,7 +3500,7 @@ fn settings_nav_item(ui: &mut egui::Ui, page: SettingsPage, selected: bool) -> b
 /// - `add`: closure that draws the section content.
 /// Outputs / side effects: paints the card; no app state change (the closure owns its changes).
 /// Complexity: O(1) per frame.
-fn settings_section(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) {
+pub(super) fn settings_section(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::NONE
         .fill(theme::PANEL)
         .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
@@ -3429,7 +3535,7 @@ fn settings_section(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::
 /// - `text`: hint text.
 /// Outputs / side effects: paints text only; no state change.
 /// Complexity: O(1) time and space.
-fn settings_hint(ui: &mut egui::Ui, text: &str) {
+pub(super) fn settings_hint(ui: &mut egui::Ui, text: &str) {
     ui.label(egui::RichText::new(text).size(10.5).color(theme::TEXT_DIM));
 }
 
@@ -3476,7 +3582,7 @@ fn settings_field_label(ui: &mut egui::Ui, text: &str) {
 /// - `tooltip`: hover text.
 /// Outputs / side effects: whether it was clicked; no other state change.
 /// Complexity: O(1) time and space.
-fn settings_action_button(ui: &mut egui::Ui, label: &str, tooltip: &str) -> bool {
+pub(super) fn settings_action_button(ui: &mut egui::Ui, label: &str, tooltip: &str) -> bool {
     ui.add(
         egui::Button::new(egui::RichText::new(label).size(11.0).color(theme::TEXT))
             .fill(theme::PANEL_2)
@@ -3507,7 +3613,7 @@ fn settings_action_button(ui: &mut egui::Ui, label: &str, tooltip: &str) -> bool
 /// - `add`: closure that draws the dropdown items.
 /// Outputs / side effects: paints the widget; the closure handles the options.
 /// Complexity: O(items) time and O(1) space.
-fn settings_combo(
+pub(super) fn settings_combo(
     ui: &mut egui::Ui,
     id: &str,
     selected: impl Into<egui::WidgetText>,
@@ -3541,7 +3647,7 @@ fn settings_combo(
 /// - `value`: current state; toggled on click.
 /// Outputs / side effects: whether it was clicked; mutates `value` on click.
 /// Complexity: O(1) time and space.
-fn settings_switch(ui: &mut egui::Ui, value: &mut bool) -> bool {
+pub(super) fn settings_switch(ui: &mut egui::Ui, value: &mut bool) -> bool {
     theme::toggle_switch(ui, value).clicked()
 }
 
@@ -3685,6 +3791,8 @@ mod tests {
         assert_eq!(settings.ai.timeout_seconds, DEFAULT_AI_TIMEOUT_SECONDS);
         assert_eq!(settings.ai.reasoning, "medium");
         assert!(settings.ai.search_enabled);
+        assert_eq!(settings.ai.models.len(), 4);
+        assert_eq!(settings.ai.active_model, DEFAULT_AI_MODEL_PRESET);
     }
 
     /// 覆盖：AI 设置可以往返序列化，且空密钥会移除记录。
@@ -3711,6 +3819,56 @@ mod tests {
         assert_eq!(loaded.timeout_seconds, 90);
         assert_eq!(loaded.reasoning(), crate::ai::AiReasoning::High);
         assert!(!loaded.search_enabled);
+    }
+
+    /// 覆盖：旧版 AI 设置迁移到模型列表，保留密钥、自定义接口与选中预设。
+    /// Covers: legacy AI settings migrate into the model list, keeping keys, the custom endpoint and
+    /// the selected preset.
+    #[test]
+    fn legacy_ai_settings_migrate_to_models() {
+        let mut ai = AiSettings::default();
+        ai.models.clear();
+        ai.active_model.clear();
+        ai.model_preset = "deepseek-v4-pro".into();
+        ai.set_api_key("deepseek", "sk-legacy");
+        ai.set_api_key("mimo", "sk-mimo");
+        ai.custom_base_url = "https://example.com/v1".into();
+        ai.custom_model = "example-model".into();
+        ai.set_api_key("custom", "sk-custom");
+        ai.migrate_models();
+        assert_eq!(ai.models.len(), 5);
+        assert_eq!(ai.active_model, "deepseek-v4-pro");
+        let deepseek = ai.model_by_id("deepseek-flash").expect("builtin");
+        assert_eq!(deepseek.api_key, "sk-legacy");
+        let mimo = ai.model_by_id("mimo-v2.6-flash").expect("mimo");
+        assert_eq!(mimo.api_key, "sk-mimo");
+        let custom = ai.model_by_id("custom").expect("custom");
+        assert_eq!(custom.model, "example-model");
+        assert_eq!(custom.api_key, "sk-custom");
+        assert!(!custom.builtin);
+        assert!(!ai.remove_model("deepseek-flash"));
+        assert!(ai.model_by_id("deepseek-flash").is_some());
+    }
+
+    /// 覆盖：停用当前模型会回退到其他启用模型，删除自定义模型后回退有效。
+    /// Covers: disabling the active model falls back to another enabled model and removing a custom
+    /// model keeps the selection valid.
+    #[test]
+    fn model_selection_falls_back() {
+        let mut ai = AiSettings::default();
+        ai.set_active_model("deepseek-flash");
+        ai.set_model_enabled("deepseek-flash", false);
+        assert_eq!(ai.active_model, "deepseek-v4-pro");
+        let mut custom = crate::ai::AiModelConfig::default();
+        custom.id = "custom-1".into();
+        custom.model = "demo".into();
+        custom.api_key = "sk".into();
+        ai.upsert_model(custom);
+        assert!(ai.set_active_model("custom-1"));
+        assert_eq!(ai.active_model, "custom-1");
+        assert!(ai.remove_model("custom-1"));
+        assert_ne!(ai.active_model, "custom-1");
+        assert!(ai.active_model().is_some());
     }
 
     /// 覆盖：音频设置转换为启动选项时保留系统、设备、采样率与缓冲。

@@ -36,7 +36,7 @@
 //!   reasoning, change card and empty state.
 //! - Markdown rendering lives in `ui/markdown.rs` and is shared with the Agent library.
 
-use crate::ai::{AiApplySummary, AiReasoning, AiRole, MODEL_PRESETS, find_preset};
+use crate::ai::{AiApplySummary, AiReasoning, AiRole};
 use crate::app::{
     AiChatState, AiLiveMessage, AiMessageMeta, AiTaskConflict, Clipboard, SurfingApp,
 };
@@ -157,7 +157,7 @@ impl SurfingApp {
     /// 功能：绘制左侧任务栏：图标 + 标题 + 设置、整宽「新任务」按钮、按今天/更早分组的历史对话、
     /// 底部 VST 连接状态。
     /// 输入：`ui`：左侧任务栏区域。
-    /// 输出/副作用：切换对话、开始新任务或打开 AI 设置；不修改工程。
+    /// 输出/副作用：切换对话、开始新任务或打开模型设置；不修改工程。
     /// 复杂度：每帧 O(历史对话数)。
     ///
     /// Module: ui / AI composition panel / task rail
@@ -233,7 +233,7 @@ impl SurfingApp {
                                 .frame(false)
                                 .min_size(egui::vec2(24.0, 24.0)),
                         )
-                        .on_hover_text("AI 设置")
+                        .on_hover_text("模型设置")
                         .clicked()
                     {
                         open_settings = true;
@@ -268,7 +268,7 @@ impl SurfingApp {
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.add_space(2.0);
-                    let mut section = |ui: &mut egui::Ui, label: &str| {
+                    let section = |ui: &mut egui::Ui, label: &str| {
                         ui.add_space(6.0);
                         ui.horizontal(|ui| {
                             ui.add_space(16.0);
@@ -296,7 +296,7 @@ impl SurfingApp {
                         for task in group.iter().copied() {
                             let (id, title, count, task_running, updated) = task;
                             let running = *task_running || (pending && active == Some(*id));
-                            let (title, count) = if active == Some(*id) {
+                            let (title, _count) = if active == Some(*id) {
                                 (current_title.clone(), current_count)
                             } else {
                                 (title.clone(), *count)
@@ -435,13 +435,12 @@ impl SurfingApp {
 
         // 缺少密钥时显示整宽提示条：低饱和琥珀底 + 图标 + 右侧「去配置」文字链接。
         // Missing key: a full-width low-saturation amber strip with an icon and a text link.
-        let missing_key = find_preset(&self.settings.ai.model_preset)
-            .map(|preset| {
-                self.settings
-                    .ai
-                    .api_key(preset.provider.id())
-                    .trim()
-                    .is_empty()
+        let missing_key = self
+            .settings
+            .ai
+            .active_model()
+            .map(|model| {
+                !model.enabled || model.api_key.trim().is_empty() || model.model.trim().is_empty()
             })
             .unwrap_or(true);
         if missing_key {
@@ -715,9 +714,22 @@ impl SurfingApp {
 
         let focused = ui.memory(|memory| memory.has_focus(ai_input_id));
         let mut agent_selected = selected_agent.clone();
-        let mut preset_id = self.settings.ai.model_preset.clone();
-        let current_reasoning = AiReasoning::from_id(&self.settings.ai.reasoning);
+        let mut active_model_id = self
+            .settings
+            .ai
+            .active_model()
+            .map(|model| model.id.clone())
+            .unwrap_or_default();
+        let enabled_models: Vec<crate::ai::AiModelConfig> =
+            self.settings.ai.enabled_models().cloned().collect();
+        let current_reasoning = self
+            .settings
+            .ai
+            .active_model()
+            .map(|model| AiReasoning::from_id(&model.reasoning))
+            .unwrap_or(AiReasoning::Medium);
         let mut reasoning = current_reasoning;
+        let mut open_model_settings = false;
 
         // 输入卡片：边框焦点态 + 底部工具栏（附件 / 智能体 / 模型 / 推理 / 技能乐器 / 发送）。
         // Composer card: focus border and a toolbar with attachment, agent, model, reasoning,
@@ -816,24 +828,83 @@ impl SurfingApp {
                         self.ai_chat.select_agent(&agent_selected);
                     }
 
-                    let preset_label = find_preset(&preset_id)
-                        .map(|preset| preset.label)
-                        .unwrap_or("自定义");
-                    let model_response = theme::dropdown_button(ui, preset_label, false);
+                    let current_model_label = enabled_models
+                        .iter()
+                        .find(|model| model.id == active_model_id)
+                        .map(|model| model.display_label().to_string())
+                        .or_else(|| {
+                            self.settings
+                                .ai
+                                .active_model()
+                                .map(|model| model.display_label().to_string())
+                        })
+                        .unwrap_or_else(|| "选择模型".to_string());
+                    let model_response =
+                        theme::dropdown_button(ui, &current_model_label, false);
                     egui::Popup::menu(&model_response).show(|ui| {
-                        ui.set_min_width(160.0);
-                        for entry in MODEL_PRESETS {
+                        ui.set_min_width(200.0);
+                        if enabled_models.is_empty() {
+                            ui.label(
+                                RichText::new("暂无可用模型")
+                                    .size(theme::FONT_LABEL)
+                                    .color(theme::TEXT_FAINT),
+                            );
                             if ui
-                                .selectable_label(preset_id == entry.id, entry.label)
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new("打开模型设置")
+                                            .size(theme::FONT_LABEL)
+                                            .color(theme::ACCENT),
+                                    )
+                                    .frame(false),
+                                )
                                 .clicked()
                             {
-                                preset_id = entry.id.to_string();
+                                open_model_settings = true;
+                            }
+                        } else {
+                            for (group, builtin) in [("内置", true), ("自定义", false)] {
+                                let entries: Vec<&crate::ai::AiModelConfig> = enabled_models
+                                    .iter()
+                                    .filter(|model| model.builtin == builtin)
+                                    .collect();
+                                if entries.is_empty() {
+                                    continue;
+                                }
+                                ui.label(
+                                    RichText::new(group)
+                                        .size(theme::FONT_MICRO)
+                                        .color(theme::TEXT_FAINT),
+                                );
+                                for entry in entries {
+                                    if ui
+                                        .selectable_label(
+                                            active_model_id == entry.id,
+                                            format!("{}  ·  {}", entry.display_label(), entry.model),
+                                        )
+                                        .clicked()
+                                    {
+                                        active_model_id = entry.id.clone();
+                                    }
+                                }
+                                ui.add_space(theme::SPACE_XS);
                             }
                         }
                     });
-                    if preset_id != self.settings.ai.model_preset {
-                        self.settings.ai.model_preset = preset_id;
-                        preset_changed = true;
+                    if active_model_id
+                        != self
+                            .settings
+                            .ai
+                            .active_model()
+                            .map(|model| model.id.clone())
+                            .unwrap_or_default()
+                    {
+                        if self.settings.ai.set_active_model(&active_model_id) {
+                            preset_changed = true;
+                        }
+                    }
+                    if open_model_settings {
+                        self.open_ai_settings(ui.ctx());
                     }
 
                     let reasoning_response =
@@ -850,7 +921,9 @@ impl SurfingApp {
                         }
                     });
                     if reasoning != current_reasoning {
-                        self.settings.ai.reasoning = reasoning.id().to_string();
+                        if let Some(model) = self.settings.ai.active_model_mut() {
+                            model.reasoning = reasoning.id().to_string();
+                        }
                         reasoning_changed = true;
                     }
 
