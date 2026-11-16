@@ -318,6 +318,9 @@ pub struct SurfingApp {
     /// 设置 → 控制器页的 MIDI 端口缓存：输入端口、输出端口。
     /// MIDI-port cache of the settings controller page: inputs and outputs.
     settings_midi_ports: Option<(Vec<String>, Vec<String>)>,
+    /// MIDI 端口后台枚举接收端；结果到达后填入 `settings_midi_ports`。
+    /// Background receiver for MIDI-port enumeration; the result fills `settings_midi_ports`.
+    settings_midi_ports_rx: Option<Receiver<(Vec<String>, Vec<String>)>>,
     /// 设置 → 渲染页的 GPU 设备缓存；进入页面时枚举，手动刷新时重建。
     /// GPU-device cache of the settings render page; enumerated on entry and rebuilt on refresh.
     settings_gpu_devices: Option<Result<Vec<crate::audio::gpu::GpuDeviceInfo>, String>>,
@@ -1291,6 +1294,7 @@ impl SurfingApp {
             settings_audio_systems: None,
             settings_audio_devices: None,
             settings_midi_ports: None,
+            settings_midi_ports_rx: None,
             settings_gpu_devices: None,
             settings_focus: false,
             settings,

@@ -22,6 +22,9 @@
 //! - `SurfingApp::capture_hotkey_input`：录制并保存可自定义快捷键。
 //! - `SurfingApp::open_settings_folder_picker` / `poll_folder_picker`：后台文件夹选择。
 //! - `SurfingApp::settings_gpu_catalog`：GPU 设备枚举与缓存。
+//! - `SurfingApp::settings_midi_ports` / `poll_settings_midi_ports` /
+//!   `start_settings_midi_ports_enumeration` / `refresh_settings_midi_ports` / `midi_input_ports`：
+//!   MIDI 端口后台枚举与缓存，UI 线程不做设备 I/O。
 //! - `settings_title_bar` / `settings_title_button`：自绘标题栏与窗口按钮。
 //! - `settings_nav_item` / `settings_section` / `settings_hint` / `settings_field_label`：通用布局。
 //! - `settings_combo` / `settings_action_button` / `settings_switch`：统一风格的控件。
@@ -54,6 +57,9 @@
 //! - `SurfingApp::capture_hotkey_input`: record and persist customisable shortcuts.
 //! - `SurfingApp::open_settings_folder_picker` / `poll_folder_picker`: background folder picker.
 //! - `SurfingApp::settings_gpu_catalog`: GPU device enumeration and caching.
+//! - `SurfingApp::settings_midi_ports` / `poll_settings_midi_ports` /
+//!   `start_settings_midi_ports_enumeration` / `refresh_settings_midi_ports` / `midi_input_ports`:
+//!   background MIDI-port enumeration and cache; no device I/O on the UI thread.
 //! - `settings_title_bar` / `settings_title_button`: self-drawn title bar and window buttons.
 //! - `settings_nav_item` / `settings_section` / `settings_hint` / `settings_field_label`: shared layout.
 //! - `settings_combo` / `settings_action_button` / `settings_switch`: consistently styled controls.
@@ -99,6 +105,13 @@ const SETTINGS_TITLE_BUTTON: [f32; 2] = [30.0, 28.0];
 /// 设置字段标签宽度（逻辑点）；控件与操作按钮按此宽度对齐。
 /// Width of a settings field label; controls and action buttons align to it.
 const SETTINGS_FIELD_W: f32 = 88.0;
+/// MIDI 端口后台枚举线程名。
+/// Name of the background MIDI-port enumeration thread.
+const MIDI_PORTS_THREAD: &str = "midi-ports";
+/// MIDI 端口枚举期间的界面重绘间隔（毫秒），保证结果到达后提示自动更新。
+/// UI repaint interval in milliseconds while MIDI ports are enumerated, so the hint refreshes once
+/// the result arrives.
+const MIDI_PORTS_REPAINT_MS: u64 = 100;
 /// 默认自动保存间隔（秒）。
 /// Default autosave interval in seconds.
 const DEFAULT_AUTOSAVE_SECONDS: u64 = 60;
@@ -2051,20 +2064,24 @@ impl SurfingApp {
     }
 
     /// 所属模块：app / 全局设置 / 控制器
-    /// 功能：绘制控制器页：延迟偏移、默认 MIDI 输入设备、启用的输入设备列表与输出设备。
+    /// 功能：绘制控制器页：延迟偏移、默认 MIDI 输入设备、启用的输入设备列表、刷新设备与输出设备。
     /// 输入：`ui`：设置内容区。
-    /// 输出/副作用：修改并保存设置；输入设备变更时立即重建 MIDI 连接。
+    /// 输出/副作用：修改并保存设置；设备变更时向后台线程发送重连命令（不阻塞 UI）；端口枚举
+    ///   期间请求定时重绘。
     /// 复杂度：每帧 O(MIDI 端口数)。
     ///
     /// Module: app / global settings / controller
     /// Purpose: Draw the controller page: latency offset, the default MIDI input device, the list
-    /// of enabled input devices and the output device.
+    /// of enabled input devices, a device refresh button and the output device.
     /// Inputs: `ui`: settings content area.
-    /// Outputs / side effects: edits and saves settings; rebuilds MIDI connections when devices change.
+    /// Outputs / side effects: edits and saves settings; sends a reconnect command to the worker when
+    /// devices change (never blocks the UI); requests timed repaints while ports are enumerated.
     /// Complexity: O(MIDI ports) per frame.
     fn ui_settings_controller(&mut self, ui: &mut egui::Ui) {
         let (inputs, outputs) = self.settings_midi_ports();
+        let enumerating = self.settings_midi_ports_rx.is_some();
         let mut reconnect = false;
+        let mut refresh_ports = false;
         settings_section(ui, t("延迟偏移"), |ui| {
             ui.horizontal(|ui| {
                 settings_field_label(ui, t("偏移"));
@@ -2085,7 +2102,27 @@ impl SurfingApp {
         });
 
         settings_section(ui, t("MIDI 输入"), |ui| {
-            if inputs.is_empty() {
+            // 枚举在后台线程完成；这里只显示进行中提示或刷新按钮。
+            // Enumeration runs on a worker; this row only shows the in-progress hint or the button.
+            ui.horizontal(|ui| {
+                settings_field_label(ui, t("设备列表"));
+                if enumerating {
+                    ui.label(
+                        egui::RichText::new(t("正在枚举 MIDI 设备…"))
+                            .size(11.0)
+                            .color(theme::TEXT_DIM),
+                    );
+                } else if settings_action_button(
+                    ui,
+                    t("刷新设备"),
+                    t("重新扫描 MIDI 输入与输出端口"),
+                ) {
+                    refresh_ports = true;
+                }
+            });
+            if enumerating {
+                settings_hint(ui, t("正在枚举 MIDI 设备…"));
+            } else if inputs.is_empty() {
                 settings_hint(ui, t("未发现 MIDI 输入设备。"));
             } else {
                 let auto_label = "自动（第一个可用端口）";
@@ -2149,7 +2186,9 @@ impl SurfingApp {
         });
 
         settings_section(ui, t("启用的输出设备"), |ui| {
-            if outputs.is_empty() {
+            if enumerating {
+                settings_hint(ui, t("正在枚举 MIDI 设备…"));
+            } else if outputs.is_empty() {
                 settings_hint(ui, t("未发现 MIDI 输出设备（当前版本不发送 MIDI 输出）。"));
             } else {
                 let mut selected = self
@@ -2178,11 +2217,25 @@ impl SurfingApp {
             }
         });
 
+        if refresh_ports {
+            self.refresh_settings_midi_ports();
+        }
         if reconnect {
+            // 只发送后台重连命令并立即返回；设备 I/O 全部在工作线程完成。
+            // Only send the background reconnect command and return; all device I/O happens there.
             self.midi_status = self.shared.reconnect_midi_devices(
                 self.settings.controller_input_device.as_deref(),
                 &self.settings.controller_enabled_input_devices,
             );
+        }
+        if self.settings_midi_ports_rx.is_some()
+            || self.midi_status == crate::core::midi_input::MIDI_CONNECTING_STATUS
+        {
+            // 枚举与连接结果都由后台线程写入，定时重绘才能在到达后刷新列表与状态。
+            // Both enumeration and connection results are published by the worker, so keep
+            // repainting until they arrive.
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(MIDI_PORTS_REPAINT_MS));
         }
     }
 
@@ -2977,38 +3030,127 @@ impl SurfingApp {
     }
 
     /// 所属模块：app / 全局设置 / 设备枚举
-    /// 功能：返回 MIDI 输入与输出端口名；首次进入控制器页时枚举并缓存。
+    /// 功能：返回 MIDI 输入与输出端口名；缓存未命中时启动后台枚举并立即返回空列表。
     /// 输入：`self`。
-    /// 输出/副作用：可能写入 `settings_midi_ports`；只读 MIDI 端口。
-    /// 复杂度：时间 O(端口数)，空间 O(端口数)。
+    /// 输出/副作用：后台结果到达时写入 `settings_midi_ports`；必要时启动枚举线程。UI 线程不
+    ///   调用任何 midir 接口。
+    /// 复杂度：时间 O(端口数)（仅缓存克隆），空间 O(端口数)。
     ///
     /// Module: app / global settings / device enumeration
-    /// Purpose: Return the MIDI input and output port names; enumerate and cache on first use.
+    /// Purpose: Return the MIDI input and output port names; on a cache miss start a background
+    /// enumeration and return empty lists immediately.
     /// Inputs: `self`.
-    /// Outputs / side effects: may fill `settings_midi_ports`; reads MIDI ports only.
-    /// Complexity: O(ports) time and space.
+    /// Outputs / side effects: fills `settings_midi_ports` when the worker result arrives; starts the
+    /// enumeration thread when needed. The UI thread never calls midir.
+    /// Complexity: O(ports) time (cache clone only) and O(ports) space.
     fn settings_midi_ports(&mut self) -> (Vec<String>, Vec<String>) {
+        self.poll_settings_midi_ports();
         if let Some(cached) = &self.settings_midi_ports {
             return cached.clone();
         }
-        let inputs = crate::core::midi_input::MidiInputManager::port_names();
-        let outputs = crate::core::midi_input::MidiInputManager::output_port_names();
-        self.settings_midi_ports = Some((inputs.clone(), outputs.clone()));
-        (inputs, outputs)
+        if self.settings_midi_ports_rx.is_none() {
+            self.start_settings_midi_ports_enumeration();
+        }
+        (Vec::new(), Vec::new())
     }
 
     /// 所属模块：app / 全局设置 / 设备枚举
-    /// 功能：返回 MIDI 输入端口名；首次调用时枚举并缓存，供轨道绑定选择使用。
+    /// 功能：非阻塞接收后台 MIDI 端口枚举结果并填入缓存。
     /// 输入：`self`。
-    /// 输出/副作用：可能写入 `settings_midi_ports`；只读 MIDI 端口。
-    /// 复杂度：时间 O(端口数)，空间 O(端口数)。
+    /// 输出/副作用：结果到达时写入 `settings_midi_ports` 并清空接收端；线程失败时缓存空列表，
+    ///   避免每帧重复创建线程。
+    /// 复杂度：时间 O(1)，空间 O(端口数)。
     ///
     /// Module: app / global settings / device enumeration
-    /// Purpose: Return MIDI input port names for the per-track binding picker, enumerating and
-    /// caching them on first use.
+    /// Purpose: Non-blocking receive of the background MIDI-port result and store it in the cache.
     /// Inputs: `self`.
-    /// Outputs / side effects: may fill `settings_midi_ports`; reads MIDI ports only.
-    /// Complexity: O(ports) time and space.
+    /// Outputs / side effects: fills `settings_midi_ports` and clears the receiver on success; on a
+    /// worker failure caches an empty list so the UI does not spawn a thread every frame.
+    /// Complexity: O(1) time and O(ports) space.
+    fn poll_settings_midi_ports(&mut self) {
+        let outcome = match &self.settings_midi_ports_rx {
+            Some(receiver) => match receiver.try_recv() {
+                Ok(ports) => Some(Some(ports)),
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(None),
+            },
+            None => None,
+        };
+        match outcome {
+            Some(Some(ports)) => {
+                self.settings_midi_ports = Some(ports);
+                self.settings_midi_ports_rx = None;
+            }
+            Some(None) => {
+                // 线程创建或发送失败：缓存空列表，避免每帧重试。
+                // Thread creation or send failed: cache empty lists to avoid a retry every frame.
+                self.settings_midi_ports = Some((Vec::new(), Vec::new()));
+                self.settings_midi_ports_rx = None;
+            }
+            None => {}
+        }
+    }
+
+    /// 所属模块：app / 全局设置 / 设备枚举
+    /// 功能：在命名线程 `midi-ports` 中枚举 MIDI 输入/输出端口，结果经通道返回。
+    /// 输入：`self`。
+    /// 输出/副作用：设置 `settings_midi_ports_rx`；线程创建失败时缓存空列表。
+    /// 复杂度：时间 O(1)（不等待枚举），空间 O(1)。
+    ///
+    /// Module: app / global settings / device enumeration
+    /// Purpose: Enumerate MIDI input/output ports on the named `midi-ports` thread and return the
+    /// result through a channel.
+    /// Inputs: `self`.
+    /// Outputs / side effects: sets `settings_midi_ports_rx`; caches empty lists when the thread
+    /// cannot be created.
+    /// Complexity: O(1) time (no enumeration wait) and O(1) space.
+    fn start_settings_midi_ports_enumeration(&mut self) {
+        let (tx, rx) = channel();
+        let spawned = std::thread::Builder::new()
+            .name(MIDI_PORTS_THREAD.to_string())
+            .spawn(move || {
+                // 阻塞枚举只允许在后台线程执行；UI 线程每帧只做 try_recv。
+                // Blocking enumeration runs on a worker only; the UI thread just calls try_recv.
+                let ports = crate::core::midi_input::MidiInputManager::enumerate_ports();
+                let _ = tx.send(ports);
+            });
+        match spawned {
+            Ok(_) => self.settings_midi_ports_rx = Some(rx),
+            Err(_) => self.settings_midi_ports = Some((Vec::new(), Vec::new())),
+        }
+    }
+
+    /// 所属模块：app / 全局设置 / 设备枚举
+    /// 功能：清除端口缓存并重新后台枚举；用于控制器页“刷新设备”按钮。
+    /// 输入：`self`。
+    /// 输出/副作用：丢弃缓存与在途接收端，启动新线程；本帧不阻塞。
+    /// 复杂度：时间 O(1)，空间 O(1)。
+    ///
+    /// Module: app / global settings / device enumeration
+    /// Purpose: Clear the port cache and re-enumerate in the background for the controller page's
+    /// refresh button.
+    /// Inputs: `self`.
+    /// Outputs / side effects: drops the cache and any in-flight receiver, then spawns a new worker;
+    /// never blocks the current frame.
+    /// Complexity: O(1) time and space.
+    fn refresh_settings_midi_ports(&mut self) {
+        self.settings_midi_ports = None;
+        self.settings_midi_ports_rx = None;
+        self.start_settings_midi_ports_enumeration();
+    }
+
+    /// 所属模块：app / 全局设置 / 设备枚举
+    /// 功能：返回 MIDI 输入端口名；后台枚举完成前返回空列表，供轨道绑定选择使用。
+    /// 输入：`self`。
+    /// 输出/副作用：可能启动后台枚举；不阻塞 UI。
+    /// 复杂度：时间 O(端口数)（仅缓存克隆），空间 O(端口数)。
+    ///
+    /// Module: app / global settings / device enumeration
+    /// Purpose: Return MIDI input port names for the per-track binding picker; empty until the
+    /// background enumeration finishes.
+    /// Inputs: `self`.
+    /// Outputs / side effects: may start the background enumeration; never blocks the UI.
+    /// Complexity: O(ports) time (cache clone only) and O(ports) space.
     pub(crate) fn midi_input_ports(&mut self) -> Vec<String> {
         self.settings_midi_ports().0
     }

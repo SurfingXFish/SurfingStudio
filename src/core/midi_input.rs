@@ -6,9 +6,10 @@
 //! - 声明内置虚拟键盘设备：电脑键盘通过该设备名参与轨道绑定与录音。
 //!
 //! 函数清单：
-//! - `MidiInputManager::new` / `set_devices` / `connect_with`：选择并连接默认与启用端口。
-//! - `MidiInputManager::port_names` / `output_port_names`：枚举 MIDI 输入/输出端口。
-//! - `MidiInputManager::drain` / `default_port`：读取事件与当前默认端口。
+//! - `MidiInputService::new` / `set_devices` / `status` / `default_port` / `drain`：非阻塞服务入口。
+//! - `run_midi_worker` / `apply_devices` / `publish_status` / `publish_default_port`：后台线程与状态发布。
+//! - `MidiInputManager::new` / `set_devices` / `connect_with`：在后台线程内选择并连接端口。
+//! - `MidiInputManager::port_names` / `output_port_names` / `enumerate_ports`：后台端口枚举。
 //! - `decode_packet` / `decode_ump` / `decode_midi1`：解码 MIDI 1.0 与 MIDI 2.0 数据包。
 //! - `scale7_velocity` / `scale7_u32` / `scale14_u32`：把低分辨率数值映射到统一位宽。
 //!
@@ -16,19 +17,21 @@
 //! Purpose:
 //! - Connect the default MIDI input port plus additional enabled ports, and normalise MIDI 1.0
 //!   byte streams and MIDI 2.0 UMP (Universal MIDI Packet) into one event queue.
-//! - Expose the port list, default/enabled device selection and queue draining.
+//! - Run every midir call on a dedicated worker thread so the UI thread never blocks on device I/O.
 //! - Declare the built-in virtual keyboard device used by computer-keyboard input for track
 //!   bindings and recording.
 //!
 //! Functions:
-//! - `MidiInputManager::new` / `set_devices` / `connect_with`: select and connect ports.
-//! - `MidiInputManager::port_names` / `output_port_names`: enumerate MIDI input/output ports.
-//! - `MidiInputManager::drain` / `default_port`: read events and the resolved default port.
+//! - `MidiInputService::new` / `set_devices` / `status` / `default_port` / `drain`: non-blocking API.
+//! - `run_midi_worker` / `apply_devices` / `publish_status` / `publish_default_port`: worker loop.
+//! - `MidiInputManager::new` / `set_devices` / `connect_with`: select and connect ports off the UI thread.
+//! - `MidiInputManager::port_names` / `output_port_names` / `enumerate_ports`: background enumeration.
 //! - `decode_packet` / `decode_ump` / `decode_midi1`: decode MIDI 1.0 and MIDI 2.0 packets.
 //! - `scale7_velocity` / `scale7_u32` / `scale14_u32`: widen low-resolution values.
 
 use midir::{MidiInput, MidiInputConnection, MidiOutput};
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
+use std::sync::{Arc, Mutex};
 
 /// 内置虚拟 MIDI 设备名：电脑键盘映射为 MIDI 输入，参与设备绑定与录音。
 /// Built-in virtual MIDI device name: the computer keyboard acts as a MIDI input for track bindings
@@ -129,61 +132,392 @@ pub struct MidiInputEvent {
     pub message: MidiMessage,
 }
 
-pub struct MidiInputManager {
-    _connections: Vec<MidiInputConnection<()>>,
-    receiver: Receiver<MidiInputEvent>,
-    pub status: String,
-    /// 当前用于“选中轨道”回退控制的默认端口（未配置时自动取第一个可用端口）。
-    /// Default port used as the selected-track fallback (the first available port when unset).
-    default_port: Option<String>,
+/// MIDI 输入工作线程名；midir 连接只在该线程内创建与释放。
+/// Name of the MIDI input worker thread; midir connections are created and dropped only there.
+pub const MIDI_WORKER_THREAD: &str = "surfing-midi";
+
+/// 正在连接 MIDI 输入时的状态文本。
+/// Status text shown while the MIDI input is (re)connecting.
+pub const MIDI_CONNECTING_STATUS: &str = "正在连接 MIDI 输入…";
+
+/// 工作线程不可用时的状态文本。
+/// Status text used when the MIDI worker thread is unavailable.
+pub const MIDI_UNAVAILABLE_STATUS: &str = "MIDI 输入不可用";
+
+/// 发给工作线程的 MIDI 输入命令。
+/// Command sent to the MIDI input worker thread.
+#[derive(Debug)]
+pub enum MidiCommand {
+    /// 按新的默认设备与启用列表重建连接。
+    /// Rebuild the connections from the new default device and enabled list.
+    SetDevices {
+        default: Option<String>,
+        enabled: Vec<String>,
+    },
 }
 
-impl MidiInputManager {
-    /// 所属模块：core / MIDI 输入
-    /// 功能：创建管理器并连接默认端口与设置中启用的附加端口。
+/// 非阻塞 MIDI 输入服务：UI 线程只发命令、读状态与取事件，所有设备 I/O 在后台线程完成。
+/// Non-blocking MIDI input service: the UI thread only sends commands, reads status and drains
+/// events, while every device I/O call runs on a background thread.
+pub struct MidiInputService {
+    /// 命令发送端；线程创建失败时为 `None`。
+    /// Command sender; `None` when the worker thread could not be created.
+    commands: Mutex<Option<Sender<MidiCommand>>>,
+    /// 事件接收端；由服务内部互斥保护，保证 `drain` 可跨窗口共享。
+    /// Event receiver guarded internally so `drain` can be shared across windows.
+    events: Mutex<Receiver<MidiInputEvent>>,
+    /// 状态文本；UI 读取只做 O(1) 加锁，锁内绝不做设备 I/O。
+    /// Status text; UI reads take an O(1) lock and never perform device I/O inside it.
+    status: Arc<Mutex<String>>,
+    /// 工作线程解析后的默认端口。
+    /// Default port resolved by the worker thread.
+    default_port: Arc<Mutex<Option<String>>>,
+}
+
+impl MidiInputService {
+    /// 所属模块：core / MIDI 输入 / 服务
+    /// 功能：创建服务并立即返回；MIDI 连接在名为 `surfing-midi` 的后台线程中建立。
     /// 输入：
     /// - `default`：默认端口名；`None` 自动选择第一个可用端口。
     /// - `enabled`：额外启用的端口名列表。
-    /// 输出/副作用：打开 MIDI 输入端口；状态写入 `status`。
-    /// 复杂度：时间 O(端口数)，空间 O(端口名长度)。
+    /// 输出/副作用：启动后台线程；状态初始为“正在连接 MIDI 输入…”。线程创建失败时降级为
+    ///   “MIDI 输入不可用”，后续调用不 panic。
+    /// 复杂度：时间 O(1)（不等待设备 I/O），空间 O(端口名长度)。
     ///
-    /// Module: core / MIDI input
-    /// Purpose: Create the manager and connect the default port plus the enabled extra ports.
+    /// Module: core / MIDI input / service
+    /// Purpose: Create the service and return immediately; the MIDI connections are established on a
+    /// background thread named `surfing-midi`.
     /// Inputs:
     /// - `default`: default port name; `None` selects the first available port.
     /// - `enabled`: additional enabled port names.
-    /// Outputs / side effects: opens MIDI input ports; the result is stored in `status`.
-    /// Complexity: O(ports) time and O(port name length) space.
+    /// Outputs / side effects: starts the worker thread; the initial status is “正在连接 MIDI 输入…”.
+    /// When the thread cannot be created the status degrades to “MIDI 输入不可用” and later calls
+    /// never panic.
+    /// Complexity: O(1) time (no device I/O wait) and O(port name length) space.
     pub fn new(default: Option<&str>, enabled: &[String]) -> Self {
-        let (tx, receiver) = channel();
-        let mut manager = Self {
-            _connections: Vec::new(),
-            receiver,
-            status: "未连接 MIDI 输入".into(),
-            default_port: None,
-        };
-        manager.default_port = match manager.connect_with(tx, default, enabled) {
-            Ok(resolved) => resolved,
-            Err(error) => {
-                manager.status = error;
+        let (command_tx, command_rx) = channel();
+        let (event_tx, event_rx) = channel();
+        let status = Arc::new(Mutex::new(MIDI_CONNECTING_STATUS.to_string()));
+        let default_port = Arc::new(Mutex::new(None));
+        let worker_status = Arc::clone(&status);
+        let worker_default = Arc::clone(&default_port);
+        let initial_default = default.map(str::to_string);
+        let initial_enabled = enabled.to_vec();
+        let spawned = std::thread::Builder::new()
+            .name(MIDI_WORKER_THREAD.to_string())
+            .spawn(move || {
+                run_midi_worker(
+                    initial_default,
+                    initial_enabled,
+                    command_rx,
+                    event_tx,
+                    worker_status,
+                    worker_default,
+                );
+            });
+        let commands = match spawned {
+            Ok(_) => Some(command_tx),
+            Err(_) => {
+                publish_status(&status, MIDI_UNAVAILABLE_STATUS);
                 None
             }
         };
-        manager
+        Self {
+            commands: Mutex::new(commands),
+            events: Mutex::new(event_rx),
+            status,
+            default_port,
+        }
     }
 
-    /// 所属模块：core / MIDI 输入
+    /// 所属模块：core / MIDI 输入 / 服务
+    /// 功能：发送重连命令并立即返回进行中的状态；不等待设备枚举或连接。
+    /// 输入：
+    /// - `default`：默认端口名；`None` 自动选择。
+    /// - `enabled`：额外启用的端口名列表。
+    /// 输出/副作用：写入后台命令通道；状态先置为“正在连接 MIDI 输入…”，返回当前状态文本。
+    /// 复杂度：时间 O(端口数)（仅复制列表），空间 O(端口数)。
+    ///
+    /// Module: core / MIDI input / service
+    /// Purpose: Send a reconnect command and return the in-progress status immediately; never waits
+    /// for device enumeration or connection.
+    /// Inputs:
+    /// - `default`: default port name; `None` selects automatically.
+    /// - `enabled`: additional enabled port names.
+    /// Outputs / side effects: writes to the worker command channel; sets the status to
+    /// “正在连接 MIDI 输入…” and returns the current text.
+    /// Complexity: O(ports) time (list copy only) and O(ports) space.
+    pub fn set_devices(&self, default: Option<&str>, enabled: &[String]) -> String {
+        let slot = self
+            .commands
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let Some(commands) = slot.as_ref() else {
+            return publish_status(&self.status, MIDI_UNAVAILABLE_STATUS);
+        };
+        publish_status(&self.status, MIDI_CONNECTING_STATUS);
+        let command = MidiCommand::SetDevices {
+            default: default.map(str::to_string),
+            enabled: enabled.to_vec(),
+        };
+        if commands.send(command).is_err() {
+            // 工作线程已退出：降级为不可用，避免界面一直显示“正在连接”。
+            // The worker thread is gone: degrade to unavailable instead of showing “connecting”.
+            publish_status(&self.status, MIDI_UNAVAILABLE_STATUS);
+        }
+        self.status()
+    }
+
+    /// 所属模块：core / MIDI 输入 / 服务
+    /// 功能：返回当前状态文本。
+    /// 输入：`self`。
+    /// 输出/副作用：状态文本；只做 O(1) 加锁，不触发设备 I/O。
+    /// 复杂度：时间 O(1)，空间 O(状态长度)。
+    ///
+    /// Module: core / MIDI input / service
+    /// Purpose: Return the current status text.
+    /// Inputs: `self`.
+    /// Outputs / side effects: status text; an O(1) lock with no device I/O.
+    /// Complexity: O(1) time and O(status length) space.
+    pub fn status(&self) -> String {
+        self.status
+            .lock()
+            .map(|status| status.clone())
+            .unwrap_or_else(|poison| poison.into_inner().clone())
+    }
+
+    /// 所属模块：core / MIDI 输入 / 服务
+    /// 功能：返回工作线程解析后的默认端口名。
+    /// 输入：`self`。
+    /// 输出/副作用：端口名或 `None`；只做 O(1) 加锁，不触发设备 I/O。
+    /// 复杂度：时间 O(1)，空间 O(端口名长度)。
+    ///
+    /// Module: core / MIDI input / service
+    /// Purpose: Return the default port resolved by the worker thread.
+    /// Inputs: `self`.
+    /// Outputs / side effects: the port name or `None`; an O(1) lock with no device I/O.
+    /// Complexity: O(1) time and O(port name length) space.
+    pub fn default_port(&self) -> Option<String> {
+        self.default_port
+            .lock()
+            .map(|port| port.clone())
+            .unwrap_or_else(|poison| poison.into_inner().clone())
+    }
+
+    /// 所属模块：core / MIDI 输入 / 服务
+    /// 功能：非阻塞取走当前队列中的全部事件。
+    /// 输入：`self`。
+    /// 输出/副作用：返回事件列表并清空队列；不阻塞 UI 线程。
+    /// 复杂度：时间 O(事件数)，空间 O(事件数)。
+    ///
+    /// Module: core / MIDI input / service
+    /// Purpose: Take every queued event without blocking.
+    /// Inputs: `self`.
+    /// Outputs / side effects: returns the events and clears the queue; never blocks the UI thread.
+    /// Complexity: O(events) time and space.
+    pub fn drain(&self) -> Vec<MidiInputEvent> {
+        let receiver = self
+            .events
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let mut events = Vec::new();
+        while let Ok(event) = receiver.try_recv() {
+            events.push(event);
+        }
+        events
+    }
+}
+
+/// 所属模块：core / MIDI 输入 / 后台线程
+/// 功能：工作线程主循环：首次连接、合并积压命令后重连，并发布状态与默认端口。
+/// 输入：
+/// - `default`：启动时的默认设备。
+/// - `enabled`：启动时的启用设备列表。
+/// - `commands`：命令接收端。
+/// - `events`：midir 回调事件的发送端。
+/// - `status`：与 UI 共享的状态文本槽。
+/// - `default_port`：与 UI 共享的默认端口槽。
+/// 输出/副作用：在本线程创建并持有 midir 连接（退出时在本线程 Drop）；写状态与默认端口；转发事件。
+/// 复杂度：时间 O(命令数 × 端口数)，空间 O(端口数)。
+///
+/// Module: core / MIDI input / worker thread
+/// Purpose: Worker loop: connect on start, merge queued commands before reconnecting, and publish
+/// status plus the default port.
+/// Inputs:
+/// - `default`: initial default device.
+/// - `enabled`: initial enabled device list.
+/// - `commands`: command receiver.
+/// - `events`: sender of midir callback events.
+/// - `status`: status slot shared with the UI.
+/// - `default_port`: default-port slot shared with the UI.
+/// Outputs / side effects: creates and owns the midir connections on this thread (dropped here on
+/// exit); writes status and default port; forwards events.
+/// Complexity: O(commands × ports) time and O(ports) space.
+fn run_midi_worker(
+    default: Option<String>,
+    enabled: Vec<String>,
+    commands: Receiver<MidiCommand>,
+    events: Sender<MidiInputEvent>,
+    status: Arc<Mutex<String>>,
+    default_port: Arc<Mutex<Option<String>>>,
+) {
+    let mut manager = MidiInputManager::new();
+    apply_devices(
+        &mut manager,
+        default.as_deref(),
+        &enabled,
+        &events,
+        &status,
+        &default_port,
+    );
+
+    while let Ok(command) = commands.recv() {
+        // 合并积压命令：快速连点勾选只应用最后一条，避免逐条排队重连。
+        // Coalesce queued commands: rapid checkbox clicks apply only the last one instead of
+        // reconnecting once per command.
+        let mut latest = command;
+        let mut disconnected = false;
+        loop {
+            match commands.try_recv() {
+                Ok(next) => latest = next,
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    disconnected = true;
+                    break;
+                }
+            }
+        }
+        let MidiCommand::SetDevices { default, enabled } = latest;
+        apply_devices(
+            &mut manager,
+            default.as_deref(),
+            &enabled,
+            &events,
+            &status,
+            &default_port,
+        );
+        if disconnected {
+            // 通道已断开：应用最后一条命令后退出，连接在本线程释放。
+            // The channel is closed: apply the final command and exit, dropping connections here.
+            return;
+        }
+    }
+}
+
+/// 所属模块：core / MIDI 输入 / 后台线程
+/// 功能：按默认设备与启用列表重建连接，并把状态与默认端口发布给 UI。
+/// 输入：
+/// - `manager`：工作线程私有的连接管理器。
+/// - `default` / `enabled`：目标设备选择。
+/// - `events`：midir 回调事件发送端。
+/// - `status` / `default_port`：共享状态槽。
+/// 输出/副作用：替换 midir 连接；写状态与默认端口。
+/// 复杂度：时间 O(端口数)，空间 O(端口数)。
+///
+/// Module: core / MIDI input / worker thread
+/// Purpose: Rebuild the connections for the default device and enabled list, then publish the status
+/// and default port to the UI.
+/// Inputs:
+/// - `manager`: connection manager owned by the worker thread.
+/// - `default` / `enabled`: target device selection.
+/// - `events`: sender of midir callback events.
+/// - `status` / `default_port`: shared status slots.
+/// Outputs / side effects: replaces the midir connections; writes status and default port.
+/// Complexity: O(ports) time and space.
+fn apply_devices(
+    manager: &mut MidiInputManager,
+    default: Option<&str>,
+    enabled: &[String],
+    events: &Sender<MidiInputEvent>,
+    status: &Mutex<String>,
+    default_port: &Mutex<Option<String>>,
+) {
+    publish_status(status, MIDI_CONNECTING_STATUS);
+    let (resolved, text) = manager.set_devices(events.clone(), default, enabled);
+    publish_default_port(default_port, resolved);
+    publish_status(status, &text);
+}
+
+/// 所属模块：core / MIDI 输入 / 状态发布
+/// 功能：写入共享状态文本；忽略互斥锁中毒，保证后台线程不会 panic。
+/// 输入：
+/// - `status`：共享状态槽。
+/// - `text`：新状态文本。
+/// 输出/副作用：覆盖状态文本。
+/// 复杂度：时间 O(状态长度)，空间 O(1)。
+///
+/// Module: core / MIDI input / status
+/// Purpose: Write the shared status text, ignoring mutex poisoning so the worker never panics.
+/// Inputs:
+/// - `status`: shared status slot.
+/// - `text`: new status text.
+/// Outputs / side effects: replaces the status text.
+/// Complexity: O(status length) time and O(1) space.
+fn publish_status(status: &Mutex<String>, text: &str) -> String {
+    let mut slot = status.lock().unwrap_or_else(|poison| poison.into_inner());
+    slot.clear();
+    slot.push_str(text);
+    slot.clone()
+}
+
+/// 所属模块：core / MIDI 输入 / 状态发布
+/// 功能：写入共享默认端口；忽略互斥锁中毒。
+/// 输入：
+/// - `slot`：共享默认端口槽。
+/// - `port`：解析出的端口名或 `None`。
+/// 输出/副作用：覆盖默认端口。
+/// 复杂度：时间 O(1)，空间 O(端口名长度)。
+///
+/// Module: core / MIDI input / status
+/// Purpose: Write the shared default port, ignoring mutex poisoning.
+/// Inputs:
+/// - `slot`: shared default-port slot.
+/// - `port`: resolved port name or `None`.
+/// Outputs / side effects: replaces the default port.
+/// Complexity: O(1) time and O(port name length) space.
+fn publish_default_port(slot: &Mutex<Option<String>>, port: Option<String>) {
+    let mut slot = slot.lock().unwrap_or_else(|poison| poison.into_inner());
+    *slot = port;
+}
+
+/// 工作线程私有的 midir 连接管理器；连接句柄只允许在本线程创建与释放。
+/// midir connection manager private to the worker thread; handles are created and dropped only here.
+pub struct MidiInputManager {
+    _connections: Vec<MidiInputConnection<()>>,
+}
+
+impl MidiInputManager {
+    /// 所属模块：core / MIDI 输入 / 连接
+    /// 功能：创建空管理器；不访问 midir，设备 I/O 由 `set_devices` 触发。
+    /// 输入：无。
+    /// 输出/副作用：无连接、无设备访问。
+    /// 复杂度：时间 O(1)，空间 O(1)。
+    ///
+    /// Module: core / MIDI input / connection
+    /// Purpose: Create an empty manager; midir is untouched until `set_devices` runs.
+    /// Inputs: none.
+    /// Outputs / side effects: no connections and no device access.
+    /// Complexity: O(1) time and space.
+    pub fn new() -> Self {
+        Self {
+            _connections: Vec::new(),
+        }
+    }
+
+    /// 所属模块：core / MIDI 输入 / 连接
     /// 功能：枚举可用的 MIDI 输入端口名称；内置虚拟键盘固定排在首位。
     /// 输入：无。
     /// 输出/副作用：端口名列表；物理端口枚举失败时仍返回虚拟键盘。
+    /// 约束：阻塞函数，只允许后台线程调用。
     /// 复杂度：时间 O(端口数)，空间 O(端口数)。
     ///
-    /// Module: core / MIDI input
+    /// Module: core / MIDI input / connection
     /// Purpose: Enumerate the available MIDI input port names; the built-in virtual keyboard is
     /// always listed first.
     /// Inputs: none.
     /// Outputs / side effects: the port names; the virtual keyboard is returned even when physical
     /// enumeration fails.
+    /// Constraint: blocking call, worker threads only.
     /// Complexity: O(ports) time and space.
     pub fn port_names() -> Vec<String> {
         let mut names = Vec::new();
@@ -200,16 +534,18 @@ impl MidiInputManager {
         names
     }
 
-    /// 所属模块：core / MIDI 输入
+    /// 所属模块：core / MIDI 输入 / 连接
     /// 功能：枚举当前可用的 MIDI 输出端口名称（设置页记录启用状态）。
     /// 输入：无。
     /// 输出/副作用：端口名列表；失败时返回空列表。
+    /// 约束：阻塞函数，只允许后台线程调用。
     /// 复杂度：时间 O(端口数)，空间 O(端口数)。
     ///
-    /// Module: core / MIDI input
+    /// Module: core / MIDI input / connection
     /// Purpose: Enumerate the available MIDI output port names (the settings page records them).
     /// Inputs: none.
     /// Outputs / side effects: the port names; an empty list when enumeration fails.
+    /// Constraint: blocking call, worker threads only.
     /// Complexity: O(ports) time and space.
     pub fn output_port_names() -> Vec<String> {
         let Ok(output) = MidiOutput::new("SurfingStudio MIDI 输出") else {
@@ -222,72 +558,82 @@ impl MidiInputManager {
             .collect()
     }
 
-    /// 所属模块：core / MIDI 输入
-    /// 功能：按新的默认设备与启用列表重建全部输入连接。
-    /// 输入：
-    /// - `default`：默认端口名；`None` 自动选择。
-    /// - `enabled`：额外启用的端口名列表。
-    /// 输出/副作用：替换内部连接并更新 `status`；返回状态文本。
+    /// 所属模块：core / MIDI 输入 / 连接
+    /// 功能：一次性枚举输入与输出端口，供设置页后台线程使用。
+    /// 输入：无。
+    /// 输出/副作用：`(输入端口名, 输出端口名)`。
+    /// 约束：阻塞函数，禁止在 UI 线程调用。
     /// 复杂度：时间 O(端口数)，空间 O(端口数)。
     ///
-    /// Module: core / MIDI input
+    /// Module: core / MIDI input / connection
+    /// Purpose: Enumerate input and output ports in one call for the settings background worker.
+    /// Inputs: none.
+    /// Outputs / side effects: `(input port names, output port names)`.
+    /// Constraint: blocking call, never on the UI thread.
+    /// Complexity: O(ports) time and space.
+    pub fn enumerate_ports() -> (Vec<String>, Vec<String>) {
+        (Self::port_names(), Self::output_port_names())
+    }
+
+    /// 所属模块：core / MIDI 输入 / 连接
+    /// 功能：按新的默认设备与启用列表重建全部输入连接。
+    /// 输入：
+    /// - `events`：midir 回调事件发送端。
+    /// - `default`：默认端口名；`None` 自动选择。
+    /// - `enabled`：额外启用的端口名列表。
+    /// 输出/副作用：替换内部连接并返回 `(默认端口, 状态文本)`。
+    /// 约束：阻塞函数，只允许后台线程调用。
+    /// 复杂度：时间 O(端口数)，空间 O(端口数)。
+    ///
+    /// Module: core / MIDI input / connection
     /// Purpose: Rebuild every input connection from the new default and enabled selection.
     /// Inputs:
+    /// - `events`: sender of midir callback events.
     /// - `default`: default port name; `None` selects automatically.
     /// - `enabled`: additional enabled port names.
-    /// Outputs / side effects: replaces the connections, updates `status` and returns it.
+    /// Outputs / side effects: replaces the connections and returns `(default port, status text)`.
+    /// Constraint: blocking call, worker threads only.
     /// Complexity: O(ports) time and space.
-    pub fn set_devices(&mut self, default: Option<&str>, enabled: &[String]) -> String {
-        self._connections.clear();
-        self.default_port = None;
-        let (tx, receiver) = channel();
-        self.receiver = receiver;
-        match self.connect_with(tx, default, enabled) {
-            Ok(resolved) => self.default_port = resolved,
-            Err(error) => self.status = error,
-        }
-        self.status.clone()
-    }
-
-    /// 所属模块：core / MIDI 输入
-    /// 功能：返回当前默认端口名；没有可用端口时为 `None`。
-    /// 输入：`self`。
-    /// 输出/副作用：端口名；不修改状态。
-    /// 复杂度：时间 O(1)，空间 O(端口名长度)。
-    ///
-    /// Module: core / MIDI input
-    /// Purpose: Return the resolved default port name; `None` when no port is available.
-    /// Inputs: `self`.
-    /// Outputs / side effects: the port name; no state change.
-    /// Complexity: O(1) time and O(port name length) space.
-    pub fn default_port(&self) -> Option<String> {
-        self.default_port.clone()
-    }
-
-    /// 所属模块：core / MIDI 输入
-    /// 功能：连接默认端口与启用端口，把解析后的事件写入队列。
-    /// 输入：
-    /// - `tx`：事件发送端。
-    /// - `default`：默认端口名；缺失时使用第一个端口。
-    /// - `enabled`：额外启用的端口名。
-    /// 输出/副作用：保存连接句柄；更新 `status`；返回解析出的默认端口名。
-    /// 复杂度：时间 O(端口数 × 启用数)，空间 O(端口数)。
-    ///
-    /// Module: core / MIDI input
-    /// Purpose: Connect the default and enabled ports and push decoded events into the queue.
-    /// Inputs:
-    /// - `tx`: event sender.
-    /// - `default`: default port name; the first port is used when missing.
-    /// - `enabled`: additional enabled port names.
-    /// Outputs / side effects: stores connection handles, updates `status` and returns the resolved
-    /// default port.
-    /// Complexity: O(ports × enabled) time and O(ports) space.
-    fn connect_with(
+    pub fn set_devices(
         &mut self,
-        tx: std::sync::mpsc::Sender<MidiInputEvent>,
+        events: Sender<MidiInputEvent>,
         default: Option<&str>,
         enabled: &[String],
-    ) -> Result<Option<String>, String> {
+    ) -> (Option<String>, String) {
+        // 先释放旧连接，驱动才允许重新打开同一端口。
+        // Drop the old connections first so the driver can reopen the same ports.
+        self._connections.clear();
+        let (connections, resolved, status) = Self::connect_with(events, default, enabled);
+        self._connections = connections;
+        (resolved, status)
+    }
+
+    /// 所属模块：core / MIDI 输入 / 连接
+    /// 功能：连接默认端口与启用端口，把解析后的事件写入队列并汇总状态。
+    /// 输入：
+    /// - `events`：事件发送端。
+    /// - `default`：默认端口名；缺失时使用第一个端口。
+    /// - `enabled`：额外启用的端口名。
+    /// 输出/副作用：返回 `(连接句柄, 解析出的默认端口, 状态文本)`；不写共享状态。
+    /// 约束：阻塞函数，只允许后台线程调用。
+    /// 复杂度：时间 O(端口数 × 启用数)，空间 O(端口数)。
+    ///
+    /// Module: core / MIDI input / connection
+    /// Purpose: Connect the default and enabled ports, push decoded events into the queue and
+    /// aggregate the status.
+    /// Inputs:
+    /// - `events`: event sender.
+    /// - `default`: default port name; the first port is used when missing.
+    /// - `enabled`: additional enabled port names.
+    /// Outputs / side effects: returns `(connections, resolved default port, status text)`; shared
+    /// state is untouched.
+    /// Constraint: blocking call, worker threads only.
+    /// Complexity: O(ports × enabled) time and O(ports) space.
+    fn connect_with(
+        events: Sender<MidiInputEvent>,
+        default: Option<&str>,
+        enabled: &[String],
+    ) -> (Vec<MidiInputConnection<()>>, Option<String>, String) {
         let names: Vec<String> = MidiInput::new("SurfingStudio MIDI 输入")
             .map(|input| {
                 input
@@ -358,7 +704,7 @@ impl MidiInputManager {
                 continue;
             };
             let device = name.clone();
-            let tx = tx.clone();
+            let tx = events.clone();
             let connection = input.connect(
                 &port,
                 "surfing-studio-in",
@@ -385,7 +731,6 @@ impl MidiInputManager {
                 Err(error) => failures.push(format!("连接 MIDI 设备「{name}」失败: {error}")),
             }
         }
-        self._connections = connections;
         let mut labels = connected_names.clone();
         if virtual_default
             || resolved_default
@@ -397,9 +742,9 @@ impl MidiInputManager {
         if labels.is_empty() {
             labels.push(format!("{VIRTUAL_MIDI_DEVICE}（内置）"));
         }
-        self.status = format!("MIDI: {}", labels.join(" · "));
+        let mut status = format!("MIDI: {}", labels.join(" · "));
         if !failures.is_empty() {
-            self.status = format!("{}；{}", self.status, failures.join("；"));
+            status = format!("{}；{}", status, failures.join("；"));
         }
         if !virtual_default
             && default.is_some_and(|requested| {
@@ -409,32 +754,9 @@ impl MidiInputManager {
                         .any(|name| name.eq_ignore_ascii_case(requested.trim()))
             })
         {
-            self.status = format!(
-                "未找到默认 MIDI「{}」；{}",
-                default.unwrap_or(""),
-                self.status
-            );
+            status = format!("未找到默认 MIDI「{}」；{}", default.unwrap_or(""), status);
         }
-        Ok(resolved_default)
-    }
-
-    /// 所属模块：core / MIDI 输入
-    /// 功能：取走当前队列中的全部事件。
-    /// 输入：`self`。
-    /// 输出/副作用：返回事件列表并清空队列。
-    /// 复杂度：时间 O(事件数)，空间 O(事件数)。
-    ///
-    /// Module: core / MIDI input
-    /// Purpose: Take every queued event.
-    /// Inputs: `self`.
-    /// Outputs / side effects: returns the events and clears the queue.
-    /// Complexity: O(events) time and space.
-    pub fn drain(&self) -> Vec<MidiInputEvent> {
-        let mut events = Vec::new();
-        while let Ok(event) = self.receiver.try_recv() {
-            events.push(event);
-        }
-        events
+        (connections, resolved_default, status)
     }
 }
 
