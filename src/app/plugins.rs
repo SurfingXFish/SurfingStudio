@@ -93,9 +93,9 @@ fn plugin_cache_paths(cache_dir: Option<&Path>) -> Vec<PathBuf> {
         bases.push(base);
     }
     paths.extend(bases.into_iter().map(|base| base.join("plugin-cache.json")));
-    // 升级前缓存位于安装目录 data/cache；先读旧文件，避免首次启动全量重扫。
-    // Before the upgrade the cache lived in `<install>/data/cache`; read it first so the first launch
-    // does not rescan every plugin.
+    // 升级前缓存位于安装目录 data/cache；新位置没有缓存时回退旧文件，避免首次启动全量重扫。
+    // Before the upgrade the cache lived in `<install>/data/cache`; fall back to it when the new
+    // location has no cache so the first launch does not rescan every plugin.
     if let Some(base) = crate::platform::legacy_data_dir() {
         paths.push(
             base.join(crate::platform::CACHE_DIR_SUFFIX)

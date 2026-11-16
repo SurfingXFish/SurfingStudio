@@ -45,24 +45,19 @@ use crate::diag;
 use crate::platform::DialogParent;
 
 /// 所属模块：app / 文件操作 / 默认位置
-/// 功能：返回没有系统文件对话框时的默认工程目录：系统“文档”目录下的
-/// `SurfingStudio/Projects`；平台不提供文档目录时回退到配置目录下的 `Projects`。
+/// 功能：返回没有系统文件对话框时的默认工程目录：安装目录下的 `Projects`。
 /// 输入：无。
 /// 输出/副作用：目录路径或 `None`；不创建目录。
 /// 复杂度：时间 O(路径长度)，空间 O(路径长度)。
 ///
 /// Module: app / file operations / default location
 /// Purpose: Return the default project directory used when no native file dialog exists:
-/// `SurfingStudio/Projects` under the system "Documents" directory; fall back to `Projects` under the
-/// config directory when the platform provides no documents directory.
+/// `Projects` under the install directory.
 /// Inputs: none.
 /// Outputs / side effects: the path or `None`; nothing is created.
 /// Complexity: O(path length) time and space.
 pub(super) fn default_project_dir() -> Option<PathBuf> {
-    match crate::platform::documents_dir() {
-        Some(base) => Some(base.join(crate::platform::APP_DIR_NAME).join("Projects")),
-        None => crate::platform::config_dir().map(|base| base.join("Projects")),
-    }
+    crate::platform::install_dir().map(|base| base.join(crate::platform::PROJECTS_DIR_SUFFIX))
 }
 
 /// 所属模块：app / 文件操作 / 公共目录

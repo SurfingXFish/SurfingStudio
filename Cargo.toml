@@ -107,12 +107,10 @@ jni = "0.21"
 # the dependency graph through vst3-host; this exposes it to the plugin module.
 [target.'cfg(target_os = "windows")'.dependencies]
 # `winreg` / `minwinbase` / `fileapi` / `timezoneapi` 用于 ASIO 驱动枚举与本地时间换算；
-# `psapi` / `handleapi` / `tlhelp32` 用于诊断日志的进程资源采样（内存/句柄/线程）；
-# `shlobj` / `knownfolders` 用于解析系统“文档”目录（默认工程目录）。
+# `psapi` / `handleapi` / `tlhelp32` 用于诊断日志的进程资源采样（内存/句柄/线程）。
 # `winreg` / `minwinbase` / `fileapi` / `timezoneapi` power ASIO driver discovery and local time;
-# `psapi` / `handleapi` / `tlhelp32` power diagnostic resource sampling (memory/handles/threads);
-# `shlobj` / `knownfolders` resolve the system "Documents" directory (default project directory).
-winapi = { version = "0.3", features = ["winuser", "windef", "libloaderapi", "minwindef", "objbase", "combaseapi", "processthreadsapi", "winreg", "winnt", "minwinbase", "fileapi", "timezoneapi", "errhandlingapi", "psapi", "handleapi", "tlhelp32", "memoryapi", "winbase", "winnls", "shlobj", "knownfolders"] }
+# `psapi` / `handleapi` / `tlhelp32` power diagnostic resource sampling (memory/handles/threads).
+winapi = { version = "0.3", features = ["winuser", "windef", "libloaderapi", "minwindef", "objbase", "combaseapi", "processthreadsapi", "winreg", "winnt", "minwinbase", "fileapi", "timezoneapi", "errhandlingapi", "psapi", "handleapi", "tlhelp32", "memoryapi", "winbase", "winnls"] }
 
 # Local patch: pin plugin editor content scale to 100 % so plugins that manage
 # their own GUI zoom (e.g. Serum 2) are not double-scaled by the OS DPI.

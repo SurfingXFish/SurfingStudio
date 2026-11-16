@@ -1,7 +1,7 @@
 //! 所属模块：app / 全局设置
 //! 文件用途：
 //! - 定义可持久化的全局设置：界面缩放、项目列表、存储、音频、控制器、渲染、插件与收藏。
-//! - 读写本机配置文件（`%APPDATA%/SurfingStudio/settings.json` 或对应平台目录）。
+//! - 读写本机配置文件（桌面为 `<安装目录>/config/settings.json`，安卓为应用私有目录）。
 //! - 绘制独立的两栏设置窗口：左侧八类分类、右侧当前分类内容。
 //!
 //! 函数清单：
@@ -1310,7 +1310,7 @@ impl SurfingApp {
                             ui.add_space(12.0);
                             ui.label(
                                 egui::RichText::new(t_args(
-                                    "SurfingStudio {} · 设置保存在用户配置目录",
+                                    "SurfingStudio {} · 设置保存在安装目录 config 文件夹",
                                     &[env!("CARGO_PKG_VERSION")],
                                 ))
                                 .size(10.0)
@@ -2310,7 +2310,7 @@ impl SurfingApp {
             settings_hint(
                 ui,
                 t(
-                    "密钥只写入本机设置文件（%APPDATA%\\SurfingStudio\\settings.json），不会写入工程，也不会随工程分享。",
+                    "密钥只写入本机设置文件（<安装目录>\\config\\settings.json），不会写入工程，也不会随工程分享。",
                 ),
             );
             settings_hint(

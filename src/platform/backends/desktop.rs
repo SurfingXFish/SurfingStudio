@@ -1,44 +1,40 @@
 //! 所属模块：platform / 桌面后端
 //! 文件用途：
-//! - 桌面（Windows / macOS / Linux）平台后端：使用系统用户目录（Windows 的 Roaming / Local
-//!   AppData，macOS / Linux 的 XDG 目录）与 rfd 文件对话框，安装目录保持只读。
+//! - 桌面（Windows / macOS / Linux）平台后端：数据保存在安装目录下，按用途拆分为
+//!   `config/`、`cache/`、`logs/`、`temp/`、`Projects/` 与 `ai/` 等顶层目录，避免统一塞进
+//!   `data/`；文件对话框使用 rfd。
 //! - Windows 上额外提供 `TerminateProcess` 退出，跳过插件卸载死锁。
 //!
 //! 函数清单：
 //! - `backend`：返回桌面后端静态实例。
 //! - `DesktopPlatform::info` / `caps`：标识与能力。
 //! - `DesktopPlatform::install_dir` / `config_dir` / `cache_dir` / `data_dir` / `log_dir` /
-//!   `temp_dir` / `documents_dir`：目录约定（用户配置、缓存、日志、临时文件与文档）。
+//!   `temp_dir`：安装目录及其按用途拆分的子目录。
 //! - `DesktopPlatform::pick_file` / `pick_folder` / `save_file`：rfd 对话框。
 //! - `DesktopPlatform::system_locale`：系统区域标识（Windows 用户默认区域 / 其他系统环境变量）。
 //! - `DesktopPlatform::exit_process`：终止进程。
-//! - `config_base` / `cache_base` / `app_temp_dir`：用户目录根（按平台选择环境变量）。
-//! - `env_path`：读取非空环境变量并转换为路径。
-//! - `windows_documents_dir`：Windows Known Folder `FOLDERID_Documents`（含重定向）。
 //! - `apply_filters`：把请求过滤器追加到 rfd 对话框。
 //!
 //! Module: platform / desktop backend
 //! Purpose:
-//! - Desktop (Windows / macOS / Linux) backend: system user directories (Roaming / Local AppData
-//!   on Windows, XDG directories on macOS / Linux) and rfd file dialogs; the install directory stays
-//!   read-only.
+//! - Desktop (Windows / macOS / Linux) backend: data lives under the install directory, split into
+//!   per-purpose top-level directories such as `config/`, `cache/`, `logs/`, `temp/`, `Projects/`
+//!   and `ai/` instead of a single `data/` folder; file dialogs use rfd.
 //! - On Windows it terminates through `TerminateProcess`, skipping plugin-unload deadlocks.
 //!
 //! Functions:
 //! - `backend`: return the desktop backend singleton.
 //! - `DesktopPlatform::info` / `caps`: identity and capabilities.
 //! - `DesktopPlatform::install_dir` / `config_dir` / `cache_dir` / `data_dir` / `log_dir` /
-//!   `temp_dir` / `documents_dir`: directory conventions (user config, cache, logs, temp and
-//!   documents).
+//!   `temp_dir`: the install directory and its per-purpose sub-directories.
 //! - `DesktopPlatform::pick_file` / `pick_folder` / `save_file`: rfd dialogs.
 //! - `DesktopPlatform::system_locale`: system locale (Windows user default / environment elsewhere).
 //! - `DesktopPlatform::exit_process`: terminate the process.
-//! - `config_base` / `cache_base` / `app_temp_dir`: user-directory roots (environment-dependent).
-//! - `env_path`: read a non-empty environment variable as a path.
-//! - `windows_documents_dir`: the Windows Known Folder `FOLDERID_Documents` (redirect aware).
 //! - `apply_filters`: append request filters to an rfd dialog.
 
-use super::super::{APP_DIR_NAME, CACHE_DIR_SUFFIX, LOG_DIR_SUFFIX, TEMP_DIR_SUFFIX};
+use super::super::{
+    APP_DIR_NAME, CACHE_DIR_SUFFIX, CONFIG_DIR_SUFFIX, LOG_DIR_SUFFIX, TEMP_DIR_SUFFIX,
+};
 use super::super::{FileRequest, PlatformBackend, PlatformCaps, PlatformInfo};
 use std::path::PathBuf;
 
@@ -144,117 +140,86 @@ impl PlatformBackend for DesktopPlatform {
     }
 
     /// 所属模块：platform / 桌面后端 / 存储
-    /// 功能：返回用户配置目录：Windows 为 `%APPDATA%\SurfingStudio`，macOS / Linux 为
-    /// `$XDG_CONFIG_HOME/SurfingStudio`（回退 `~/.config/SurfingStudio`）；无法解析时退回系统临时目录。
+    /// 功能：返回配置目录：`<安装目录>/config`，存放 `settings.json`。
     /// 输入：`self`。
-    /// 输出/副作用：目录路径；不创建目录。
+    /// 输出/副作用：目录路径或 `None`；不创建目录。
     /// 复杂度：时间 O(路径长度)，空间 O(路径长度)。
     ///
     /// Module: platform / desktop backend / storage
-    /// Purpose: Return the user config directory: `%APPDATA%\SurfingStudio` on Windows and
-    /// `$XDG_CONFIG_HOME/SurfingStudio` (falling back to `~/.config/SurfingStudio`) on macOS / Linux;
-    /// fall back to the system temp directory when it cannot be resolved.
+    /// Purpose: Return the config directory `<install>/config`, holding `settings.json`.
     /// Inputs: `self`.
-    /// Outputs / side effects: the path; nothing is created.
+    /// Outputs / side effects: the path or `None`; nothing is created.
     /// Complexity: O(path length) time and space.
     fn config_dir(&self) -> Option<PathBuf> {
-        Some(config_base())
+        self.install_dir().map(|base| base.join(CONFIG_DIR_SUFFIX))
     }
 
     /// 所属模块：platform / 桌面后端 / 存储
-    /// 功能：返回缓存目录：Windows 为 `%LOCALAPPDATA%\SurfingStudio\cache`，macOS / Linux 为
-    /// `$XDG_CACHE_HOME/SurfingStudio/cache`。
+    /// 功能：返回缓存目录：`<安装目录>/cache`，存放插件缓存等可再生产数据。
     /// 输入：`self`。
-    /// 输出/副作用：目录路径；不创建目录。
+    /// 输出/副作用：目录路径或 `None`；不创建目录。
     /// 复杂度：时间 O(路径长度)，空间 O(路径长度)。
     ///
     /// Module: platform / desktop backend / storage
-    /// Purpose: Return the cache directory: `%LOCALAPPDATA%\SurfingStudio\cache` on Windows and
-    /// `$XDG_CACHE_HOME/SurfingStudio/cache` on macOS / Linux.
+    /// Purpose: Return the cache directory `<install>/cache`, holding regenerable data such as the
+    /// plugin cache.
     /// Inputs: `self`.
     /// Outputs / side effects: the path or `None`; nothing is created.
     /// Complexity: O(path length) time and space.
     fn cache_dir(&self) -> Option<PathBuf> {
-        Some(cache_base().join(CACHE_DIR_SUFFIX))
+        self.install_dir().map(|base| base.join(CACHE_DIR_SUFFIX))
     }
 
     /// 所属模块：platform / 桌面后端 / 存储
-    /// 功能：桌面平台的数据目录与配置目录相同（用户配置根）。
+    /// 功能：返回应用数据根目录：桌面端为安装目录，AI 资料等共享数据位于其 `ai/` 子目录。
     /// 输入：`self`。
     /// 输出/副作用：目录路径或 `None`；不创建目录。
     /// 复杂度：时间 O(路径长度)，空间 O(路径长度)。
     ///
     /// Module: platform / desktop backend / storage
-    /// Purpose: On desktop the data directory equals the config directory (the user config root).
+    /// Purpose: Return the app data root: the install directory on desktop, with shared data such as
+    /// the AI library under its `ai/` sub-directory.
     /// Inputs: `self`.
     /// Outputs / side effects: the path or `None`; nothing is created.
     /// Complexity: O(path length) time and space.
     fn data_dir(&self) -> Option<PathBuf> {
-        self.config_dir()
+        self.install_dir()
     }
 
     /// 所属模块：platform / 桌面后端 / 存储
-    /// 功能：返回日志目录：Windows 为 `%LOCALAPPDATA%\SurfingStudio\logs`，macOS / Linux 为
-    /// `$XDG_CACHE_HOME/SurfingStudio/logs`。
+    /// 功能：返回日志目录：`<安装目录>/logs`；无法定位安装目录时退回系统临时目录。
     /// 输入：`self`。
     /// 输出/副作用：目录路径；不创建目录。
     /// 复杂度：时间 O(路径长度)，空间 O(路径长度)。
     ///
     /// Module: platform / desktop backend / storage
-    /// Purpose: Return the log directory: `%LOCALAPPDATA%\SurfingStudio\logs` on Windows and
-    /// `$XDG_CACHE_HOME/SurfingStudio/logs` on macOS / Linux.
+    /// Purpose: Return the log directory `<install>/logs`, falling back to the system temp directory
+    /// when the install directory cannot be resolved.
     /// Inputs: `self`.
     /// Outputs / side effects: the path; nothing is created.
     /// Complexity: O(path length) time and space.
     fn log_dir(&self) -> PathBuf {
-        cache_base().join(LOG_DIR_SUFFIX)
+        self.install_dir()
+            .map(|base| base.join(LOG_DIR_SUFFIX))
+            .unwrap_or_else(|| std::env::temp_dir().join(APP_DIR_NAME).join(LOG_DIR_SUFFIX))
     }
 
     /// 所属模块：platform / 桌面后端 / 存储
-    /// 功能：返回应用临时目录：Windows 为 `%LOCALAPPDATA%\SurfingStudio\temp`，macOS / Linux 为
-    /// 系统临时目录下的 `SurfingStudio`。
+    /// 功能：返回应用临时目录：`<安装目录>/temp`；无法定位安装目录时退回系统临时目录。
     /// 输入：`self`。
     /// 输出/副作用：目录路径；不创建目录。
     /// 复杂度：时间 O(路径长度)，空间 O(路径长度)。
     ///
     /// Module: platform / desktop backend / storage
-    /// Purpose: Return the app temp directory: `%LOCALAPPDATA%\SurfingStudio\temp` on Windows and
-    /// `SurfingStudio` under the system temp directory on macOS / Linux.
+    /// Purpose: Return the app temp directory `<install>/temp`, falling back to the system temp
+    /// directory when the install directory cannot be resolved.
     /// Inputs: `self`.
     /// Outputs / side effects: the path; nothing is created.
     /// Complexity: O(path length) time and space.
     fn temp_dir(&self) -> PathBuf {
-        app_temp_dir()
-    }
-
-    /// 所属模块：platform / 桌面后端 / 存储
-    /// 功能：返回系统“文档”目录：Windows 通过 Known Folder `FOLDERID_Documents`（兼容 OneDrive
-    /// 重定向），失败回退 `%USERPROFILE%\Documents`，再失败回退配置目录；macOS / Linux 为
-    /// `~/Documents`。
-    /// 输入：`self`。
-    /// 输出/副作用：目录路径或 `None`；不创建目录。
-    /// 复杂度：时间 O(系统调用 + 路径长度)，空间 O(路径长度)。
-    ///
-    /// Module: platform / desktop backend / storage
-    /// Purpose: Return the system "Documents" directory: the Known Folder `FOLDERID_Documents` on
-    /// Windows (OneDrive redirection aware), falling back to `%USERPROFILE%\Documents` and then the
-    /// config directory; `~/Documents` on macOS / Linux.
-    /// Inputs: `self`.
-    /// Outputs / side effects: the path or `None`; nothing is created.
-    /// Complexity: O(system call + path length) time and O(path length) space.
-    fn documents_dir(&self) -> Option<PathBuf> {
-        #[cfg(target_os = "windows")]
-        {
-            windows_documents_dir()
-                .or_else(|| env_path("USERPROFILE").map(|home| home.join("Documents")))
-                .or_else(|| self.config_dir())
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            env_path("HOME")
-                .map(|home| home.join("Documents"))
-                .or_else(|| self.config_dir())
-        }
+        self.install_dir()
+            .map(|base| base.join(TEMP_DIR_SUFFIX))
+            .unwrap_or_else(std::env::temp_dir)
     }
 
     /// 所属模块：platform / 桌面后端 / 对话框
@@ -395,149 +360,6 @@ impl PlatformBackend for DesktopPlatform {
         }
         std::process::exit(code)
     }
-}
-
-/// 所属模块：platform / 桌面后端 / 前置辅助 / 存储
-/// 功能：返回用户配置根目录：Windows 为 `%APPDATA%\SurfingStudio`，macOS / Linux 为
-/// `$XDG_CONFIG_HOME/SurfingStudio`（回退 `~/.config/SurfingStudio`）；无法解析时退回系统临时目录。
-/// 输入：无。
-/// 输出/副作用：目录路径；不创建目录。
-/// 复杂度：时间 O(环境变量数 × 路径长度)，空间 O(路径长度)。
-///
-/// Module: platform / desktop backend / helpers / storage
-/// Purpose: Return the user config root: `%APPDATA%\SurfingStudio` on Windows and
-/// `$XDG_CONFIG_HOME/SurfingStudio` (falling back to `~/.config/SurfingStudio`) on macOS / Linux;
-/// fall back to the system temp directory when it cannot be resolved.
-/// Inputs: none.
-/// Outputs / side effects: the path; nothing is created.
-/// Complexity: O(variables × path length) time and O(path length) space.
-fn config_base() -> PathBuf {
-    #[cfg(target_os = "windows")]
-    {
-        env_path("APPDATA")
-            .map(|base| base.join(APP_DIR_NAME))
-            .unwrap_or_else(|| std::env::temp_dir().join(APP_DIR_NAME))
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        env_path("XDG_CONFIG_HOME")
-            .or_else(|| env_path("HOME").map(|home| home.join(".config")))
-            .map(|base| base.join(APP_DIR_NAME))
-            .unwrap_or_else(|| std::env::temp_dir().join(APP_DIR_NAME))
-    }
-}
-
-/// 所属模块：platform / 桌面后端 / 前置辅助 / 存储
-/// 功能：返回用户缓存根目录：Windows 为 `%LOCALAPPDATA%\SurfingStudio`（缺失时回退配置根），
-/// macOS / Linux 为 `$XDG_CACHE_HOME/SurfingStudio`（回退 `~/.cache/SurfingStudio`）。
-/// 输入：无。
-/// 输出/副作用：目录路径；不创建目录。
-/// 复杂度：时间 O(环境变量数 × 路径长度)，空间 O(路径长度)。
-///
-/// Module: platform / desktop backend / helpers / storage
-/// Purpose: Return the user cache root: `%LOCALAPPDATA%\SurfingStudio` on Windows (falling back to
-/// the config root) and `$XDG_CACHE_HOME/SurfingStudio` (falling back to `~/.cache/SurfingStudio`)
-/// on macOS / Linux.
-/// Inputs: none.
-/// Outputs / side effects: the path; nothing is created.
-/// Complexity: O(variables × path length) time and O(path length) space.
-fn cache_base() -> PathBuf {
-    #[cfg(target_os = "windows")]
-    {
-        env_path("LOCALAPPDATA")
-            .map(|base| base.join(APP_DIR_NAME))
-            .unwrap_or_else(config_base)
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        env_path("XDG_CACHE_HOME")
-            .or_else(|| env_path("HOME").map(|home| home.join(".cache")))
-            .map(|base| base.join(APP_DIR_NAME))
-            .unwrap_or_else(config_base)
-    }
-}
-
-/// 所属模块：platform / 桌面后端 / 前置辅助 / 存储
-/// 功能：返回应用临时目录：Windows 为缓存根下的 `temp`，macOS / Linux 为系统临时目录下的
-/// `SurfingStudio`。
-/// 输入：无。
-/// 输出/副作用：目录路径；不创建目录。
-/// 复杂度：时间 O(路径长度)，空间 O(路径长度)。
-///
-/// Module: platform / desktop backend / helpers / storage
-/// Purpose: Return the app temp directory: `temp` under the cache root on Windows and
-/// `SurfingStudio` under the system temp directory on macOS / Linux.
-/// Inputs: none.
-/// Outputs / side effects: the path; nothing is created.
-/// Complexity: O(path length) time and space.
-fn app_temp_dir() -> PathBuf {
-    #[cfg(target_os = "windows")]
-    {
-        cache_base().join(TEMP_DIR_SUFFIX)
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        std::env::temp_dir().join(APP_DIR_NAME)
-    }
-}
-
-/// 所属模块：platform / 桌面后端 / 前置辅助 / 环境
-/// 功能：读取非空环境变量并转换为路径；空值视为未设置。
-/// 输入：`key`：环境变量名。
-/// 输出/副作用：路径或 `None`；不修改状态。
-/// 复杂度：时间 O(变量长度)，空间 O(路径长度)。
-///
-/// Module: platform / desktop backend / helpers / environment
-/// Purpose: Read a non-empty environment variable as a path; an empty value counts as unset.
-/// Inputs: `key`: environment variable name.
-/// Outputs / side effects: the path or `None`; no state change.
-/// Complexity: O(value length) time and O(path length) space.
-fn env_path(key: &str) -> Option<PathBuf> {
-    std::env::var_os(key)
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-}
-
-/// 所属模块：platform / 桌面后端 / 前置辅助 / 存储
-/// 功能：通过 Windows Known Folder `FOLDERID_Documents` 获取“文档”目录，兼容 OneDrive 等重定向；
-/// 调用失败或返回空路径时返回 `None`。
-/// 输入：无。
-/// 输出/副作用：目录路径或 `None`；释放 API 分配的内存，不创建目录。
-/// 复杂度：时间 O(系统调用 + 路径长度)，空间 O(路径长度)。
-///
-/// Module: platform / desktop backend / helpers / storage
-/// Purpose: Resolve the "Documents" directory through the Windows Known Folder
-/// `FOLDERID_Documents`, honouring OneDrive-style redirection; returns `None` on failure or an empty
-/// path.
-/// Inputs: none.
-/// Outputs / side effects: the path or `None`; frees the API-allocated buffer, creates nothing.
-/// Complexity: O(system call + path length) time and O(path length) space.
-#[cfg(target_os = "windows")]
-fn windows_documents_dir() -> Option<PathBuf> {
-    use winapi::um::combaseapi::CoTaskMemFree;
-    use winapi::um::knownfolders::FOLDERID_Documents;
-    use winapi::um::shlobj::SHGetKnownFolderPath;
-
-    let mut raw: *mut u16 = std::ptr::null_mut();
-    // SAFETY: 输出参数是有效的可写指针，未传入用户令牌（使用当前用户），标志位为 0。
-    // SAFETY: the out-parameter is a valid writable pointer, no user token is passed (current user)
-    // and the flags are zero.
-    let result =
-        unsafe { SHGetKnownFolderPath(&FOLDERID_Documents, 0, std::ptr::null_mut(), &mut raw) };
-    if result < 0 || raw.is_null() {
-        return None;
-    }
-    // SAFETY: 成功时 API 返回以 0 结尾的 UTF-16 字符串，且必须由 CoTaskMemFree 释放；
-    // 这里先测量长度、复制成 String，再立即释放，避免悬垂指针。
-    // SAFETY: on success the API returns a NUL-terminated UTF-16 string that must be released with
-    // CoTaskMemFree; the length is measured and copied into a String before freeing immediately.
-    let path = unsafe {
-        let length = (0..).take_while(|index| *raw.add(*index) != 0).count();
-        let text = String::from_utf16_lossy(std::slice::from_raw_parts(raw, length));
-        CoTaskMemFree(raw.cast());
-        PathBuf::from(text)
-    };
-    (!path.as_os_str().is_empty()).then_some(path)
 }
 
 /// 所属模块：platform / 桌面后端 / 对话框

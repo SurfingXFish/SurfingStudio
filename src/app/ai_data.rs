@@ -1,13 +1,13 @@
 //! 所属模块：app / AI 资料文件存储
 //! 文件用途：
-//! - 把 AI 资料库的持久化从 `settings.json` 迁移到用户数据目录 `ai/`：
+//! - 把 AI 资料库的持久化从 `settings.json` 迁移到安装目录下的 `ai/`：
 //!   智能体 JSON、技能 Markdown、乐器 JSON 与顺序清单分类存放。
-//! - 首次运行（或资料库目录不存在）时把内存中的资料释放到用户目录；升级时从旧安装目录迁移。
+//! - 首次运行（或资料库目录不存在）时把内存中的资料释放到安装目录；升级时从旧 `data/ai` 迁移。
 //! - 通过运行时加载 `surfing_ai_data.dll`，由该 DLL 负责 markdown/json 文件格式与导入导出。
 //! - 安卓不使用 DLL，继续以 `settings.json` 内的资料库为准。
 //!
 //! 函数清单：
-//! - `ai_root`：返回用户数据目录下的 `ai/`。
+//! - `ai_root`：返回安装目录下的 `ai/`。
 //! - `legacy_ai_root`：返回旧版 `<安装目录>/data/ai`（升级迁移）。
 //! - `load_library_from`：从指定目录读取有效资料库。
 //! - `load`：从文件加载资料库；新目录无效时迁移旧数据或在缺失时释放默认资料。
@@ -18,10 +18,10 @@
 //!
 //! Module: app / AI library file storage
 //! Purpose:
-//! - Move AI-library persistence from `settings.json` to the user data directory `ai/`: agent JSON,
+//! - Move AI-library persistence from `settings.json` to the install directory `ai/`: agent JSON,
 //!   skill Markdown, instrument JSON and an order manifest stored by category.
-//! - Release the in-memory library into the user directory on first run (or when absent); migrate
-//!   from the legacy install directory during upgrades.
+//! - Release the in-memory library into the install directory on first run (or when absent);
+//!   migrate from the legacy `data/ai` directory during upgrades.
 //! - Load `surfing_ai_data.dll` at runtime; that DLL owns the markdown/json formats and import/export.
 //! - Android stays on `settings.json` because it has no DLL.
 //!
@@ -44,14 +44,13 @@ use crate::ai::AiLibrary;
 const AI_DIR: &str = "ai";
 
 /// 所属模块：app / AI 资料文件存储
-/// 功能：返回资料库根目录：用户数据目录（Windows 为 `%APPDATA%\SurfingStudio`）下的 `ai/`。
+/// 功能：返回资料库根目录：安装目录下的 `ai/`。
 /// 输入：无。
 /// 输出/副作用：目录路径或 `None`；不创建目录。
 /// 复杂度：时间 O(路径长度)，空间 O(路径长度)。
 ///
 /// Module: app / AI library file storage
-/// Purpose: Return the library root: `ai/` under the user data directory
-/// (`%APPDATA%\SurfingStudio` on Windows).
+/// Purpose: Return the library root `ai/` under the install directory on desktop.
 /// Inputs: none.
 /// Outputs / side effects: the path or `None`; nothing is created.
 /// Complexity: O(path length) time and space.
@@ -119,7 +118,7 @@ fn load_library_from(root: &Path) -> Option<AiLibrary> {
 }
 
 /// 所属模块：app / AI 资料文件存储
-/// 功能：从用户数据目录加载资料库；新目录没有有效条目时优先从旧安装目录迁移，仍无数据则把
+/// 功能：从安装目录加载资料库；新目录没有有效条目时优先从旧 `data/ai` 迁移，仍无数据则把
 /// `fallback` 释放为默认文件。
 /// 输入：`fallback`：`settings.json` 中的旧资料库（也是首次释放的内容）。
 /// 输出/副作用：资料库；可能创建目录、写盘并迁移旧数据；失败时回退到 `fallback`。
@@ -168,7 +167,7 @@ pub(super) fn load(fallback: AiLibrary) -> AiLibrary {
 }
 
 /// 所属模块：app / AI 资料文件存储
-/// 功能：把资料库写回用户数据目录的分类文件；失败只记录诊断日志。
+/// 功能：把资料库写回安装目录 `ai/` 的分类文件；失败只记录诊断日志。
 /// 输入：`library` 当前资料库。
 /// 输出/副作用：创建目录并写文件；不修改内存状态。
 /// 复杂度：时间 O(条目数 × 条目大小)，空间 O(资料库 JSON)。

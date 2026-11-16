@@ -56,14 +56,14 @@ const DEFAULT_VERSION: u64 = 3;
 
 /// 所属模块：surfing-ai-data / 资料库文件存储
 /// 功能：读取资料库根目录下的分类文件并合并为 `AiLibrary` 兼容的 JSON。
-/// 输入：`root`：资料库根目录（由运行时给出，桌面为 `%APPDATA%\SurfingStudio\ai`）。
+/// 输入：`root`：资料库根目录（由运行时给出，桌面为 `<安装目录>/ai`）。
 /// 输出/副作用：资料库 JSON；只读文件，不创建目录。
 /// 复杂度：时间 O(文件数 × 文件大小)，空间 O(资料库大小)。
 ///
 /// Module: surfing-ai-data / library file storage
 /// Purpose: Read the categorized files under the library root and merge them into
 /// `AiLibrary`-shaped JSON.
-/// Inputs: `root`: library root (supplied by the runtime; `%APPDATA%\SurfingStudio\ai` on desktop).
+/// Inputs: `root`: library root (supplied by the runtime; `<install>/ai` on desktop).
 /// Outputs / side effects: library JSON; reads files only and creates nothing.
 /// Complexity: O(files × file size) time and O(library size) space.
 pub fn load(root: &Path) -> Result<Value, String> {

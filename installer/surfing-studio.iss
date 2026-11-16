@@ -23,9 +23,11 @@ AppPublisher=SurfingStudio
 DefaultDirName={autopf}\SurfingStudio
 DefaultGroupName=SurfingStudio
 DisableProgramGroupPage=yes
-; 安装到 Program Files 需要管理员权限；运行期数据写入用户目录，安装目录保持只读。
-; Installing into Program Files requires elevation; runtime data goes to user directories and the
-; install directory stays read-only.
+; 安装到 Program Files 需要管理员权限；运行期数据按用途写在安装目录的顶层子目录，
+; 因此 [Dirs] 为这些目录授予普通用户修改权限，其余程序文件保持只读。
+; Installing into Program Files requires elevation; runtime data lives in per-purpose top-level
+; sub-directories under the install directory, so [Dirs] grants users modify rights there while the
+; program files stay read-only.
 PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -64,9 +66,26 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 ; by relative path.
 Source: "{#StageDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
+[Dirs]
+; 数据目录按用途拆分在安装目录顶层，不再统一放进 data；授予普通用户修改权限。
+; Per-purpose data directories at the install-directory top level instead of a single data folder;
+; standard users get modify rights.
+Name: "{app}\config"; Permissions: users-modify
+Name: "{app}\cache"; Permissions: users-modify
+Name: "{app}\logs"; Permissions: users-modify
+Name: "{app}\temp"; Permissions: users-modify
+Name: "{app}\Projects"; Permissions: users-modify
+Name: "{app}\ai"; Permissions: users-modify
+
 [Icons]
 Name: "{group}\SurfingStudio"; Filename: "{app}\SurfingStudio.exe"; WorkingDir: "{app}"
 Name: "{autodesktop}\SurfingStudio"; Filename: "{app}\SurfingStudio.exe"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\SurfingStudio.exe"; Description: "{cm:LaunchProgram,SurfingStudio}"; Flags: nowait postinstall skipifsilent
+
+[UninstallDelete]
+; 只清理可再生的缓存与临时文件；config、ai、Projects 与 logs 保留给用户。
+; Only remove regenerable cache/temp files; keep config, ai, Projects and logs for the user.
+Type: filesandordirs; Name: "{app}\temp"
+Type: filesandordirs; Name: "{app}\cache"

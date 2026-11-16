@@ -6,7 +6,7 @@
 - **以 MIDI 为中心**：编曲、钢琴卷帘、控制器自动化是主路径，音频片段作为补充。
 - **开箱即用**：内置复音合成器、鼓机与 128 件采样乐器，即使没有安装任何插件也能发声。
 - **专业能力**：VST3 原生编辑器、VST2 支持、插件状态持久化、实时渲染、多通道 / 环绕声路由与独立导出窗口。
-- **规范存储**：设置与 AI 资料位于 `%APPDATA%\SurfingStudio`，缓存、日志与临时文件位于 `%LOCALAPPDATA%\SurfingStudio`，默认工程目录为 `文档\SurfingStudio\Projects`；安装目录只读。
+- **分目录存储**：数据保存在安装目录下，按用途拆分为 `config/`、`cache/`、`logs/`、`temp/`、`Projects/` 与 `ai/`，不再统一塞进 `data/`，便于备份、清理与调试。
 
 当前版本 `1.3.5a`（内部构建版），主要面向 Windows 桌面，也可在安卓平板 / 手机上运行（NativeActivity + OpenGL ES，单窗口模式）。
 
@@ -52,9 +52,9 @@ powershell -ExecutionPolicy Bypass -File tools\package.ps1
 # 产物：dist\SurfingStudio-<版本>-setup.exe
 ```
 
-安装包默认安装到 `Program Files\SurfingStudio`，安装目录只包含程序文件；
-设置与 AI 资料写入 `%APPDATA%\SurfingStudio`，缓存、日志与临时文件写入 `%LOCALAPPDATA%\SurfingStudio`，
-默认工程保存在 `文档\SurfingStudio\Projects`，卸载不会删除这些用户数据。
+安装包默认安装到 `Program Files\SurfingStudio`，并为 `config`、`cache`、`logs`、`temp`、`Projects` 与 `ai`
+授予普通用户修改权限；设置、工程、日志与 AI 资料都保存在这些安装目录子目录中。
+卸载只清理可再生的 `cache` 与 `temp`，保留 `config`、`ai`、`Projects` 与 `logs`。
 安装向导按 Windows 界面语言自动选择简体中文或 English，无需手动切换；只有系统语言与两种语言都不匹配时才显示语言选择框。
 
 打开工程支持 `.sfsd` 与 SoundBug `.sndp`（导入后需另存为 `.sfsd`）。
@@ -91,33 +91,30 @@ vendor/vst3-host/   # 本地 patch 的 VST3 宿主库
 doc/                # 项目简介、技术文档、代码规范、关键常量、框架工作流
 ```
 
-安装目录结构（只包含程序文件，运行期不再写入）：
+安装目录结构（数据按用途拆分，不再统一放进 `data/`）：
 
 ```text
 SurfingStudio.exe        # 瘦启动器
 surfing_studio.dll       # 运行时（全部业务逻辑）
 surfing_ai_data.dll      # AI 资料存储与导入导出
+config/
+└─ settings.json                        # 全局设置与 API Key
+cache/
+└─ plugin-cache.json                    # 插件扫描缓存
+logs/
+└─ surfing-*.sflog                      # 诊断日志
+temp/
+├─ export/                              # 导出副本临时文件
+└─ recovery/                            # 未保存工程的崩溃恢复文件
+Projects/                               # 默认工程目录
+ai/
+├─ library.json                         # 结构版本与条目顺序
+├─ agents/<id>.json                     # 智能体
+├─ skills/basics|techniques/*.md        # 基础技能 / 编曲技巧
+└─ skills/instruments/*.json            # 乐器资料
 ```
 
-用户数据目录（Windows）：
-
-```text
-%APPDATA%\SurfingStudio\
-├─ settings.json
-├─ ai/
-│  ├─ library.json                       # 结构版本与条目顺序
-│  ├─ agents/<id>.json                   # 智能体
-│  ├─ skills/basics|techniques/*.md      # 基础技能 / 编曲技巧
-│  └─ skills/instruments/*.json          # 乐器资料
-%LOCALAPPDATA%\SurfingStudio\
-├─ cache/plugin-cache.json
-├─ logs/surfing-*.sflog
-└─ temp/{export,recovery}/
-文档\SurfingStudio\Projects\              # 默认工程目录
-```
-
-macOS / Linux 使用 XDG 目录：`$XDG_CONFIG_HOME/SurfingStudio`、`$XDG_CACHE_HOME/SurfingStudio/{cache,logs}`、
-系统临时目录下的 `SurfingStudio/{export,recovery}`，默认工程目录为 `~/Documents/SurfingStudio/Projects`。
+macOS / Linux 使用相同的安装目录布局；无法定位安装目录时，日志与临时文件回退到系统临时目录。
 
 ## 文档
 
