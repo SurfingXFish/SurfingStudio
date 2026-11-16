@@ -39,12 +39,24 @@ UninstallDisplayIcon={app}\SurfingStudio.exe
 UninstallDisplayName=SurfingStudio {#AppVersion}
 CloseApplications=yes
 RestartApplications=no
+; 安装向导按当前用户的 Windows 界面语言自动选择；仅当没有任何语言匹配时才显示语言选择框。
+; 每次安装都重新按系统语言选择，不沿用上一次的手动选择。
+; The wizard auto-selects by the current user's Windows UI language; the language dialog appears
+; only when no entry matches. Every install re-detects the system language instead of reusing the
+; previous manual choice.
+LanguageDetectionMethod=uilanguage
+ShowLanguageDialog=auto
+UsePreviousLanguage=no
 
 [Languages]
-Name: "english"; MessagesFile: "compiler:Default.isl"
+; 英文使用 Inno Setup 自带消息；简体中文随仓库提供，兼容未安装中文语言文件的 Inno Setup 6。
+; English uses the bundled Inno Setup messages; Simplified Chinese ships with the repository so it
+; also works with Inno Setup 6 installations that do not include Chinese language files.
+Name: "en"; MessagesFile: "compiler:Default.isl"
+Name: "zh"; MessagesFile: "{#SourcePath}\languages\ChineseSimplified.isl"
 
 [Tasks]
-Name: "desktopicon"; Description: "创建桌面快捷方式 (Create a desktop shortcut)"; GroupDescription: "附加任务 (Additional tasks):"; Flags: unchecked
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
 ; 瘦启动器、运行时 DLL 与 AI 资料 DLL 必须位于同一目录；启动器按相对路径加载。
@@ -57,4 +69,4 @@ Name: "{group}\SurfingStudio"; Filename: "{app}\SurfingStudio.exe"; WorkingDir: 
 Name: "{autodesktop}\SurfingStudio"; Filename: "{app}\SurfingStudio.exe"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\SurfingStudio.exe"; Description: "启动 SurfingStudio (Launch SurfingStudio)"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\SurfingStudio.exe"; Description: "{cm:LaunchProgram,SurfingStudio}"; Flags: nowait postinstall skipifsilent

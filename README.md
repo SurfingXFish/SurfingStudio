@@ -55,6 +55,7 @@ powershell -ExecutionPolicy Bypass -File tools\package.ps1
 安装包默认安装到 `Program Files\SurfingStudio`，安装目录只包含程序文件；
 设置与 AI 资料写入 `%APPDATA%\SurfingStudio`，缓存、日志与临时文件写入 `%LOCALAPPDATA%\SurfingStudio`，
 默认工程保存在 `文档\SurfingStudio\Projects`，卸载不会删除这些用户数据。
+安装向导按 Windows 界面语言自动选择简体中文或 English，无需手动切换；只有系统语言与两种语言都不匹配时才显示语言选择框。
 
 打开工程支持 `.sfsd` 与 SoundBug `.sndp`（导入后需另存为 `.sfsd`）。
 
@@ -81,7 +82,7 @@ src/
 ├─ plugin/          # 插件运行时框架与 VST3 / VST2 后端
 ├─ diag/            # 进程级诊断日志（.sflog）
 └─ ui/              # 立即模式视图：编曲区、钢琴卷帘、控制器、检查器、浏览器…
-installer/          # Inno Setup 安装包脚本
+installer/          # Inno Setup 安装包脚本与简体中文语言文件
 tools/package.ps1   # 一键打包安装包
 examples/           # 范例工程
 assets/             # 图标与内置采样音色库（soundbank/）
