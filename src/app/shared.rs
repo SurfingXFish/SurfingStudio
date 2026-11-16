@@ -3,12 +3,13 @@
 //! - 保存主页窗口与所有工程窗口共用的服务：全局设置、插件缓存、MIDI 输入、音频路由与
 //!   窗口编号。
 //! - 用 generation 计数让各窗口按需同步共享数据，避免每帧克隆插件列表。
-//! - 在设置变更后重启音频输出、重连 MIDI 设备，并把状态文本同步给所有窗口。
+//! - 在设置变更后重启音频输出、向 MIDI 后台线程发送重连命令，并把状态文本同步给所有窗口。
 //!
 //! 函数清单：
-//! - `SharedServices::new`：加载设置与插件缓存、启动唯一音频输出与 MIDI 输入。
+//! - `SharedServices::new`：加载设置与插件缓存、启动唯一音频输出并在后台启动 MIDI 输入。
 //! - `SharedServices::start_audio`：按设置启动音频输出，失败时回退系统默认设备。
-//! - `SharedServices::audio_status` / `restart_audio` / `reconnect_midi_devices`：音频与 MIDI 状态。
+//! - `SharedServices::audio_status` / `restart_audio`：音频设备状态与重启。
+//! - `SharedServices::reconnect_midi_devices`：向 MIDI 后台线程发送重连命令，立即返回。
 //! - `SharedServices::settings_snapshot` / `settings_if_newer` / `write_settings`：全局设置快照与写回。
 //! - `SharedServices::plugin_cache_snapshot` / `plugin_cache_if_newer` / `write_plugin_cache`：插件缓存快照与写回。
 //! - `SharedServices::midi_status` / `midi_default_device` / `midi_events`：MIDI 状态、默认端口与事件队列。
@@ -19,12 +20,15 @@
 //! - Hold the services shared by the home window and every project window: global settings, the
 //!   plugin cache, MIDI input, audio routing and window ids.
 //! - Use generation counters so windows only copy shared data when it actually changed.
-//! - Restart the audio output and reconnect MIDI after settings change, and share status text.
+//! - Restart the audio output and send MIDI reconnect commands to the worker thread after settings
+//!   change, and share status text.
 //!
 //! Functions:
-//! - `SharedServices::new`: load settings and the plugin cache, start the single audio output and MIDI input.
+//! - `SharedServices::new`: load settings and the plugin cache, start the single audio output and the
+//!   background MIDI input.
 //! - `SharedServices::start_audio`: start the audio output from settings, falling back to the default device.
-//! - `SharedServices::audio_status` / `restart_audio` / `reconnect_midi_devices`: audio and MIDI status.
+//! - `SharedServices::audio_status` / `restart_audio`: audio device status and restart.
+//! - `SharedServices::reconnect_midi_devices`: send a reconnect command to the MIDI worker, returning at once.
 //! - `SharedServices::settings_snapshot` / `settings_if_newer` / `write_settings`: settings snapshot and write-back.
 //! - `SharedServices::plugin_cache_snapshot` / `plugin_cache_if_newer` / `write_plugin_cache`: plugin cache snapshot and write-back.
 //! - `SharedServices::midi_status` / `midi_default_device` / `midi_events`: MIDI status, default port and events.
@@ -35,7 +39,7 @@ use super::*;
 use crate::audio::backend::start_output;
 use crate::audio::backend::start_output_with;
 use crate::audio::{AudioOutput, AudioRouter};
-use crate::core::midi_input::{MidiInputEvent, MidiInputManager};
+use crate::core::midi_input::{MidiInputEvent, MidiInputService};
 use crate::diag;
 use crate::plugin::ScannedPlugin;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -60,7 +64,10 @@ struct SharedPluginCache {
 pub struct SharedServices {
     settings: Mutex<SharedSettings>,
     plugin_cache: Mutex<SharedPluginCache>,
-    midi: Mutex<MidiInputManager>,
+    /// MIDI 输入服务；内部自带后台线程与轻量互斥，UI 线程只发命令与取事件。
+    /// MIDI input service; it owns the worker thread and light locks, so the UI only sends commands
+    /// and drains events.
+    midi: MidiInputService,
     /// 全进程唯一的音频输出；保持存活以持续运行输出流。设置变更时整体替换。
     /// The single audio output of the process; kept alive so the stream keeps running. Replaced when
     /// the settings change.
@@ -77,18 +84,19 @@ pub struct SharedServices {
 
 impl SharedServices {
     /// 所属模块：app / 多窗口共享服务
-    /// 功能：加载设置与插件缓存、启动音频输出与 MIDI 输入，并创建共享路由。
+    /// 功能：加载设置与插件缓存、启动音频输出与后台 MIDI 输入，并创建共享路由。
     /// 输入：无。
-    /// 输出/副作用：打开音频设备与 MIDI 端口；读取配置文件与插件缓存文件。
-    /// 复杂度：时间 O(配置文件 + 插件缓存大小 + 设备初始化)，空间 O(插件数量)。
+    /// 输出/副作用：打开音频设备；启动 MIDI 后台线程（立即返回，不等待设备 I/O）；读取配置
+    ///   文件与插件缓存文件。
+    /// 复杂度：时间 O(配置文件 + 插件缓存大小 + 音频初始化)，空间 O(插件数量)。
     ///
     /// Module: app / shared services
-    /// Purpose: Load settings and the plugin cache, start audio output and MIDI input, and create
-    /// the shared router.
+    /// Purpose: Load settings and the plugin cache, start audio output and the background MIDI input,
+    /// and create the shared router.
     /// Inputs: none.
-    /// Outputs / side effects: opens the audio device and MIDI port; reads the config and plugin
-    /// cache files.
-    /// Complexity: O(config size + cache size + device setup) time and O(plugin count) space.
+    /// Outputs / side effects: opens the audio device; starts the MIDI worker thread (returning at
+    /// once without device I/O); reads the config and plugin cache files.
+    /// Complexity: O(config size + cache size + audio setup) time and O(plugin count) space.
     pub fn new() -> Arc<Self> {
         let init_span = diag::Span::start_logged("app.boot", "shared.init", &[]);
         let settings_span = diag::Span::start("app.boot", "settings.load");
@@ -111,7 +119,9 @@ impl SharedServices {
             ),
             ("detail", &audio_status),
         ]);
-        let midi = MidiInputManager::new(
+        // 构造只启动后台线程并立即返回；驱动异常不会拖慢启动。
+        // Construction only spawns the worker and returns; a slow driver never delays startup.
+        let midi = MidiInputService::new(
             settings.controller_input_device.as_deref(),
             &settings.controller_enabled_input_devices,
         );
@@ -125,7 +135,7 @@ impl SharedServices {
                 fingerprints,
                 generation: 1,
             }),
-            midi: Mutex::new(midi),
+            midi,
             audio_output: Mutex::new(audio_output),
             audio,
             audio_status: Mutex::new(audio_status),
@@ -225,43 +235,39 @@ impl SharedServices {
     }
 
     /// 所属模块：app / 多窗口共享服务 / MIDI
-    /// 功能：按设置重建 MIDI 输入连接：默认设备 + 启用的附加设备。
+    /// 功能：按设置向 MIDI 后台线程发送重连命令（默认设备 + 启用的附加设备），立即返回。
     /// 输入：
     /// - `default`：默认端口名；`None` 自动选择第一个可用端口。
     /// - `enabled`：额外启用的端口名列表。
-    /// 输出/副作用：替换全部 MIDI 连接并返回新的状态文本。
-    /// 复杂度：时间 O(端口数)，空间 O(端口数)。
+    /// 输出/副作用：写入后台命令通道；返回“正在连接 MIDI 输入…”或当前状态文本，不阻塞 UI。
+    /// 复杂度：时间 O(端口数)（仅复制列表），空间 O(端口数)。
     ///
     /// Module: app / shared services / MIDI
-    /// Purpose: Rebuild the MIDI input connections from the settings: default plus enabled extras.
+    /// Purpose: Send a reconnect command (default plus enabled extras) to the MIDI worker and return
+    /// immediately.
     /// Inputs:
     /// - `default`: default port name; `None` selects the first available port.
     /// - `enabled`: additional enabled port names.
-    /// Outputs / side effects: replaces every MIDI connection and returns the new status text.
-    /// Complexity: O(ports) time and space.
+    /// Outputs / side effects: writes to the worker command channel; returns the in-progress status or
+    /// the current text without blocking the UI.
+    /// Complexity: O(ports) time (list copy only) and O(ports) space.
     pub fn reconnect_midi_devices(&self, default: Option<&str>, enabled: &[String]) -> String {
-        self.midi
-            .lock()
-            .map(|mut midi| midi.set_devices(default, enabled))
-            .unwrap_or_else(|_| "MIDI 输入不可用".into())
+        self.midi.set_devices(default, enabled)
     }
 
     /// 所属模块：app / 多窗口共享服务 / MIDI
     /// 功能：返回当前默认 MIDI 输入端口名。
     /// 输入：`self`。
-    /// 输出/副作用：端口名或 `None`；不修改状态。
+    /// 输出/副作用：端口名或 `None`；只做 O(1) 加锁，不触发设备 I/O。
     /// 复杂度：时间 O(1)，空间 O(端口名长度)。
     ///
     /// Module: app / shared services / MIDI
     /// Purpose: Return the resolved default MIDI input port.
     /// Inputs: `self`.
-    /// Outputs / side effects: the port name or `None`; no state change.
+    /// Outputs / side effects: the port name or `None`; an O(1) lock with no device I/O.
     /// Complexity: O(1) time and O(port name length) space.
     pub fn midi_default_device(&self) -> Option<String> {
-        self.midi
-            .lock()
-            .map(|midi| midi.default_port())
-            .unwrap_or_default()
+        self.midi.default_port()
     }
 
     /// 所属模块：app / 多窗口共享服务
@@ -303,7 +309,7 @@ impl SharedServices {
     }
 
     /// 所属模块：app / 多窗口共享服务
-    /// 功能：写回全局设置：递增版本并保存到用户配置目录。
+    /// 功能：写回全局设置：递增版本并保存到安装目录 config 文件夹。
     /// 输入：`settings`：窗口修改后的设置。
     /// 输出/副作用：更新共享快照并写盘；返回新版本号。
     /// 复杂度：时间 O(设置大小)，空间 O(设置大小)。
@@ -424,37 +430,31 @@ impl SharedServices {
     /// 所属模块：app / 多窗口共享服务
     /// 功能：返回 MIDI 输入状态文本。
     /// 输入：`self`。
-    /// 输出/副作用：状态文本；不修改状态。
+    /// 输出/副作用：状态文本；只做 O(1) 加锁，不触发设备 I/O。
     /// 复杂度：时间 O(1)，空间 O(状态长度)。
     ///
     /// Module: app / shared services
     /// Purpose: Return the MIDI input status text.
     /// Inputs: `self`.
-    /// Outputs / side effects: status text; no state change.
+    /// Outputs / side effects: status text; an O(1) lock with no device I/O.
     /// Complexity: O(1) time and O(status length) space.
     pub fn midi_status(&self) -> String {
-        self.midi
-            .lock()
-            .map(|midi| midi.status.clone())
-            .unwrap_or_else(|_| "MIDI 输入不可用".into())
+        self.midi.status()
     }
 
     /// 所属模块：app / 多窗口共享服务
     /// 功能：取走当前 MIDI 事件；只有前台工程窗口会调用。
     /// 输入：`self`。
-    /// 输出/副作用：返回事件列表并清空队列。
+    /// 输出/副作用：返回事件列表并清空队列；非阻塞。
     /// 复杂度：时间 O(事件数)，空间 O(事件数)。
     ///
     /// Module: app / shared services
     /// Purpose: Take the pending MIDI events; only the foreground project window calls this.
     /// Inputs: `self`.
-    /// Outputs / side effects: events are removed from the queue.
+    /// Outputs / side effects: events are removed from the queue; never blocks.
     /// Complexity: O(events) time and space.
     pub fn midi_events(&self) -> Vec<MidiInputEvent> {
-        self.midi
-            .lock()
-            .map(|midi| midi.drain())
-            .unwrap_or_default()
+        self.midi.drain()
     }
 
     /// 所属模块：app / 多窗口共享服务

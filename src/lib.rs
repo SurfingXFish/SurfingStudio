@@ -3,6 +3,7 @@
 //! 库划分为以下层次：
 //!
 //! - [`core`]：纯数据模型、工程运行时框架与辅助工具，不依赖音频/GUI。
+//! - [`ai`]：AI 编曲运行时、OpenAI 兼容后端与内置技能（只依赖 `core`）。
 //! - [`platform`]：平台运行时框架（类 JVM）：统一的内部平台 API 与各系统后端。
 //! - [`audio`]：实时音频引擎、内置乐器、音频 I/O 运行时框架与 cpal 输出。
 //! - [`plugin`]：插件运行时框架、VST3 / VST2 后端、扫描与参数管理。
@@ -20,6 +21,7 @@
 //! Layers:
 //!
 //! - [`core`]: pure data model, project runtime framework and helpers; no audio/GUI.
+//! - [`ai`]: AI composition runtime, OpenAI-compatible backend and embedded skills (depends on `core` only).
 //! - [`audio`]: real-time engine, built-in instruments, audio I/O runtime framework and cpal output.
 //! - [`plugin`]: plugin runtime framework, VST3 / VST2 backends, scanning and parameters.
 //! - [`diag`]: process-wide diagnostic log (`.sflog`), duration spans, stall/crash monitoring and
@@ -33,15 +35,38 @@
 //! warnings stay visible.
 #![allow(deprecated)]
 
+pub mod ai;
 pub mod app;
 pub mod audio;
 pub mod core;
+pub mod desktop;
 pub mod diag;
 pub mod platform;
 pub mod plugin;
 pub mod ui;
 
 pub use app::{SurfingApp, WindowHost};
+
+/// 所属模块：库根 / 运行时 DLL 入口
+/// 功能：供瘦启动器（`surfing-studio.exe`）动态加载本 DLL 后调用的唯一入口；捕获展开以免
+/// panic 跨越 FFI 边界导致进程直接中止。
+/// 输入：无。
+/// 输出/副作用：启动桌面运行时；正常退出路径会直接结束进程，返回值为兜底退出码。
+/// 复杂度：时间 O(启动)，空间 O(设置 + 工程)。
+///
+/// Module: library root / runtime DLL entry
+/// Purpose: The only entry the thin launcher (`surfing-studio.exe`) calls after loading this DLL;
+/// panics are caught so they never unwind across the FFI boundary and abort the process.
+/// Inputs: none.
+/// Outputs / side effects: starts the desktop runtime; normal exit paths terminate the process, and
+/// the return value is a fallback exit code.
+/// Complexity: O(startup) time and O(settings + project) space.
+#[unsafe(no_mangle)]
+pub extern "C" fn surfing_studio_run() -> i32 {
+    // 瘦启动器只负责加载 DLL；所有 panic 必须在这里收敛，否则会触发跨 FFI 的未定义行为。
+    // The launcher only loads the DLL; panics must be contained here instead of unwinding across FFI.
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(desktop::run_desktop)).unwrap_or(1)
+}
 
 /// 所属模块：库根 / 版本
 /// 功能：返回面向用户、日志与安卓清单的版本号：把 Cargo 的 SemVer 预发布后缀

@@ -4,7 +4,7 @@
 //! - 每条记录固定头部 + 变长负载，包含序号、线程 id、UI 帧号、相对时间、级别、耗时与键值字段。
 //! - 周期性采样进程资源（内存/句柄/线程/CPU），并聚合 UI 帧耗时；记录 panic 与未处理异常。
 //! - 提供确定性的进程退出入口：写尾帧后直接结束进程，不依赖 eframe 的析构链。
-//! - 日志目录：`%LOCALAPPDATA%\SurfingStudio\logs`，不可用时回退系统临时目录。
+//! - 日志目录：`<安装目录>/logs`，不可用时回退系统临时目录。
 //! - 格式说明见 `doc/日志规范.md`；实时音频回调内禁止调用本模块。
 //!
 //! 函数清单：
@@ -29,7 +29,7 @@
 //! - Periodically samples process resources (memory/handles/threads/CPU) and aggregates UI frame
 //!   timing; records panics and unhandled exceptions.
 //! - A deterministic exit entry: write the footer, then terminate without eframe's teardown chain.
-//! - Log directory: `%LOCALAPPDATA%\SurfingStudio\logs`, falling back to the temp directory.
+//! - Log directory: `<install>/logs`, falling back to the temp directory.
 //! - The format is documented in `doc/日志规范.md`; never call this module from the audio callback.
 //!
 //! Functions:

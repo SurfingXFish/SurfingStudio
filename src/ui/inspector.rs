@@ -1,4 +1,4 @@
-//! Right-hand inspector: track settings, instrument, effect chain and master bus.
+﻿//! Right-hand inspector: track settings, instrument, effect chain and master bus.
 
 use crate::app::{RollKind, SurfingApp};
 use crate::audio::SlotKind;
@@ -72,7 +72,7 @@ impl SurfingApp {
         let mut add_native: Option<(u64, NativeEffectKind)> = None;
         let mut remove_effect: Option<usize> = None;
         let mut remove_master_effect = false;
-        let mut remove_track = false;
+        let mut close_panel = false;
         let mut remove_instrument = false;
         let mut effect_actions: Vec<EffectAction> = Vec::new();
         let mut param_changes: Vec<(SlotKind, usize, f64)> = Vec::new();
@@ -96,8 +96,15 @@ impl SurfingApp {
                             .size(14.0),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("删除轨道").clicked() {
-                            remove_track = true;
+                        if ui
+                            .add(
+                                egui::Button::new(RichText::new("关闭").size(11.0))
+                                    .min_size(egui::Vec2::new(48.0, 22.0)),
+                            )
+                            .on_hover_text("关闭轨道属性")
+                            .clicked()
+                        {
+                            close_panel = true;
                         }
                     });
                 });
@@ -130,6 +137,7 @@ impl SurfingApp {
                         .clone()
                         .unwrap_or_else(|| "跟随默认设备".to_string());
                     egui::ComboBox::from_id_salt(("track_midi_input", track_id))
+                        .icon(crate::ui::theme::dropdown_icon)
                         .width(180.0)
                         .selected_text(current)
                         .show_ui(ui, |ui| {
@@ -249,6 +257,7 @@ impl SurfingApp {
                         };
                         let mut kind = old_kind;
                         egui::ComboBox::from_id_salt("instrument_kind")
+                            .icon(crate::ui::theme::dropdown_icon)
                             .width(ui.available_width())
                             .selected_text(track.instrument.label())
                             .show_ui(ui, |ui| {
@@ -313,6 +322,7 @@ impl SurfingApp {
                                     ui.label("音色");
                                     let mut kind = native.kind;
                                     egui::ComboBox::from_id_salt("native_instrument_kind")
+                                        .icon(crate::ui::theme::dropdown_icon)
                                         .width(150.0)
                                         .selected_text(kind.label())
                                         .show_ui(ui, |ui| {
@@ -338,6 +348,7 @@ impl SurfingApp {
                                     ui.label("音色");
                                     let mut id = sample.bank.clone();
                                     egui::ComboBox::from_id_salt("sample_instrument_bank")
+                                        .icon(crate::ui::theme::dropdown_icon)
                                         .width(150.0)
                                         .selected_text(sample.name.clone())
                                         .show_ui(ui, |ui| {
@@ -596,6 +607,7 @@ impl SurfingApp {
                                 let mut pair = (track.output_pair as usize)
                                     .min(output_layout.pairs().saturating_sub(1));
                                 egui::ComboBox::from_id_salt(("track_output_pair", track_id))
+                                    .icon(crate::ui::theme::dropdown_icon)
                                     .width(ui.available_width())
                                     .selected_text(output_layout.pair_label(pair))
                                     .show_ui(ui, |ui| {
@@ -684,6 +696,7 @@ impl SurfingApp {
                         ui.horizontal(|ui| {
                             ui.label("输出布局");
                             egui::ComboBox::from_id_salt("master_output_layout")
+                                .icon(crate::ui::theme::dropdown_icon)
                                 .width(ui.available_width())
                                 .selected_text(layout_choice.label())
                                 .show_ui(ui, |ui| {
@@ -809,10 +822,8 @@ impl SurfingApp {
         }
 
         // ---- apply edits ------------------------------------------------------
-        if remove_track {
-            // 组合轨道会弹出“整棵删除 / 释放成员”确认，普通轨道立即删除。
-            // A group opens the subtree/release confirmation; ordinary tracks are deleted at once.
-            self.request_delete_track(track_index);
+        if close_panel {
+            self.close_side_panel();
             return;
         }
 
@@ -957,6 +968,7 @@ fn synth_settings_ui(ui: &mut egui::Ui, settings: &mut SynthSettings) -> bool {
     ui.horizontal(|ui| {
         ui.label("波形");
         egui::ComboBox::from_id_salt("synth_wave")
+            .icon(crate::ui::theme::dropdown_icon)
             .width(110.0)
             .selected_text(settings.waveform.label())
             .show_ui(ui, |ui| {

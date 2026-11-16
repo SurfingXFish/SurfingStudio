@@ -1,29 +1,40 @@
 //! 所属模块：platform / 桌面后端
 //! 文件用途：
-//! - 桌面（Windows / macOS / Linux）平台后端：沿用原有目录约定与 rfd 文件对话框。
+//! - 桌面（Windows / macOS / Linux）平台后端：数据保存在安装目录下，按用途拆分为
+//!   `config/`、`cache/`、`logs/`、`temp/`、`Projects/` 与 `ai/` 等顶层目录，避免统一塞进
+//!   `data/`；文件对话框使用 rfd。
 //! - Windows 上额外提供 `TerminateProcess` 退出，跳过插件卸载死锁。
 //!
 //! 函数清单：
 //! - `backend`：返回桌面后端静态实例。
 //! - `DesktopPlatform::info` / `caps`：标识与能力。
-//! - `DesktopPlatform::config_dir` / `cache_dir` / `data_dir` / `log_dir` / `temp_dir`：目录约定。
+//! - `DesktopPlatform::install_dir` / `config_dir` / `cache_dir` / `data_dir` / `log_dir` /
+//!   `temp_dir`：安装目录及其按用途拆分的子目录。
 //! - `DesktopPlatform::pick_file` / `pick_folder` / `save_file`：rfd 对话框。
+//! - `DesktopPlatform::system_locale`：系统区域标识（Windows 用户默认区域 / 其他系统环境变量）。
 //! - `DesktopPlatform::exit_process`：终止进程。
+//! - `apply_filters`：把请求过滤器追加到 rfd 对话框。
 //!
 //! Module: platform / desktop backend
 //! Purpose:
-//! - Desktop (Windows / macOS / Linux) backend: keeps the existing directory conventions and the
-//!   rfd file dialogs.
+//! - Desktop (Windows / macOS / Linux) backend: data lives under the install directory, split into
+//!   per-purpose top-level directories such as `config/`, `cache/`, `logs/`, `temp/`, `Projects/`
+//!   and `ai/` instead of a single `data/` folder; file dialogs use rfd.
 //! - On Windows it terminates through `TerminateProcess`, skipping plugin-unload deadlocks.
 //!
 //! Functions:
 //! - `backend`: return the desktop backend singleton.
 //! - `DesktopPlatform::info` / `caps`: identity and capabilities.
-//! - `DesktopPlatform::config_dir` / `cache_dir` / `data_dir` / `log_dir` / `temp_dir`: conventions.
+//! - `DesktopPlatform::install_dir` / `config_dir` / `cache_dir` / `data_dir` / `log_dir` /
+//!   `temp_dir`: the install directory and its per-purpose sub-directories.
 //! - `DesktopPlatform::pick_file` / `pick_folder` / `save_file`: rfd dialogs.
+//! - `DesktopPlatform::system_locale`: system locale (Windows user default / environment elsewhere).
 //! - `DesktopPlatform::exit_process`: terminate the process.
+//! - `apply_filters`: append request filters to an rfd dialog.
 
-use super::super::{APP_DIR_NAME, LOG_DIR_SUFFIX};
+use super::super::{
+    APP_DIR_NAME, CACHE_DIR_SUFFIX, CONFIG_DIR_SUFFIX, LOG_DIR_SUFFIX, TEMP_DIR_SUFFIX,
+};
 use super::super::{FileRequest, PlatformBackend, PlatformCaps, PlatformInfo};
 use std::path::PathBuf;
 
@@ -114,101 +125,101 @@ impl PlatformBackend for DesktopPlatform {
     }
 
     /// 所属模块：platform / 桌面后端 / 存储
-    /// 功能：返回配置目录：Windows 用 `%APPDATA%`，其他平台用 XDG/HOME。
+    /// 功能：返回安装目录：可执行文件（瘦启动器）所在目录。
     /// 输入：`self`。
     /// 输出/副作用：目录路径或 `None`；不创建目录。
     /// 复杂度：时间 O(路径长度)，空间 O(路径长度)。
     ///
     /// Module: platform / desktop backend / storage
-    /// Purpose: Return the config directory: `%APPDATA%` on Windows, XDG/HOME elsewhere.
+    /// Purpose: Return the install directory: the directory of the executable (thin launcher).
+    /// Inputs: `self`.
+    /// Outputs / side effects: the path or `None`; nothing is created.
+    /// Complexity: O(path length) time and space.
+    fn install_dir(&self) -> Option<PathBuf> {
+        std::env::current_exe().ok()?.parent().map(PathBuf::from)
+    }
+
+    /// 所属模块：platform / 桌面后端 / 存储
+    /// 功能：返回配置目录：`<安装目录>/config`，存放 `settings.json`。
+    /// 输入：`self`。
+    /// 输出/副作用：目录路径或 `None`；不创建目录。
+    /// 复杂度：时间 O(路径长度)，空间 O(路径长度)。
+    ///
+    /// Module: platform / desktop backend / storage
+    /// Purpose: Return the config directory `<install>/config`, holding `settings.json`.
     /// Inputs: `self`.
     /// Outputs / side effects: the path or `None`; nothing is created.
     /// Complexity: O(path length) time and space.
     fn config_dir(&self) -> Option<PathBuf> {
-        #[cfg(target_os = "windows")]
-        let base = std::env::var_os("APPDATA").map(PathBuf::from);
-        #[cfg(not(target_os = "windows"))]
-        let base = std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")));
-        base.map(|base| base.join(APP_DIR_NAME))
+        self.install_dir().map(|base| base.join(CONFIG_DIR_SUFFIX))
     }
 
     /// 所属模块：platform / 桌面后端 / 存储
-    /// 功能：返回缓存目录：Windows 用 `%LOCALAPPDATA%`，其他平台用 XDG/HOME 缓存目录。
+    /// 功能：返回缓存目录：`<安装目录>/cache`，存放插件缓存等可再生产数据。
     /// 输入：`self`。
     /// 输出/副作用：目录路径或 `None`；不创建目录。
     /// 复杂度：时间 O(路径长度)，空间 O(路径长度)。
     ///
     /// Module: platform / desktop backend / storage
-    /// Purpose: Return the cache directory: `%LOCALAPPDATA%` on Windows, the XDG/HOME cache
-    /// directory elsewhere.
+    /// Purpose: Return the cache directory `<install>/cache`, holding regenerable data such as the
+    /// plugin cache.
     /// Inputs: `self`.
     /// Outputs / side effects: the path or `None`; nothing is created.
     /// Complexity: O(path length) time and space.
     fn cache_dir(&self) -> Option<PathBuf> {
-        #[cfg(target_os = "windows")]
-        let base = std::env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("APPDATA").map(PathBuf::from));
-        #[cfg(not(target_os = "windows"))]
-        let base = std::env::var_os("XDG_CACHE_HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")));
-        base.map(|base| base.join(APP_DIR_NAME))
+        self.install_dir().map(|base| base.join(CACHE_DIR_SUFFIX))
     }
 
     /// 所属模块：platform / 桌面后端 / 存储
-    /// 功能：桌面平台的数据目录与配置目录相同。
+    /// 功能：返回应用数据根目录：桌面端为安装目录，AI 资料等共享数据位于其 `ai/` 子目录。
     /// 输入：`self`。
     /// 输出/副作用：目录路径或 `None`；不创建目录。
     /// 复杂度：时间 O(路径长度)，空间 O(路径长度)。
     ///
     /// Module: platform / desktop backend / storage
-    /// Purpose: On desktop the data directory equals the config directory.
+    /// Purpose: Return the app data root: the install directory on desktop, with shared data such as
+    /// the AI library under its `ai/` sub-directory.
     /// Inputs: `self`.
     /// Outputs / side effects: the path or `None`; nothing is created.
     /// Complexity: O(path length) time and space.
     fn data_dir(&self) -> Option<PathBuf> {
-        self.config_dir()
+        self.install_dir()
     }
 
     /// 所属模块：platform / 桌面后端 / 存储
-    /// 功能：返回日志目录：Windows 用本地应用数据目录，其他平台用系统临时目录。
+    /// 功能：返回日志目录：`<安装目录>/logs`；无法定位安装目录时退回系统临时目录。
     /// 输入：`self`。
     /// 输出/副作用：目录路径；不创建目录。
     /// 复杂度：时间 O(路径长度)，空间 O(路径长度)。
     ///
     /// Module: platform / desktop backend / storage
-    /// Purpose: Return the log directory: local app data on Windows, the temp directory elsewhere.
+    /// Purpose: Return the log directory `<install>/logs`, falling back to the system temp directory
+    /// when the install directory cannot be resolved.
     /// Inputs: `self`.
     /// Outputs / side effects: the path; nothing is created.
     /// Complexity: O(path length) time and space.
     fn log_dir(&self) -> PathBuf {
-        #[cfg(target_os = "windows")]
-        {
-            if let Some(base) = std::env::var_os("LOCALAPPDATA") {
-                if !base.to_string_lossy().trim().is_empty() {
-                    return PathBuf::from(base).join(APP_DIR_NAME).join(LOG_DIR_SUFFIX);
-                }
-            }
-        }
-        std::env::temp_dir().join(APP_DIR_NAME).join(LOG_DIR_SUFFIX)
+        self.install_dir()
+            .map(|base| base.join(LOG_DIR_SUFFIX))
+            .unwrap_or_else(|| std::env::temp_dir().join(APP_DIR_NAME).join(LOG_DIR_SUFFIX))
     }
 
     /// 所属模块：platform / 桌面后端 / 存储
-    /// 功能：返回系统临时目录。
+    /// 功能：返回应用临时目录：`<安装目录>/temp`；无法定位安装目录时退回系统临时目录。
     /// 输入：`self`。
     /// 输出/副作用：目录路径；不创建目录。
     /// 复杂度：时间 O(路径长度)，空间 O(路径长度)。
     ///
     /// Module: platform / desktop backend / storage
-    /// Purpose: Return the system temp directory.
+    /// Purpose: Return the app temp directory `<install>/temp`, falling back to the system temp
+    /// directory when the install directory cannot be resolved.
     /// Inputs: `self`.
     /// Outputs / side effects: the path; nothing is created.
     /// Complexity: O(path length) time and space.
     fn temp_dir(&self) -> PathBuf {
-        std::env::temp_dir()
+        self.install_dir()
+            .map(|base| base.join(TEMP_DIR_SUFFIX))
+            .unwrap_or_else(std::env::temp_dir)
     }
 
     /// 所属模块：platform / 桌面后端 / 对话框
@@ -280,6 +291,45 @@ impl PlatformBackend for DesktopPlatform {
             dialog = dialog.set_parent(parent);
         }
         dialog.save_file()
+    }
+
+    /// 所属模块：platform / 桌面后端 / 区域
+    /// 功能：返回系统区域标识；Windows 读取用户默认区域，其余系统读取环境变量。
+    /// 输入：`self`。
+    /// 输出/副作用：区域标识或 `None`；不修改状态。
+    /// 复杂度：时间 O(系统调用)，空间 O(区域名长度)。
+    ///
+    /// Module: platform / desktop backend / locale
+    /// Purpose: Return the system locale; Windows reads the user default locale, other systems read
+    /// environment variables.
+    /// Inputs: `self`.
+    /// Outputs / side effects: the locale id or `None`; no state change.
+    /// Complexity: O(system call) time and O(locale length) space.
+    fn system_locale(&self) -> Option<String> {
+        #[cfg(target_os = "windows")]
+        {
+            // LOCALE_NAME_MAX_LENGTH；缓冲区必须覆盖最长区域名。
+            // LOCALE_NAME_MAX_LENGTH; the buffer must hold the longest locale name.
+            let mut buffer = [0u16; 85];
+            // SAFETY: 缓冲区长度与 API 约定一致；返回值为写入的字符数（含结尾 0）。
+            // SAFETY: the buffer matches the API contract; the return value is the written length
+            // including the terminator.
+            let length = unsafe {
+                winapi::um::winnls::GetUserDefaultLocaleName(
+                    buffer.as_mut_ptr(),
+                    buffer.len() as i32,
+                )
+            };
+            if length > 1 {
+                let end = (length as usize - 1).min(buffer.len());
+                return Some(String::from_utf16_lossy(&buffer[..end]));
+            }
+            super::super::backend::locale_from_env()
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            super::super::backend::locale_from_env()
+        }
     }
 
     /// 所属模块：platform / 桌面后端 / 退出

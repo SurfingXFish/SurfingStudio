@@ -2480,20 +2480,9 @@ impl SurfingApp {
                             && !mute_rect.contains(pos)
                             && !solo_rect.contains(pos)
                         {
-                            if self.project.tracks[track_index].is_group() {
-                                // 组合轨道主轨即音量控制器：双击打开它的音量自动化卷帘。
-                                // A group's main lane is its volume controller: double click opens the
-                                // volume automation roll.
-                                self.bottom_view = BottomView::Controller {
-                                    track_id: self.project.tracks[track_index].id,
-                                    kind: ControllerKind::Volume,
-                                };
-                                self.bottom_open = true;
-                                self.controller_selection.clear();
-                                self.controller_marquee_start = None;
-                            } else {
-                                self.open_track_editor(track_index, None);
-                            }
+                            // 双击轨道列表中的轨道：打开右侧轨道属性面板。
+                            // Double-clicking a track in the track list opens the track-properties panel.
+                            self.side_panel = Some(crate::app::SidePanel::Inspector);
                         } else if double_clicked
                             && !matches!(kind, RowKind::Main | RowKind::AddController)
                         {
@@ -2580,7 +2569,7 @@ impl SurfingApp {
                                 // A group's main lane is its volume controller: double click opens the
                                 // volume automation roll.
                                 self.bottom_view = BottomView::Controller {
-                                    track_id: track_id,
+                                    track_id,
                                     kind: ControllerKind::Volume,
                                 };
                                 self.bottom_open = true;
@@ -2993,6 +2982,17 @@ impl SurfingApp {
                     self.request_track_render();
                     ui.close();
                 }
+                if theme::menu_button(ui, "复制到 AI 输入", "").clicked() {
+                    self.attach_track_to_ai(track_index);
+                    ui.close();
+                }
+                if theme::menu_button(ui, "复制轨道", "").clicked() {
+                    if let Some(track) = self.project.tracks.get(track_index) {
+                        self.clipboard = Clipboard::Track(track.clone());
+                        self.status = format!("已复制轨道「{}」", track.name);
+                    }
+                    ui.close();
+                }
                 let rendered = self
                     .project
                     .tracks
@@ -3072,6 +3072,14 @@ impl SurfingApp {
             // Offer merging for same-track multi-selection; audio clips cannot merge, so the entry
             // stays visible but disabled.
             if menu == ArrangementMenu::Lane {
+                if !self.selected_clips.is_empty() {
+                    ui.separator();
+                    if theme::menu_button(ui, "复制片段到 AI 输入", "").clicked() {
+                        let clips = self.selected_clips.clone();
+                        self.attach_clips_to_ai(&clips);
+                        ui.close();
+                    }
+                }
                 if let Some((track_index, indices)) = self.selected_same_track_clips() {
                     ui.separator();
                     let all_midi = self.project.tracks.get(track_index).is_some_and(|track| {

@@ -1,7 +1,7 @@
 //! 所属模块：app / 应用状态机
 //! 文件用途：
 //! - 定义 `SurfingApp` 的单一工程窗口状态与每帧编排顺序。
-//! - 聚合文件、编辑、历史、传输、插件、输入、面板、主页、全局设置、无边框窗口与浮动卷帘子模块。
+//! - 聚合文件、编辑、历史、传输、插件、输入、面板、主页、Agent 资料库、全局设置、无边框窗口与浮动卷帘子模块。
 //! - 每个窗口一个 `SurfingApp`：主页窗口与各工程窗口共享 `SharedServices`。
 //!
 //! 函数清单：
@@ -29,6 +29,7 @@
 //! - `SurfingApp::resolve_native_window`: resolve the native handle of this window (Windows).
 //! - `Drop::drop`: stop the recovery thread and wait for the background save before exiting.
 
+use crate::ai::prompt::AiAttachment;
 use crate::audio::{Engine, SlotKind, format_position};
 use crate::core::model::{
     AutomationPoint, Clip, ControllerKind, InstrumentRef, Note, PluginFormat, PluginRef, Project,
@@ -36,7 +37,7 @@ use crate::core::model::{
 };
 use crate::core::project_runtime::ProjectSession;
 use crate::diag;
-use crate::plugin::{ParamView, PluginHost, ScannedPlugin};
+use crate::plugin::{ParamView, PluginHost, PluginKind, ScannedPlugin};
 use crate::ui::{ArrangementDrag, BottomView, BrowserState, MouseMode, PianoDrag, theme};
 use eframe::egui;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
@@ -47,6 +48,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use vst3_host::PluginWindow;
 
+mod agent_library;
+mod ai;
+mod ai_data;
+mod ai_transfer;
 mod autosave;
 mod backup;
 mod edit;
@@ -56,6 +61,7 @@ mod heartbeat;
 mod history;
 mod home;
 mod hotkeys;
+pub mod i18n;
 mod input;
 mod panels;
 mod plugins;
@@ -64,6 +70,7 @@ mod record;
 mod render;
 mod rolls;
 mod settings;
+mod settings_models;
 mod shared;
 mod shell;
 mod shortcuts;
@@ -73,7 +80,12 @@ mod transport;
 use transport::PendingAudition;
 mod window_chrome;
 
+pub use ai::{
+    AiChatMessage, AiChatState, AiConversation, AiLiveMessage, AiMessageMeta, AiPending,
+    AiTaskConflict,
+};
 pub use export::{ExportChannels, ExportFormat, ExportState};
+pub(crate) use panels::paint_studio_logo;
 pub use plugins::EditorWindow;
 pub use render::{TrackRenderPhase, TrackRenderState};
 pub use settings::{GpuRenderApi, GpuRenderStartup, gpu_render_startup};
@@ -286,18 +298,18 @@ pub struct SurfingApp {
     /// 上一次清理失效项目的时间；避免每帧对全部项目做存在性检查。
     /// Last time missing projects were pruned; avoids checking every path every frame.
     home_project_sweep_at: Instant,
-    /// 主页插件页中被收起的品牌；默认全部展开。
-    /// Brands collapsed on the home plugin page; every brand is expanded by default.
-    pub home_plugin_collapsed: HashSet<String>,
-    /// 主页插件页中展开详细信息的插件路径。
-    /// Plugin paths whose details are expanded on the home plugin page.
-    pub home_plugin_expanded: HashSet<PathBuf>,
+    /// 主页插件页的类别筛选；`None` 表示全部。
+    /// Kind filter on the home plugin page; `None` means all.
+    pub home_plugin_kind: Option<PluginKind>,
     /// 独立设置窗口是否打开。
     /// Whether the standalone settings window is open.
     pub settings_open: bool,
     /// 设置窗口左侧选中的分类。
     /// Currently selected settings category in the left column.
     settings_page: settings::SettingsPage,
+    /// 设置 → 模型页的弹窗、表单草稿与连通性测试状态；仅 UI 状态，不持久化。
+    /// Dialog, draft and connectivity-test state of the settings model page; UI-only.
+    settings_models: settings_models::ModelsUi,
     /// 后台文件夹选择的目标用途。
     /// Purpose of the background folder picker.
     settings_folder_target: Option<settings::SettingsFolderTarget>,
@@ -310,6 +322,9 @@ pub struct SurfingApp {
     /// 设置 → 控制器页的 MIDI 端口缓存：输入端口、输出端口。
     /// MIDI-port cache of the settings controller page: inputs and outputs.
     settings_midi_ports: Option<(Vec<String>, Vec<String>)>,
+    /// MIDI 端口后台枚举接收端；结果到达后填入 `settings_midi_ports`。
+    /// Background receiver for MIDI-port enumeration; the result fills `settings_midi_ports`.
+    settings_midi_ports_rx: Option<Receiver<(Vec<String>, Vec<String>)>>,
     /// 设置 → 渲染页的 GPU 设备缓存；进入页面时枚举，手动刷新时重建。
     /// GPU-device cache of the settings render page; enumerated on entry and rebuilt on refresh.
     settings_gpu_devices: Option<Result<Vec<crate::audio::gpu::GpuDeviceInfo>, String>>,
@@ -327,6 +342,24 @@ pub struct SurfingApp {
     pub hotkey_hint: Option<String>,
 
     pub show_help: bool,
+    /// 右侧面板当前显示轨道属性还是 AI 编曲对话；`None` 表示收起。
+    /// Whether the right panel shows track properties or the AI chat; `None` hides it.
+    pub side_panel: Option<SidePanel>,
+    /// AI 编曲对话状态：消息、输入、附件与后台通道。
+    /// AI composition chat state: messages, input, attachments and the background channel.
+    pub ai_chat: AiChatState,
+    /// 主页 Agent 栏的界面状态：下拉展开、搜索、编辑草稿与删除确认。
+    /// UI state of the home Agent column: submenu, search, drafts and delete confirmation.
+    pub agent_library: AiLibraryUi,
+    /// 后台导入/导出智能体或技能的通道。
+    /// Background channel that imports/exports agents or skills.
+    ai_transfer: Option<ai_transfer::AiTransferTask>,
+    /// 后台读取 AI 附件的通道。
+    /// Background channel that reads AI attachments.
+    ai_attach_rx: Option<Receiver<Result<AiAttachment, String>>>,
+    /// AI 写入但插件实例尚未就绪的参数，下一帧同步后重试。
+    /// AI-written plugin parameters whose instances are not ready yet; retried after the next sync.
+    pending_plugin_params: Vec<ai::PendingPluginParam>,
     /// 应用栏主菜单（文件 / 编辑 / VST 插件 / 帮助）是否展开；仅 UI 状态，不持久化。
     /// Whether the app bar main menu (file / edit / VST / help) is expanded; UI-only, never persisted.
     pub menu_bar_visible: bool,
@@ -821,26 +854,25 @@ impl SurfingApp {
     }
 
     /// 所属模块：app / 插件生命周期
-    /// 功能：向本进程内由插件创建的可见顶层窗口发送 `WM_CLOSE`，并泵消息等待它们关闭。
-    /// 输入：`timeout`：最长等待时间。
-    /// 输出/副作用：关闭插件窗口；返回（已发送关闭请求的窗口数，是否全部关闭）。
-    /// 复杂度：时间 O(窗口数 × 等待迭代)，空间 O(窗口数)。
+    /// 功能：向本进程内由插件创建的可见顶层窗口发送 `WM_CLOSE`，不等待其处理完成。
+    /// 输入：`_timeout`：保留参数（当前不再同步等待）。
+    /// 输出/副作用：投递关闭请求并返回（请求数，是否全部关闭）；不阻塞 UI。
+    /// 复杂度：时间 O(窗口数)，空间 O(窗口数)。
     ///
     /// Module: app / plugin lifecycle
     /// Purpose: Send `WM_CLOSE` to visible top-level windows created by plugins in this process and
-    /// pump messages until they close.
-    /// Inputs: `timeout`: maximum wait.
-    /// Outputs / side effects: closes plugin windows; returns (close requests sent, all closed).
-    /// Complexity: O(windows × wait iterations) time and O(windows) space.
+    /// return without waiting for it to be handled.
+    /// Inputs: `_timeout`: kept for API compatibility (no synchronous wait now).
+    /// Outputs / side effects: posts close requests and returns (requests, all closed) without
+    /// blocking the UI.
+    /// Complexity: O(windows) time and O(windows) space.
     #[cfg(target_os = "windows")]
-    fn close_plugin_owned_windows(&self, timeout: Duration) -> (usize, bool) {
+    fn close_plugin_owned_windows(&self, _timeout: Duration) -> (usize, bool) {
         use winapi::shared::minwindef::{BOOL, DWORD, LPARAM};
         use winapi::shared::windef::HWND;
         use winapi::um::winuser::{
-            DispatchMessageW, EnumWindows, GW_OWNER, GetWindow, GetWindowTextLengthW,
-            GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible, MSG, MWMO_INPUTAVAILABLE,
-            MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW, PostMessageW, QS_ALLINPUT,
-            TranslateMessage, WM_CLOSE,
+            EnumWindows, GW_OWNER, GetWindow, GetWindowTextLengthW, GetWindowTextW,
+            GetWindowThreadProcessId, IsWindowVisible, PostMessageW, WM_CLOSE,
         };
 
         unsafe fn title_of(hwnd: HWND) -> Option<String> {
@@ -919,36 +951,14 @@ impl SurfingApp {
             // Could not post a close request: treat as not closed so `terminate` cannot hang the UI.
             return (0, false);
         }
-        // 插件（尤其 WPF）需要本线程继续分发消息才能完成关闭。
-        // Plugins (notably WPF) need this thread to keep dispatching messages to finish closing.
-        let deadline = Instant::now() + timeout;
-        let mut remaining_count = state.1.len();
-        while Instant::now() < deadline {
-            unsafe {
-                MsgWaitForMultipleObjectsEx(
-                    0,
-                    std::ptr::null(),
-                    16,
-                    QS_ALLINPUT,
-                    MWMO_INPUTAVAILABLE,
-                );
-            }
-            let mut message: MSG = unsafe { std::mem::zeroed() };
-            while unsafe { PeekMessageW(&mut message, std::ptr::null_mut(), 0, 0, PM_REMOVE) } != 0
-            {
-                unsafe {
-                    TranslateMessage(&message);
-                    DispatchMessageW(&message);
-                }
-            }
-            let mut remaining: (DWORD, Vec<HWND>) = (pid, Vec::new());
-            unsafe { EnumWindows(Some(collect), &mut remaining as *mut _ as LPARAM) };
-            remaining_count = remaining.1.len();
-            if remaining_count == 0 {
-                break;
-            }
-        }
-        (requested, remaining_count == 0)
+        // 不在这里同步分发消息：VOCALOID6 等 WPF 编辑器的 WM_CLOSE 处理会阻塞
+        // `DispatchMessageW`，把工程窗口关闭拖成十几秒无响应。只投递关闭请求，让主消息循环
+        // 在 `Drop` 返回后继续处理；外部编辑进程随后由 `terminate_plugin_child_processes` 结束。
+        // Do not dispatch messages here: WPF editors such as VOCALOID6 can block `DispatchMessageW`
+        // inside WM_CLOSE and stall the project close for tens of seconds. Only post the close
+        // request; the main message loop handles it after `Drop`, and external editor processes are
+        // terminated by `terminate_plugin_child_processes`.
+        (requested, false)
     }
 
     /// 所属模块：app / 插件生命周期
@@ -1141,18 +1151,18 @@ impl SurfingApp {
         start: ProjectStart,
     ) -> Self {
         let title = match &start {
-            ProjectStart::New => "新工程 - SurfingStudio".to_string(),
+            ProjectStart::New => format!("{} - SurfingStudio", i18n::t("新工程")),
             ProjectStart::Open(path) => {
                 let name = path
                     .file_stem()
                     .map(|stem| stem.to_string_lossy().to_string())
                     .filter(|stem| !stem.is_empty())
-                    .unwrap_or_else(|| "工程".into());
+                    .unwrap_or_else(|| i18n::t("工程").into());
                 format!("{name} - SurfingStudio")
             }
             ProjectStart::Template(template) => {
-                let name =
-                    crate::core::model::template::display_name(template).unwrap_or("模板工程");
+                let name = crate::core::model::template::display_name(template)
+                    .unwrap_or(i18n::t("模板工程"));
                 format!("{name} - SurfingStudio")
             }
         };
@@ -1281,20 +1291,27 @@ impl SurfingApp {
             home_project_info: HashMap::new(),
             home_project_info_rx: None,
             home_project_sweep_at: Instant::now(),
-            home_plugin_collapsed: HashSet::new(),
-            home_plugin_expanded: HashSet::new(),
+            home_plugin_kind: None,
             settings_open: false,
             settings_page: settings::SettingsPage::default(),
+            settings_models: settings_models::ModelsUi::default(),
             settings_folder_target: None,
             settings_audio_systems: None,
             settings_audio_devices: None,
             settings_midi_ports: None,
+            settings_midi_ports_rx: None,
             settings_gpu_devices: None,
             settings_focus: false,
             settings,
             hotkey_recording: None,
             hotkey_hint: None,
             show_help: false,
+            side_panel: Some(SidePanel::Inspector),
+            ai_chat: AiChatState::default(),
+            agent_library: AiLibraryUi::default(),
+            ai_transfer: None,
+            ai_attach_rx: None,
+            pending_plugin_params: Vec::new(),
             menu_bar_visible: false,
             browser: None,
             plugin_cache,
@@ -1375,9 +1392,9 @@ impl SurfingApp {
         };
         app.audio_status = app.shared.audio_status();
         app.status = if view == WorkspaceView::Home {
-            format!("SurfingStudio 已就绪 · {}", app.midi_status)
+            i18n::t_args("SurfingStudio 已就绪 · {}", &[&app.midi_status])
         } else {
-            "正在准备工程…".into()
+            i18n::t("正在准备工程…").into()
         };
         // 多窗口排查需要知道每个窗口的编号与角色。
         // Multi-window analysis needs the id and role of every window.
@@ -1425,6 +1442,10 @@ impl SurfingApp {
         {
             self.settings = settings;
             self.settings_generation = generation;
+            // 语言是全局展示状态：任一窗口改动后，其余窗口在同步设置时立即生效。
+            // The language is global presentation state: once one window changes it, the others apply
+            // it as soon as they sync settings.
+            i18n::set_language(&self.settings.language);
         }
         if let Some((plugins, fingerprints, generation)) = self
             .shared
@@ -1462,7 +1483,7 @@ impl SurfingApp {
         }
         let name = self.project.name.trim();
         if name.is_empty() {
-            "未命名工程".into()
+            i18n::t("未命名工程").into()
         } else {
             name.to_string()
         }
@@ -1527,7 +1548,7 @@ impl SurfingApp {
     }
 
     /// 所属模块：app / 共享状态
-    /// 功能：把本窗口的全局设置写回共享服务（同时保存到用户配置目录）。
+    /// 功能：把本窗口的全局设置写回共享服务（同时保存到安装目录 config 文件夹）。
     /// 输入：`self`。
     /// 输出/副作用：更新共享设置与其他窗口的副本；写盘。
     /// 复杂度：时间 O(设置大小)，空间 O(设置大小)。
@@ -1539,6 +1560,7 @@ impl SurfingApp {
     /// the file.
     /// Complexity: O(settings size) time and space.
     pub(crate) fn commit_settings(&mut self) {
+        i18n::set_language(&self.settings.language);
         self.settings_generation = self.shared.write_settings(&self.settings);
     }
 
@@ -1750,7 +1772,7 @@ impl SurfingApp {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 if !self.close_prompt {
                     self.close_prompt = true;
-                    self.status = "工程有未保存的修改".into();
+                    self.status = i18n::t("工程有未保存的修改").into();
                 }
             } else {
                 // 正常关闭工程窗口：按插件生命周期先 detach 视图再销毁窗口，避免插件实例
@@ -1776,6 +1798,14 @@ impl SurfingApp {
         self.poll_save_project();
         self.poll_public_copy();
         self.poll_export_dialog();
+        self.poll_ai_chat();
+        self.poll_ai_attachment();
+        self.poll_ai_transfer();
+        if self.ai_chat.pending.is_some() {
+            // 流式输出期间保持较高刷新率，让思考过程与写入步骤实时可见。
+            // Keep a higher refresh rate while streaming so reasoning and write steps appear live.
+            ctx.request_repaint_after(Duration::from_millis(33));
+        }
         self.poll_export();
         self.poll_track_render();
         self.poll_autosave();
@@ -1809,7 +1839,7 @@ impl SurfingApp {
         if !changed_tracks.is_empty() {
             // 插件实例已经按新参数发声，这里只刷新界面提示。
             // The plugin instance already plays the new values; only refresh the UI hint.
-            self.status = "插件参数已更新".into();
+            self.status = i18n::t("插件参数已更新").into();
         }
 
         if self.instrument_load_pending {
@@ -1832,9 +1862,9 @@ impl SurfingApp {
                 self.last_engine_sync = Instant::now();
                 if self.loading_message.is_some() {
                     if let Some(path) = &self.project_path {
-                        self.status = format!("已加载 {}", path.display());
+                        self.status = i18n::t_args("已加载 {}", &[&path.display().to_string()]);
                     }
-                    self.loading_message = Some("就绪".into());
+                    self.loading_message = Some(i18n::t("就绪").into());
                     self.loading_until = Some(Instant::now() + Duration::from_millis(200));
                 }
                 if self.pending_play {
@@ -1843,6 +1873,10 @@ impl SurfingApp {
                 }
             }
         }
+        // AI 写入的 VST 参数可能在插件实例创建前到达；同步后每帧重试直到写入成功。
+        // AI-written VST parameters may arrive before the plugin instance exists; retry every frame
+        // after the sync until they land.
+        self.flush_pending_plugin_params();
 
         if self.ui_audio_loading {
             // Keep polling until the background decoder publishes its result;
@@ -1857,7 +1891,7 @@ impl SurfingApp {
             self.finish_recording();
         }
         if auto_stopped && !self.last_auto_stopped {
-            self.status = "已在最后一个 MIDI 片段结束后 2 小节自动停止".into();
+            self.status = i18n::t("已在最后一个 MIDI 片段结束后 2 小节自动停止").into();
         }
         self.last_auto_stopped = auto_stopped;
 
@@ -1879,6 +1913,12 @@ impl SurfingApp {
         if self.view == WorkspaceView::Home {
             self.ui_home(ctx);
         } else {
+            // AI 后台任务运行期间锁住工程编辑；用户选择「后台继续运行」后解锁。
+            // Lock project editing while an AI task runs; choosing "keep running" unlocks it.
+            let editing_locked = self.ai_chat.project_editing_locked();
+            // 工作区（应用栏/工具栏/状态栏之外）用于 AI 浮层定位，避免遮住窗口按钮。
+            // The workspace below the app bar/toolbar anchors the AI overlay so window controls stay reachable.
+            let workspace_rect = ctx.available_rect();
             if self.bottom_open {
                 diag::set_activity("ui.paint.bottom");
                 // 插件 GUI 会等比缩放到卡片大小，底部面板不再需要按插件高度撑开。
@@ -1887,6 +1927,7 @@ impl SurfingApp {
                 let editor_min_height = 190.0;
                 let editor_max_height = 760.0_f32.max(editor_min_height);
 
+                let mut bottom_rect = None;
                 egui::TopBottomPanel::bottom("editor_panel")
                     .resizable(true)
                     .default_height(370.0_f32.max(editor_min_height))
@@ -1898,42 +1939,70 @@ impl SurfingApp {
                             .inner_margin(egui::Margin::symmetric(8, 6))
                             .stroke(egui::Stroke::new(1.0_f32, theme::LINE)),
                     )
-                    .show(ctx, |ui| match self.bottom_view {
-                        BottomView::PianoRoll => self.ui_piano_roll(ui),
-                        BottomView::Controller { track_id, kind } => {
-                            self.ui_controller_lane(ui, track_id, kind, false)
-                        }
-                        BottomView::Effects { track_id } => self.ui_effects(ui, track_id, false),
+                    .show(ctx, |ui| {
+                        bottom_rect = Some(ui.available_rect_before_wrap());
+                        ui.add_enabled_ui(!editing_locked, |ui| match self.bottom_view {
+                            BottomView::PianoRoll => self.ui_piano_roll(ui),
+                            BottomView::Controller { track_id, kind } => {
+                                self.ui_controller_lane(ui, track_id, kind, false)
+                            }
+                            BottomView::Effects { track_id } => {
+                                self.ui_effects(ui, track_id, false)
+                            }
+                        });
                     });
+                if let Some(rect) = bottom_rect {
+                    self.note_edit_surface_interaction(ctx, rect);
+                }
             }
 
             diag::set_activity("ui.paint.inspector");
-            egui::SidePanel::right("inspector")
-                .resizable(true)
-                .default_width(340.0)
-                .min_width(300.0)
-                .max_width(460.0)
-                .frame(
-                    egui::Frame::NONE
-                        .fill(theme::PANEL)
-                        .inner_margin(egui::Margin::symmetric(12, 10)),
-                )
-                .show(ctx, |ui| {
-                    self.ui_inspector(ui);
-                });
+            // 轨道属性仍是右侧窄面板；AI 编曲改为工作区上方的浮层，不再挤压编曲区。
+            // The inspector stays a narrow right panel; the AI workspace is an overlay above the
+            // arrangement instead of squeezing it.
+            if self.side_panel == Some(SidePanel::Inspector) {
+                let mut inspector_rect = None;
+                egui::SidePanel::right("inspector")
+                    .resizable(true)
+                    .default_width(360.0)
+                    .min_width(300.0)
+                    .max_width(520.0)
+                    .frame(
+                        egui::Frame::NONE
+                            .fill(theme::PANEL)
+                            .inner_margin(egui::Margin::symmetric(12, 10)),
+                    )
+                    .show(ctx, |ui| {
+                        inspector_rect = Some(ui.available_rect_before_wrap());
+                        ui.add_enabled_ui(!editing_locked, |ui| self.ui_inspector(ui));
+                    });
+                if let Some(rect) = inspector_rect {
+                    self.note_edit_surface_interaction(ctx, rect);
+                }
+            }
 
             diag::set_activity("ui.paint.arrangement");
+            let mut arrangement_rect = None;
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE.fill(theme::BG))
                 .show(ctx, |ui| {
-                    self.ui_arrangement(ui);
+                    arrangement_rect = Some(ui.available_rect_before_wrap());
+                    ui.add_enabled_ui(!editing_locked, |ui| self.ui_arrangement(ui));
                 });
+            if let Some(rect) = arrangement_rect {
+                self.note_edit_surface_interaction(ctx, rect);
+            }
 
             diag::set_activity("ui.paint.rolls");
             self.update_roll_drag(ctx);
             self.ui_roll_windows(ctx);
             self.ui_lane_paste_prompt(ctx);
             self.ui_group_delete_prompt(ctx);
+            // AI 工作台作为浮层绘制在编曲区与底部卷帘之上，带遮罩与投影。
+            // Draw the AI workspace as an overlay above the arrangement and bottom editor, with a scrim.
+            if self.side_panel == Some(SidePanel::Ai) {
+                self.ui_ai_overlay(ctx, workspace_rect);
+            }
         }
         // 无系统边框后，窗口缩放改由应用栏同层的边缘热区接管。
         // Without OS decorations, window resizing is handled by edge hit areas.
@@ -1953,6 +2022,9 @@ impl SurfingApp {
         if self.close_prompt {
             self.ui_close_prompt(ctx);
         }
+        // AI 后台任务进行中，发送第二个任务/切换对话/编辑轨道时弹出冲突确认。
+        // Ask before sending a second task, switching chats or editing tracks while AI runs.
+        self.ui_ai_task_conflict(ctx);
         // 本帧没有被摆放到卡片里的内嵌编辑器必须隐藏，否则会停在旧位置。
         // Inline editors not placed into a card this frame must be hidden or they stay put.
         self.finish_inline_layout();
@@ -1973,7 +2045,7 @@ impl SurfingApp {
             }
         }
         if let Some(message) = self.loading_message.clone() {
-            egui::Window::new("加载")
+            egui::Window::new(i18n::t("加载"))
                 .title_bar(false)
                 .collapsible(false)
                 .resizable(false)

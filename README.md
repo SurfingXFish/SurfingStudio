@@ -1,13 +1,14 @@
-# SurfingStudio
+﻿# SurfingStudio
 
 一个用 Rust 编写的、以 MIDI 为核心的音乐工作站（DAW）。内置合成器与鼓机开箱即用，同时支持 VST3 / VST2 插件、音频片段、自动化与实时渲染播放。
 
-- **轻量**：单个原生可执行文件，不依赖 Electron、浏览器或外部音频服务。
+- **轻量**：原生可执行文件（瘦启动器 + 运行时 DLL），不依赖 Electron、浏览器或外部音频服务。
 - **以 MIDI 为中心**：编曲、钢琴卷帘、控制器自动化是主路径，音频片段作为补充。
 - **开箱即用**：内置复音合成器、鼓机与 128 件采样乐器，即使没有安装任何插件也能发声。
 - **专业能力**：VST3 原生编辑器、VST2 支持、插件状态持久化、实时渲染、多通道 / 环绕声路由与独立导出窗口。
+- **分目录存储**：数据保存在安装目录下，按用途拆分为 `config/`、`cache/`、`logs/`、`temp/`、`Projects/` 与 `ai/`，不再统一塞进 `data/`，便于备份、清理与调试。
 
-当前版本 `1.2.4`（正式版），主要面向 Windows 桌面，也可在安卓平板 / 手机上运行（NativeActivity + OpenGL ES，单窗口模式）。
+当前版本 `1.3.7`（正式版），主要面向 Windows 桌面，也可在安卓平板 / 手机上运行（NativeActivity + OpenGL ES，单窗口模式）。
 
 ## 主要功能
 
@@ -17,6 +18,7 @@
 - **插件**：VST3 扫描与原生编辑器、VST2 支持、ARA2 宿主端（VOCALOID Bridge）、按插件上报延迟对齐轨道（PDC）、按品牌分组的插件浏览器、增量扫描缓存、参数与状态随工程保存。
 - **内置乐器与效果器**：808/909 风格鼓机；内置采样音色库（附录二全部 128 件采样乐器，来自 SoundBug SoundSampler3，已拆分为 Ogg Vorbis 随可执行文件内嵌，统一归入 SurfingStudio，不再依赖 SoundBug VST）；八种原生效果器（过载、失真、法兹、合唱、相位、延时、混响、压缩）。原九种原生建模乐器已由采样版本取代，旧工程与模板中的原生乐器仍可正常加载。
 - **工作流**：多窗口工作区、主页（项目 / 模板 / 插件 / 提示）、19 种风格模板与 6 个范例工程、独立设置窗口、独立导出窗口、自动保存、崩溃恢复、历史版本、可自定义快捷键。
+- **AI 编曲**：顶部「AI 编曲」在右侧打开聊天式面板，可接入 DeepSeek、小米 MiMo 或任意 OpenAI 兼容服务；采用 SSE 流式输出，思考过程实时滚动、`reply` 逐字显示、编曲操作边解析边写入工程，可选择推理强度；内置「轻音乐创作」与「J-Pop」智能体，自动加载基础乐理、现代编曲与曲式、风格与八类配器技能，并可让模型按需调用 14 个编曲技巧（律动、切分、桥段、分层等）。AI 优先调用已扫描的 VST3 / VST2 乐器与效果器（清单带中文用途说明），并可通过 DeepSeek Search 联网检索插件特点；支持文本 / Markdown / JSON / CSV / MIDI 附件。
 - **工程格式**：`.sfsd`（SFS2 分块二进制容器，MessagePack 清单 + 插件状态块 + 波形峰值缓存），兼容导入 SoundBug `.sndp`。
 - **诊断**：每次启动写入二进制 `.sflog` 日志（`--decode-log` 可解码），记录卡顿、资源占用与退出原因。
 
@@ -30,6 +32,7 @@
 | MIDI 输入 | midir 0.11 |
 | 插件 | vst3-host 0.10（本地 patch）、vst 0.4（VST2） |
 | 序列化 | serde / rmp-serde（MessagePack）/ zstd / crc32fast |
+| AI 编曲 | ureq 2（阻塞 HTTPS + SSE 流式，rustls/ring）+ DeepSeek / MiMo OpenAI 兼容接口 |
 | 其他 | hound（WAV）、symphonia（MP3 / FLAC / AAC·M4A / OGG / AIFF / CAF / ALAC）、rfd（文件对话框）、wgpu（GPU 离线渲染与实时限幅） |
 
 ## 快速开始
@@ -37,10 +40,22 @@
 环境要求：Rust stable 工具链（edition 2024，最低 1.85）、Windows 10/11 与可用的音频输出设备。
 
 ```bash
-cargo run              # 启动后进入主页，新建 / 打开工程即可开始
-cargo build --release
+cargo build            # 构建运行时 DLL、AI 资料 DLL 与瘦启动器
+target\debug\surfing-studio.exe   # 启动后进入主页，新建 / 打开工程即可开始
 cargo test
 ```
+
+发布安装包（需要 Inno Setup 6：`winget install JRSoftware.InnoSetup`）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\package.ps1
+# 产物：dist\SurfingStudio-<版本>-setup.exe
+```
+
+安装包默认安装到 `Program Files\SurfingStudio`，并为 `config`、`cache`、`logs`、`temp`、`Projects` 与 `ai`
+授予普通用户修改权限；设置、工程、日志与 AI 资料都保存在这些安装目录子目录中。
+卸载只清理可再生的 `cache` 与 `temp`，保留 `config`、`ai`、`Projects` 与 `logs`。
+安装向导按 Windows 界面语言自动选择简体中文或 English，无需手动切换；只有系统语言与两种语言都不匹配时才显示语言选择框。
 
 打开工程支持 `.sfsd` 与 SoundBug `.sndp`（导入后需另存为 `.sfsd`）。
 
@@ -54,9 +69,12 @@ powershell -ExecutionPolicy Bypass -File platforms\android\build.ps1 -Abi arm64-
 ## 目录结构
 
 ```text
+launcher/           # 瘦启动器：只加载运行时 DLL，自身不含业务逻辑
+crates/surfing-ai-data/ # AI 资料存储 DLL：智能体 JSON、技能 Markdown、导入导出
 src/
-├─ main.rs          # 薄二进制入口：创建 eframe 根窗口
-├─ lib.rs           # 库根：模块声明
+├─ desktop.rs       # 桌面运行时入口（由启动器通过 DLL 调用）
+├─ lib.rs           # 库根：模块声明与 DLL 导出
+├─ ai/              # AI 编曲：运行时、OpenAI 兼容流式后端、提示词、流式计划与内置技能
 ├─ platform/        # 平台运行时（desktop / android 后端、SAF）
 ├─ app/             # 应用状态机与多窗口外壳（主页、设置、保存、插件、自动保存…）
 ├─ core/            # 纯数据层：模型、工程运行时（sfsd / soundbug）、MIDI 输入
@@ -64,13 +82,39 @@ src/
 ├─ plugin/          # 插件运行时框架与 VST3 / VST2 后端
 ├─ diag/            # 进程级诊断日志（.sflog）
 └─ ui/              # 立即模式视图：编曲区、钢琴卷帘、控制器、检查器、浏览器…
+installer/          # Inno Setup 安装包脚本与简体中文语言文件
+tools/package.ps1   # 一键打包安装包
 examples/           # 范例工程
 assets/             # 图标与内置采样音色库（soundbank/）
 platforms/android/  # 安卓入口 crate 与打包脚本
-tools/vst2-fixture/ # 测试用极简 VST2 乐器
 vendor/vst3-host/   # 本地 patch 的 VST3 宿主库
 doc/                # 项目简介、技术文档、代码规范、关键常量、框架工作流
 ```
+
+安装目录结构（数据按用途拆分，不再统一放进 `data/`）：
+
+```text
+SurfingStudio.exe        # 瘦启动器
+surfing_studio.dll       # 运行时（全部业务逻辑）
+surfing_ai_data.dll      # AI 资料存储与导入导出
+config/
+└─ settings.json                        # 全局设置与 API Key
+cache/
+└─ plugin-cache.json                    # 插件扫描缓存
+logs/
+└─ surfing-*.sflog                      # 诊断日志
+temp/
+├─ export/                              # 导出副本临时文件
+└─ recovery/                            # 未保存工程的崩溃恢复文件
+Projects/                               # 默认工程目录
+ai/
+├─ library.json                         # 结构版本与条目顺序
+├─ agents/<id>.json                     # 智能体
+├─ skills/basics|techniques/*.md        # 基础技能 / 编曲技巧
+└─ skills/instruments/*.json            # 乐器资料
+```
+
+macOS / Linux 使用相同的安装目录布局；无法定位安装目录时，日志与临时文件回退到系统临时目录。
 
 ## 文档
 

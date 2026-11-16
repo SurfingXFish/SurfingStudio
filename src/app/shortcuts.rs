@@ -25,6 +25,7 @@
 //!   direction.
 //! - `key_label` / `key_name` / `key_from_name`: display names, persistence names and parsing.
 
+use super::i18n::t;
 use super::settings::AppSettings;
 use super::*;
 
@@ -61,11 +62,11 @@ impl ShortcutGroup {
     /// Complexity: O(1) time and space.
     pub fn label(self) -> &'static str {
         match self {
-            ShortcutGroup::Transport => "传输",
-            ShortcutGroup::FileEdit => "文件与编辑",
-            ShortcutGroup::View => "视图",
-            ShortcutGroup::Tools => "工具与画笔",
-            ShortcutGroup::Scroll => "滑动",
+            ShortcutGroup::Transport => t("传输"),
+            ShortcutGroup::FileEdit => t("文件与编辑"),
+            ShortcutGroup::View => t("视图"),
+            ShortcutGroup::Tools => t("工具与画笔"),
+            ShortcutGroup::Scroll => t("滑动"),
         }
     }
 }
@@ -202,37 +203,37 @@ impl ShortcutAction {
     /// Complexity: O(1) time and space.
     pub fn label(self) -> &'static str {
         match self {
-            ShortcutAction::PlayPause => "播放 / 暂停",
-            ShortcutAction::GoToStart => "回到开头",
-            ShortcutAction::GoToEnd => "跳到结尾",
-            ShortcutAction::Save => "保存工程",
-            ShortcutAction::Open => "打开工程",
-            ShortcutAction::New => "新建工程",
-            ShortcutAction::Export => "导出音频",
-            ShortcutAction::Undo => "撤销",
-            ShortcutAction::Redo => "重做",
-            ShortcutAction::Copy => "复制",
-            ShortcutAction::Paste => "粘贴",
-            ShortcutAction::SelectAll => "全选",
-            ShortcutAction::Delete => "删除选中 / 轨道",
-            ShortcutAction::Cancel => "取消 / 关闭",
-            ShortcutAction::Help => "帮助窗口",
-            ShortcutAction::PluginBrowser => "插件浏览器",
-            ShortcutAction::EffectsRoll => "效果器链",
-            ShortcutAction::ControllerRoll => "控制器卷帘",
-            ShortcutAction::ToggleAutoPage => "自动翻页",
-            ShortcutAction::ToolSelect => "选择工具",
-            ShortcutAction::ToolDraw => "绘制工具",
-            ShortcutAction::ToolCut => "切割工具",
-            ShortcutAction::ControllerBrush => "控制器画笔",
-            ShortcutAction::ControllerLine => "控制器直线",
-            ShortcutAction::ControllerSmooth => "控制器平滑",
-            ShortcutAction::ControllerErase => "控制器擦除",
-            ShortcutAction::ControllerToolNext => "切换下一个控制器画笔",
-            ShortcutAction::ScrollLeft => "视图向左滑动",
-            ShortcutAction::ScrollRight => "视图向右滑动",
-            ShortcutAction::ScrollUp => "视图向上滑动",
-            ShortcutAction::ScrollDown => "视图向下滑动",
+            ShortcutAction::PlayPause => t("播放 / 暂停"),
+            ShortcutAction::GoToStart => t("回到开头"),
+            ShortcutAction::GoToEnd => t("跳到结尾"),
+            ShortcutAction::Save => t("保存工程"),
+            ShortcutAction::Open => t("打开工程"),
+            ShortcutAction::New => t("新建工程"),
+            ShortcutAction::Export => t("导出音频"),
+            ShortcutAction::Undo => t("撤销"),
+            ShortcutAction::Redo => t("重做"),
+            ShortcutAction::Copy => t("复制"),
+            ShortcutAction::Paste => t("粘贴"),
+            ShortcutAction::SelectAll => t("全选"),
+            ShortcutAction::Delete => t("删除选中 / 轨道"),
+            ShortcutAction::Cancel => t("取消 / 关闭"),
+            ShortcutAction::Help => t("帮助窗口"),
+            ShortcutAction::PluginBrowser => t("插件浏览器"),
+            ShortcutAction::EffectsRoll => t("效果器链"),
+            ShortcutAction::ControllerRoll => t("控制器卷帘"),
+            ShortcutAction::ToggleAutoPage => t("自动翻页"),
+            ShortcutAction::ToolSelect => t("选择工具"),
+            ShortcutAction::ToolDraw => t("绘制工具"),
+            ShortcutAction::ToolCut => t("切割工具"),
+            ShortcutAction::ControllerBrush => t("控制器画笔"),
+            ShortcutAction::ControllerLine => t("控制器直线"),
+            ShortcutAction::ControllerSmooth => t("控制器平滑"),
+            ShortcutAction::ControllerErase => t("控制器擦除"),
+            ShortcutAction::ControllerToolNext => t("切换下一个控制器画笔"),
+            ShortcutAction::ScrollLeft => t("视图向左滑动"),
+            ShortcutAction::ScrollRight => t("视图向右滑动"),
+            ShortcutAction::ScrollUp => t("视图向上滑动"),
+            ShortcutAction::ScrollDown => t("视图向下滑动"),
         }
     }
 
@@ -501,7 +502,7 @@ impl Binding {
 fn key_label(key: egui::Key) -> &'static str {
     use egui::Key;
     match key {
-        Key::Space => "空格",
+        Key::Space => t("空格"),
         Key::Escape => "Esc",
         Key::Enter => "Enter",
         Key::Tab => "Tab",
@@ -725,7 +726,7 @@ impl AppSettings {
             .map(|binding| binding.label())
             .collect();
         if labels.is_empty() {
-            "未绑定".into()
+            t("未绑定").into()
         } else {
             labels.join(" / ")
         }

@@ -2,20 +2,23 @@
 //! 文件用途：
 //! - 绘制主页：左侧为软件图标/名称/版本、项目/模板/插件/提示菜单与底部设置入口；右侧为具体内容。
 //! - 项目页按最近保存时间列出全部打开过的工程，自动清理失效路径，并可下拉查看工程信息与历史版本。
-//! - 插件页按品牌下拉分组（默认展开），乐器在上、效果器在下，行内显示类型标签并可下拉查看详情。
+//! - 插件页按类别胶囊筛选、按品牌分组；品牌与插件行都是带动画的折叠项，插件详情在行内展开。
 //! - 模板页与提示页保持原有内容。
 //!
 //! 函数清单：
 //! - `SurfingApp::open_home` / `open_studio`：请求显示主页窗口 / 回到最近工程窗口。
 //! - `SurfingApp::ui_home` / `ui_home_sidebar`：主页两栏布局与左侧菜单。
 //! - `SurfingApp::ui_home_projects` / `ui_home_templates` / `ui_home_plugins` / `ui_home_tips`：右侧内容页。
+//! - `SurfingApp::ui_home_agents` / `ui_home_agent_basics` / `ui_home_agent_techniques` /
+//!   `ui_home_agent_instruments`：Agent 栏四个资料管理页（实现在 `app/agent_library.rs`）。
 //! - `SurfingApp::ui_home_project_row` / `ui_home_project_details`：项目行与展开的工程信息/历史版本。
 //! - `SurfingApp::ui_home_project_delete_prompt` / `delete_home_project`：项目删除确认与移除。
 //! - `SurfingApp::request_home_project_info` / `poll_home_project_info`：后台读取工程摘要。
 //! - `SurfingApp::open_recent_project` / `request_project_from_template`：打开项目 / 从模板创建。
 //! - `load_project_summary` / `format_bytes` / `format_version_name`：工程摘要与展示文本。
 //! - `home_logo` / `home_nav_item` / `home_nav_icon` / `home_page_label`：侧栏控件。
-//! - `ui_home_project_row` / `plugin_brand_header` / `home_plugin_row` / `paint_chevron` / `path_hash` / `project_display_name`：列表行与命名。
+//! - `ui_home_project_row` / `plugin_brand_header` / `home_plugin_row` / `plugin_detail_body` /
+//!   `plugin_detail_field` / `paint_chevron` / `path_hash` / `project_display_name`：列表行与命名。
 //! - `template_card` / `example_card` / `template_family_filter` / `template_filter_chip`：模板与范例卡片。
 //!
 //! Module: app / home page
@@ -24,8 +27,8 @@
 //!   tips menu and a settings entry at the bottom; the right column shows the selected content.
 //! - The projects page lists every opened project by last-saved time, prunes missing paths and
 //!   exposes project info plus history versions in a dropdown.
-//! - The plugins page groups plugins by brand (expanded by default), instruments first and effects
-//!   below, with type tags and per-plugin detail dropdowns.
+//! - The plugins page filters by kind chips, groups by brand, and makes both brand headers and plugin
+//!   rows animated disclosures with inline details.
 //! - The templates and tips pages keep their previous content.
 //!
 //! Functions:
@@ -38,9 +41,11 @@
 //! - `SurfingApp::open_recent_project` / `request_project_from_template`: open a project / create from a template.
 //! - `load_project_summary` / `format_bytes` / `format_version_name`: project summary and display text.
 //! - `home_logo` / `home_nav_item` / `home_nav_icon` / `home_page_label`: sidebar widgets.
-//! - `home_project_row` / `plugin_brand_header` / `home_plugin_row` / `plugin_tag` / `path_hash` / `project_display_name`: rows and names.
+//! - `home_project_row` / `plugin_brand_header` / `home_plugin_row` / `plugin_detail_body` /
+//!   `plugin_detail_field` / `path_hash` / `project_display_name`: rows and names.
 //! - `template_card` / `example_card` / `template_family_filter` / `template_filter_chip`: template and example cards.
 
+use super::i18n::{t, t_args};
 use super::panels::{icon_button, paint_gear, paint_studio_logo};
 use super::time_fmt;
 use super::*;
@@ -64,19 +69,16 @@ const NAV_H: f32 = 34.0;
 const HOME_PAD: i8 = 24;
 /// 项目行高度（逻辑点）。
 /// Height of one project row in logical points.
-const PROJECT_ROW_H: f32 = 52.0;
+const PROJECT_ROW_H: f32 = 56.0;
 /// 插件品牌行高度（逻辑点）。
 /// Height of one plugin brand header in logical points.
-const PLUGIN_BRAND_H: f32 = 34.0;
+const PLUGIN_BRAND_H: f32 = 40.0;
 /// 插件行高度（逻辑点）。
 /// Height of one plugin row in logical points.
-const PLUGIN_ROW_H: f32 = 40.0;
-/// 插件行名称列宽（逻辑点）：固定宽度让右侧标签纵向对齐。
-/// Width of the plugin name column in logical points; a fixed width keeps tags aligned.
-const PLUGIN_NAME_W: f32 = 210.0;
-/// 主页顶部标题字号（逻辑点）。
-/// Home page heading size in logical points.
-const HOME_TITLE_SIZE: f32 = 19.0;
+const PLUGIN_ROW_H: f32 = 52.0;
+/// 主页顶部标题字号（逻辑点），与 Agent 资料库页头统一。
+/// Home page heading size in logical points; matches the Agent library header.
+const HOME_TITLE_SIZE: f32 = 22.0;
 /// 侧栏软件图标边长（逻辑点）。
 /// Sidebar logo side length in logical points.
 const HOME_LOGO_SIZE: f32 = 32.0;
@@ -217,6 +219,10 @@ impl SurfingApp {
                     HomePage::Templates => self.ui_home_templates(ui),
                     HomePage::Plugins => self.ui_home_plugins(ui),
                     HomePage::Tips => self.ui_home_tips(ui),
+                    HomePage::Agents => self.ui_home_agents(ui),
+                    HomePage::AgentBasics => self.ui_home_agent_basics(ui),
+                    HomePage::AgentTechniques => self.ui_home_agent_techniques(ui),
+                    HomePage::AgentInstruments => self.ui_home_agent_instruments(ui),
                 }
             });
 
@@ -276,10 +282,45 @@ impl SurfingApp {
             if page == HomePage::Plugins && !crate::platform::caps().plugin_hosting {
                 continue;
             }
-            if home_nav_item(ui, page, self.home_page == page).clicked() {
+            if home_nav_item(ui, page, self.home_page == page, false).clicked() {
                 self.home_page = page;
             }
             ui.add_space(2.0);
+        }
+
+        // Agent 栏：点击主项切换页面并展开/收起「基础 / 技能 / 乐器」下拉。
+        // Agent column: clicking the main entry switches page and toggles the basics/techniques/
+        // instruments submenu.
+        let agent_selected = self.home_page.is_agent_section();
+        let agent_response = home_nav_item(
+            ui,
+            HomePage::Agents,
+            agent_selected,
+            self.agent_library.expanded,
+        );
+        if agent_response.clicked() {
+            // 从其他页面进入 Agent 时自动展开；已在 Agent 栏时再次点击才收起/展开。
+            // Entering Agent from another page expands it; clicking again while inside toggles.
+            let was_inside = self.home_page.is_agent_section();
+            self.home_page = HomePage::Agents;
+            self.agent_library.expanded = if was_inside {
+                !self.agent_library.expanded
+            } else {
+                true
+            };
+        }
+        ui.add_space(2.0);
+        if self.agent_library.expanded {
+            for (page, label) in [
+                (HomePage::AgentBasics, t("基础")),
+                (HomePage::AgentTechniques, t("技能")),
+                (HomePage::AgentInstruments, t("乐器")),
+            ] {
+                if home_sub_nav_item(ui, label, self.home_page == page).clicked() {
+                    self.home_page = page;
+                }
+                ui.add_space(1.0);
+            }
         }
 
         // 菜单下方留白，把设置图标压到侧栏最下方。
@@ -289,7 +330,7 @@ impl SurfingApp {
         if remaining > 0.0 {
             ui.add_space(remaining);
         }
-        if icon_button(ui, "设置", paint_gear).clicked() {
+        if icon_button(ui, t("设置"), paint_gear).clicked() {
             self.open_settings(ui.ctx());
         }
     }
@@ -312,23 +353,23 @@ impl SurfingApp {
         self.prune_missing_projects();
         ui.add_space(2.0);
         ui.label(
-            egui::RichText::new("项目")
+            egui::RichText::new(t("项目"))
                 .size(HOME_TITLE_SIZE)
                 .strong()
                 .color(theme::TEXT),
         );
         ui.label(
-            egui::RichText::new(
+            egui::RichText::new(t(
                 "按最近保存时间列出打开过的工程，点击展开可查看工程信息与历史版本。",
-            )
+            ))
             .size(10.5)
             .color(theme::TEXT_DIM),
         );
         if self.open_project_count > 0 {
             ui.label(
-                egui::RichText::new(format!(
+                egui::RichText::new(t_args(
                     "当前已打开 {} 个工程窗口，点击图标或“文件 → 主页”可随时返回",
-                    self.open_project_count
+                    &[&self.open_project_count.to_string()],
                 ))
                 .size(10.0)
                 .color(theme::TEXT_FAINT),
@@ -341,30 +382,30 @@ impl SurfingApp {
             // Place the search field first (it takes the space left of the buttons); the button
             // group is then right-aligned so the RTL layout cannot affect the text input.
             let buttons_width = 306.0;
-            let search_width = (ui.available_width() - buttons_width - 12.0).max(160.0);
+            let search_width = (ui.available_width() - buttons_width - theme::SPACE_MD).max(160.0);
             ui.add_sized(
-                [search_width, 28.0],
+                [search_width, 32.0],
                 egui::TextEdit::singleline(&mut self.home_search)
-                    .hint_text("搜索项目")
+                    .hint_text(t("搜索项目"))
                     .desired_width(search_width),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let new_project = egui::Button::new(
-                    egui::RichText::new("新建项目")
-                        .size(12.0)
-                        .color(egui::Color32::WHITE),
-                )
-                .fill(theme::ACCENT)
-                .min_size(egui::vec2(84.0, 28.0));
-                if ui
-                    .add(new_project)
+                if theme::primary_button(ui, t("新建项目"))
                     .on_hover_text(self.settings.shortcut_label(ShortcutAction::New))
                     .clicked()
                 {
                     self.request_new_project();
                 }
                 if ui
-                    .add(egui::Button::new("打开项目").min_size(egui::vec2(84.0, 28.0)))
+                    .add(
+                        egui::Button::new(
+                            egui::RichText::new(t("打开项目")).size(theme::FONT_BODY),
+                        )
+                        .fill(theme::PANEL_2)
+                        .stroke(egui::Stroke::NONE)
+                        .corner_radius(8)
+                        .min_size(egui::vec2(84.0, theme::CONTROL_H)),
+                    )
                     .on_hover_text(self.settings.shortcut_label(ShortcutAction::Open))
                     .clicked()
                 {
@@ -374,15 +415,17 @@ impl SurfingApp {
                     .add_enabled(
                         self.can_resume_project,
                         egui::Button::new(
-                            egui::RichText::new("继续当前工程")
-                                .size(11.0)
+                            egui::RichText::new(t("继续当前工程"))
+                                .size(theme::FONT_LABEL)
                                 .color(theme::TEXT_DIM),
-                        ),
+                        )
+                        .frame(false)
+                        .min_size(egui::vec2(0.0, theme::CONTROL_H)),
                     )
                     .on_hover_text(if self.can_resume_project {
-                        "返回最近使用的工程窗口"
+                        t("返回最近使用的工程窗口")
                     } else {
-                        "当前没有打开的工程窗口"
+                        t("当前没有打开的工程窗口")
                     })
                     .clicked()
                 {
@@ -390,7 +433,7 @@ impl SurfingApp {
                 }
             });
         });
-        ui.add_space(10.0);
+        ui.add_space(theme::SPACE_MD);
 
         let filter = self.home_search.trim().to_lowercase();
         let mut entries: Vec<(PathBuf, SystemTime)> = self
@@ -425,16 +468,16 @@ impl SurfingApp {
             ui.vertical_centered(|ui| {
                 ui.label(
                     egui::RichText::new(if self.settings.recent_projects.is_empty() {
-                        "暂无项目"
+                        t("暂无项目")
                     } else {
-                        "没有匹配的项目"
+                        t("没有匹配的项目")
                     })
                     .size(13.0)
                     .color(theme::TEXT_DIM),
                 );
                 ui.add_space(4.0);
                 ui.label(
-                    egui::RichText::new("打开或新建工程后会自动出现在这里。")
+                    egui::RichText::new(t("打开或新建工程后会自动出现在这里。"))
                         .size(10.5)
                         .color(theme::TEXT_FAINT),
                 );
@@ -500,13 +543,13 @@ impl SurfingApp {
     fn backup_home_project(&mut self, path: &Path) {
         match super::backup::create_backup_now(path, self.settings.backup_retention) {
             Ok(Some(created)) => {
-                self.status = format!("已备份工程：{}", created.display());
+                self.status = t_args("已备份工程：{}", &[&created.display().to_string()]);
             }
             Ok(None) => {
-                self.status = "工程文件不存在，无法备份".into();
+                self.status = t("工程文件不存在，无法备份").into();
             }
             Err(error) => {
-                self.status = format!("备份失败：{error}");
+                self.status = t_args("备份失败：{}", &[&error]);
             }
         }
     }
@@ -542,14 +585,14 @@ impl SurfingApp {
             .show(ctx, |ui| {
                 ui.set_width(360.0);
                 ui.label(
-                    egui::RichText::new("删除项目")
+                    egui::RichText::new(t("删除项目"))
                         .size(14.0)
                         .strong()
                         .color(theme::TEXT),
                 );
                 ui.add_space(8.0);
                 ui.label(
-                    egui::RichText::new(format!("确定要删除「{name}」吗？"))
+                    egui::RichText::new(t_args("确定要删除「{}」吗？", &[&name]))
                         .size(12.0)
                         .color(theme::TEXT),
                 );
@@ -564,22 +607,22 @@ impl SurfingApp {
                 ui.add_space(8.0);
                 ui.checkbox(
                     &mut prompt.delete_file,
-                    egui::RichText::new("同时删除本地工程文件").size(12.0),
+                    egui::RichText::new(t("同时删除本地工程文件")).size(12.0),
                 );
                 ui.add_space(2.0);
                 ui.label(if prompt.delete_file {
-                    egui::RichText::new("本地文件删除后无法恢复")
+                    egui::RichText::new(t("本地文件删除后无法恢复"))
                         .size(10.0)
                         .color(theme::RED)
                 } else {
-                    egui::RichText::new("仅从项目列表移除，本地文件保留")
+                    egui::RichText::new(t("仅从项目列表移除，本地文件保留"))
                         .size(10.0)
                         .color(theme::TEXT_FAINT)
                 });
                 ui.add_space(12.0);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let delete = egui::Button::new(
-                        egui::RichText::new("删除")
+                        egui::RichText::new(t("删除"))
                             .size(12.0)
                             .color(egui::Color32::WHITE),
                     )
@@ -589,7 +632,7 @@ impl SurfingApp {
                     if ui.add(delete).clicked() {
                         decision = Some(true);
                     }
-                    let cancel = egui::Button::new(egui::RichText::new("取消").size(12.0))
+                    let cancel = egui::Button::new(egui::RichText::new(t("取消")).size(12.0))
                         .corner_radius(4)
                         .min_size(egui::vec2(76.0, 26.0));
                     if ui.add(cancel).clicked() {
@@ -637,7 +680,7 @@ impl SurfingApp {
                 // 文件已被外部删除时仍继续清理列表，避免条目残留。
                 // A file removed outside the app still clears the list entry.
                 if error.kind() != std::io::ErrorKind::NotFound {
-                    self.status = format!("删除本地文件失败：{error}");
+                    self.status = t_args("删除本地文件失败：{}", &[&error.to_string()]);
                     return;
                 }
             }
@@ -647,9 +690,9 @@ impl SurfingApp {
         self.home_project_info.remove(path);
         self.commit_settings();
         self.status = if delete_file {
-            "已删除项目并移除本地文件".into()
+            t("已删除项目并移除本地文件").into()
         } else {
-            "已从项目列表移除".into()
+            t("已从项目列表移除").into()
         };
     }
 
@@ -726,7 +769,7 @@ impl SurfingApp {
         }
         let painter = ui.painter();
         if hovered {
-            painter.rect_filled(rect, egui::CornerRadius::from(4), theme::PANEL_2);
+            painter.rect_filled(rect, egui::CornerRadius::from(8), theme::PANEL_2);
         }
         let icon_rect = egui::Rect::from_min_size(
             egui::pos2(rect.left() + 6.0, rect.center().y - 12.0),
@@ -801,21 +844,23 @@ impl SurfingApp {
         // Context menu: back up a history version / delete the project (with confirmation).
         egui::Popup::context_menu(&response).show(|ui| {
             ui.set_min_width(160.0);
-            if theme::menu_button(ui, "备份", "").clicked() {
+            if theme::menu_button(ui, t("备份"), "").clicked() {
                 action = Some(ProjectRowAction::Backup);
                 ui.close();
             }
-            if theme::menu_button(ui, "删除", "").clicked() {
+            if theme::menu_button(ui, t("删除"), "").clicked() {
                 action = Some(ProjectRowAction::Delete);
                 ui.close();
             }
         });
         response
             .on_hover_cursor(egui::CursorIcon::PointingHand)
-            .on_hover_text(format!(
+            .on_hover_text(t_args(
                 "{}\n最近保存：{}\n点击展开工程信息与历史版本；右键可备份或删除",
-                path.display(),
-                time_fmt::format_datetime(modified)
+                &[
+                    &path.display().to_string(),
+                    &time_fmt::format_datetime(modified),
+                ],
             ));
         if expanded {
             self.ui_home_project_details(ui, path, modified, &mut action);
@@ -865,30 +910,29 @@ impl SurfingApp {
         let summary = self.home_project_info.get(path).cloned();
         let mut open_version: Option<PathBuf> = None;
         egui::Frame::NONE
-            .fill(theme::PANEL)
-            .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
-            .corner_radius(5)
-            .inner_margin(egui::Margin::symmetric(12, 9))
+            .fill(theme::PANEL_2)
+            .corner_radius(theme::RADIUS_CARD)
+            .inner_margin(egui::Margin::same(theme::CARD_PAD))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
                     ui.label(
-                        egui::RichText::new("工程信息")
+                        egui::RichText::new(t("工程信息"))
                             .size(11.5)
                             .strong()
                             .color(theme::TEXT),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
-                            .small_button("打开工程")
-                            .on_hover_text("在工程窗口中打开")
+                            .small_button(t("打开工程"))
+                            .on_hover_text(t("在工程窗口中打开"))
                             .clicked()
                         {
                             *action = Some(ProjectRowAction::Open);
                         }
                         if ui
-                            .small_button("刷新信息")
-                            .on_hover_text("重新读取工程文件")
+                            .small_button(t("刷新信息"))
+                            .on_hover_text(t("重新读取工程文件"))
                             .clicked()
                         {
                             *action = Some(ProjectRowAction::RefreshInfo);
@@ -896,11 +940,11 @@ impl SurfingApp {
                     });
                 });
                 ui.add_space(4.0);
-                project_detail_row(ui, "路径", &path.display().to_string());
-                project_detail_row(ui, "大小", &format_bytes(bytes));
+                project_detail_row(ui, t("路径"), &path.display().to_string());
+                project_detail_row(ui, t("大小"), &format_bytes(bytes));
                 project_detail_row(
                     ui,
-                    "最近保存",
+                    t("最近保存"),
                     &format!(
                         "{}（{}）",
                         time_fmt::format_datetime(saved_at),
@@ -911,32 +955,40 @@ impl SurfingApp {
                     Some(Ok(summary)) => {
                         project_detail_row(
                             ui,
-                            "工程",
-                            &format!(
+                            t("工程"),
+                            &t_args(
                                 "{} BPM · {}/{} · {} 小节",
-                                summary.bpm.round() as i32,
-                                summary.time_sig.0,
-                                summary.time_sig.1,
-                                (summary.length_beats / summary.beats_per_bar).ceil() as i32
+                                &[
+                                    &(summary.bpm.round() as i32).to_string(),
+                                    &summary.time_sig.0.to_string(),
+                                    &summary.time_sig.1.to_string(),
+                                    &((summary.length_beats / summary.beats_per_bar).ceil() as i32)
+                                        .to_string(),
+                                ],
                             ),
                         );
                         project_detail_row(
                             ui,
-                            "内容",
-                            &format!(
+                            t("内容"),
+                            &t_args(
                                 "{} 轨 · {} 片段 · {} 音符 · {} 插件",
-                                summary.tracks, summary.clips, summary.notes, summary.plugins
+                                &[
+                                    &summary.tracks.to_string(),
+                                    &summary.clips.to_string(),
+                                    &summary.notes.to_string(),
+                                    &summary.plugins.to_string(),
+                                ],
                             ),
                         );
                     }
                     Some(Err(error)) => {
-                        project_detail_row(ui, "读取失败", &error);
+                        project_detail_row(ui, t("读取失败"), &error);
                     }
                     None => {
                         ui.horizontal(|ui| {
                             ui.add(egui::Spinner::new().size(12.0));
                             ui.label(
-                                egui::RichText::new("正在读取工程信息…")
+                                egui::RichText::new(t("正在读取工程信息…"))
                                     .size(10.5)
                                     .color(theme::TEXT_DIM),
                             );
@@ -948,7 +1000,7 @@ impl SurfingApp {
                 ui.separator();
                 ui.add_space(5.0);
                 ui.label(
-                    egui::RichText::new(format!("历史版本（{}）", versions.len()))
+                    egui::RichText::new(t_args("历史版本（{}）", &[&versions.len().to_string()]))
                         .size(11.0)
                         .strong()
                         .color(theme::TEXT),
@@ -956,16 +1008,16 @@ impl SurfingApp {
                 if versions.is_empty() {
                     ui.label(
                         egui::RichText::new(if self.settings.auto_backup {
-                            "保存后会自动在工程目录的 Backups 文件夹保留版本。"
+                            t("保存后会自动在工程目录的 Backups 文件夹保留版本。")
                         } else {
-                            "自动备份已关闭，可在设置 → 存储中开启后保存一次。"
+                            t("自动备份已关闭，可在设置 → 存储中开启后保存一次。")
                         })
                         .size(10.0)
                         .color(theme::TEXT_FAINT),
                     );
                 } else {
                     ui.label(
-                        egui::RichText::new("版本按保存时间从新到旧排列，可直接打开只读查看。")
+                        egui::RichText::new(t("版本按保存时间从新到旧排列，可直接打开只读查看。"))
                             .size(9.5)
                             .color(theme::TEXT_FAINT),
                     );
@@ -986,8 +1038,8 @@ impl SurfingApp {
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
                                     if ui
-                                        .small_button("打开")
-                                        .on_hover_text("打开该历史版本（另存为不会覆盖原工程）")
+                                        .small_button(t("打开"))
+                                        .on_hover_text(t("打开该历史版本（另存为不会覆盖原工程）"))
                                         .clicked()
                                     {
                                         open_version = Some(version.path.clone());
@@ -1055,7 +1107,7 @@ impl SurfingApp {
             Ok(result) => result,
             Err(std::sync::mpsc::TryRecvError::Empty) => return,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                Err("工程信息读取线程中断".to_string())
+                Err(t("工程信息读取线程中断").to_string())
             }
         };
         let path = path.clone();
@@ -1079,28 +1131,30 @@ impl SurfingApp {
     fn ui_home_templates(&mut self, ui: &mut egui::Ui) {
         ui.add_space(2.0);
         ui.label(
-            egui::RichText::new("模板工程")
+            egui::RichText::new(t("模板工程"))
                 .size(HOME_TITLE_SIZE)
                 .strong()
                 .color(theme::TEXT),
         );
         ui.label(
-            egui::RichText::new("从主流音乐风格模板快速开始，或打开更完整的范例工程继续修改。")
-                .size(10.5)
-                .color(theme::TEXT_DIM),
+            egui::RichText::new(t(
+                "从主流音乐风格模板快速开始，或打开更完整的范例工程继续修改。",
+            ))
+            .size(10.5)
+            .color(theme::TEXT_DIM),
         );
         ui.add_space(12.0);
 
         let search_width = ui.available_width().max(160.0);
         ui.add_sized(
-            [search_width, 28.0],
+            [search_width, 32.0],
             egui::TextEdit::singleline(&mut self.home_template_search)
-                .hint_text("搜索风格、标签或音色")
+                .hint_text(t("搜索风格、标签或音色"))
                 .desired_width(search_width),
         );
-        ui.add_space(8.0);
+        ui.add_space(theme::SPACE_SM);
         template_family_filter(ui, &mut self.home_template_family);
-        ui.add_space(10.0);
+        ui.add_space(theme::SPACE_MD);
 
         let filter = self.home_template_search.trim().to_lowercase();
         let family = self.home_template_family;
@@ -1127,13 +1181,13 @@ impl SurfingApp {
                     ui.add_space(40.0);
                     ui.vertical_centered(|ui| {
                         ui.label(
-                            egui::RichText::new("没有匹配的模板")
+                            egui::RichText::new(t("没有匹配的模板"))
                                 .size(13.0)
                                 .color(theme::TEXT_DIM),
                         );
                         ui.add_space(4.0);
                         ui.label(
-                            egui::RichText::new("换一个风格关键词，或选择“全部”家族。")
+                            egui::RichText::new(t("换一个风格关键词，或选择“全部”家族。"))
                                 .size(10.5)
                                 .color(theme::TEXT_FAINT),
                         );
@@ -1168,13 +1222,13 @@ impl SurfingApp {
 
                 ui.add_space(6.0);
                 ui.label(
-                    egui::RichText::new("范例工程")
+                    egui::RichText::new(t("范例工程"))
                         .size(15.0)
                         .strong()
                         .color(theme::TEXT),
                 );
                 ui.label(
-                    egui::RichText::new("16 小节的完整编曲，可直接打开继续修改。")
+                    egui::RichText::new(t("16 小节的完整编曲，可直接打开继续修改。"))
                         .size(10.5)
                         .color(theme::TEXT_DIM),
                 );
@@ -1223,8 +1277,8 @@ impl SurfingApp {
         self.pending_window_actions.push(WindowAction::NewProject {
             template: Some(template),
         });
-        let name = crate::core::model::template::display_name(template).unwrap_or("模板工程");
-        self.status = format!("正在从「{name}」创建工程…");
+        let name = crate::core::model::template::display_name(template).unwrap_or(t("模板工程"));
+        self.status = t_args("正在从「{}」创建工程…", &[name]);
     }
 
     /// 所属模块：app / 主页 / 插件页
@@ -1240,71 +1294,79 @@ impl SurfingApp {
     /// Outputs / side effects: edits the search text and expansion state; may start a plugin scan.
     /// Complexity: O(visible plugins + brands) per frame.
     fn ui_home_plugins(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(2.0);
+        ui.add_space(theme::SPACE_XS);
         ui.label(
-            egui::RichText::new("插件")
+            egui::RichText::new(t("插件"))
                 .size(HOME_TITLE_SIZE)
                 .strong()
                 .color(theme::TEXT),
         );
         ui.label(
-            egui::RichText::new(
-                "按品牌查看已扫描的插件：乐器在上、效果器在下，点击“详情”查看路径与格式。",
-            )
-            .size(10.5)
+            egui::RichText::new(t(
+                "按品牌浏览已扫描的插件；选择一行后在右侧查看路径与能力。",
+            ))
+            .size(theme::FONT_MICRO)
             .color(theme::TEXT_DIM),
         );
-        ui.add_space(12.0);
+        ui.add_space(theme::SPACE_LG);
 
+        // 工具栏只保留类别胶囊与一个“扫描插件”下拉，避免搜索框和三个按钮挤在一行。
+        // The toolbar keeps only kind chips and one scan menu, so the search field and three scan
+        // buttons no longer compete for one row.
         ui.horizontal(|ui| {
-            // 搜索框在左、扫描按钮在右，与项目页保持一致。
-            // The search field sits on the left and the scan buttons on the right, matching the
-            // projects page.
-            let buttons_width = 300.0;
-            let search_width = (ui.available_width() - buttons_width - 12.0).max(160.0);
-            ui.add_sized(
-                [search_width, 28.0],
-                egui::TextEdit::singleline(&mut self.home_plugin_search)
-                    .hint_text("搜索插件、品牌或类型")
-                    .desired_width(search_width),
-            );
+            for (kind, label) in [
+                (None, t("全部")),
+                (Some(PluginKind::Instrument), t("乐器")),
+                (Some(PluginKind::Effect), t("效果器")),
+            ] {
+                if theme::chip(ui, label, self.home_plugin_kind == kind).clicked() {
+                    self.home_plugin_kind = kind;
+                }
+                ui.add_space(theme::SPACE_XS);
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .add_enabled(!self.scanning, egui::Button::new("扫描全部"))
-                    .clicked()
-                {
-                    self.start_scan();
-                }
-                if ui
-                    .add_enabled(!self.scanning, egui::Button::new("仅 VST3"))
-                    .clicked()
-                {
-                    self.scan_vst3_only();
-                }
-                if ui
-                    .add_enabled(!self.scanning, egui::Button::new("仅 VST2 / VST"))
-                    .clicked()
-                {
-                    self.scan_legacy_only();
-                }
                 if self.scanning {
                     ui.add(egui::Spinner::new().size(14.0));
+                    ui.add_space(theme::SPACE_SM);
                 }
+                let scan = theme::dropdown_button_filled(ui, t("扫描插件"));
+                egui::Popup::menu(&scan).show(|ui| {
+                    ui.set_min_width(150.0);
+                    if theme::menu_button(ui, t("扫描全部"), "").clicked() {
+                        self.start_scan();
+                        ui.close();
+                    }
+                    if theme::menu_button(ui, t("仅 VST3"), "").clicked() {
+                        self.scan_vst3_only();
+                        ui.close();
+                    }
+                    if theme::menu_button(ui, t("仅 VST2 / VST"), "").clicked() {
+                        self.scan_legacy_only();
+                        ui.close();
+                    }
+                });
             });
         });
-        ui.add_space(8.0);
+        ui.add_space(theme::SPACE_MD);
+        ui.add_sized(
+            [ui.available_width(), 32.0],
+            egui::TextEdit::singleline(&mut self.home_plugin_search)
+                .hint_text(t("搜索插件、品牌或类型"))
+                .desired_width(f32::INFINITY),
+        );
+        ui.add_space(theme::SPACE_SM);
 
         let filter = self.home_plugin_search.trim().to_lowercase();
+        let kind_filter = self.home_plugin_kind;
         let plugins: Vec<ScannedPlugin> = self
             .plugin_cache
             .iter()
             .filter(|plugin| {
-                if filter.is_empty() {
-                    return true;
-                }
-                plugin.name.to_lowercase().contains(&filter)
-                    || plugin.vendor.to_lowercase().contains(&filter)
-                    || plugin.category.to_lowercase().contains(&filter)
+                kind_filter.is_none_or(|kind| plugin.kind == kind)
+                    && (filter.is_empty()
+                        || plugin.name.to_lowercase().contains(&filter)
+                        || plugin.vendor.to_lowercase().contains(&filter)
+                        || plugin.category.to_lowercase().contains(&filter))
             })
             .cloned()
             .collect();
@@ -1316,50 +1378,54 @@ impl SurfingApp {
             .iter()
             .filter(|plugin| plugin.kind == PluginKind::Effect)
             .count();
-
         ui.label(
-            egui::RichText::new(format!(
-                "共 {} 个插件：乐器 {instruments} · 效果器 {effects} · 未知 {}",
-                plugins.len(),
-                plugins.len().saturating_sub(instruments + effects)
+            egui::RichText::new(t_args(
+                "共 {} 个插件 · 乐器 {} · 效果器 {}",
+                &[
+                    &plugins.len().to_string(),
+                    &instruments.to_string(),
+                    &effects.to_string(),
+                ],
             ))
-            .size(10.0)
+            .size(theme::FONT_MICRO)
             .color(theme::TEXT_FAINT),
         );
-        ui.add_space(4.0);
+        ui.add_space(theme::SPACE_SM);
 
         if plugins.is_empty() {
-            ui.add_space(50.0);
-            ui.vertical_centered(|ui| {
-                ui.label(
-                    egui::RichText::new(if self.scanning {
-                        "正在扫描插件…"
-                    } else {
-                        "还没有插件记录"
-                    })
-                    .size(13.0)
-                    .color(theme::TEXT_DIM),
-                );
-                ui.add_space(4.0);
-                ui.label(
-                    egui::RichText::new("点击右上角按钮扫描默认插件目录。")
-                        .size(10.5)
-                        .color(theme::TEXT_FAINT),
-                );
+            theme::card_frame().show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.add_space(theme::SPACE_LG);
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        egui::RichText::new(if self.scanning {
+                            t("正在扫描插件…")
+                        } else {
+                            t("还没有插件记录")
+                        })
+                        .size(theme::FONT_BODY)
+                        .color(theme::TEXT_DIM),
+                    );
+                    ui.add_space(theme::SPACE_XS);
+                    ui.label(
+                        egui::RichText::new(t("点击右上角「扫描插件」选择扫描范围。"))
+                            .size(theme::FONT_MICRO)
+                            .color(theme::TEXT_FAINT),
+                    );
+                });
+                ui.add_space(theme::SPACE_LG);
             });
             return;
         }
 
-        // 按品牌分组：品牌内再分乐器、效果器与未知，满足“乐器在上、效果器在下”。
-        // Group by brand, then split into instruments, effects and unknown so instruments stay on top.
+        // 按品牌分组；组内乐器在上、效果器在下，同类按名称排序。
+        // Group by brand; instruments go before effects inside a group and each kind sorts by name.
         struct BrandGroup {
             brand: String,
-            instruments: Vec<ScannedPlugin>,
-            effects: Vec<ScannedPlugin>,
-            unknown: Vec<ScannedPlugin>,
+            plugins: Vec<ScannedPlugin>,
         }
         let mut groups: Vec<BrandGroup> = Vec::new();
-        for plugin in plugins {
+        for plugin in &plugins {
             let brand = if plugin.vendor.trim().is_empty() {
                 UNLABELED_VENDOR.to_string()
             } else {
@@ -1371,95 +1437,73 @@ impl SurfingApp {
                 .unwrap_or_else(|| {
                     groups.push(BrandGroup {
                         brand,
-                        instruments: Vec::new(),
-                        effects: Vec::new(),
-                        unknown: Vec::new(),
+                        plugins: Vec::new(),
                     });
                     groups.len() - 1
                 });
-            match plugin.kind {
-                PluginKind::Instrument => groups[index].instruments.push(plugin),
-                PluginKind::Effect => groups[index].effects.push(plugin),
-                PluginKind::Unknown => groups[index].unknown.push(plugin),
-            }
+            groups[index].plugins.push(plugin.clone());
         }
-        // 每帧都会重建列表：缓存排序键，避免每次比较都分配一个小写字符串。
-        // The list is rebuilt every frame: cache sort keys instead of allocating a lowercase
-        // string on every comparison.
         for group in &mut groups {
-            group
-                .instruments
-                .sort_by_cached_key(|plugin| plugin.name.to_lowercase());
-            group
-                .effects
-                .sort_by_cached_key(|plugin| plugin.name.to_lowercase());
-            group
-                .unknown
-                .sort_by_cached_key(|plugin| plugin.name.to_lowercase());
+            group.plugins.sort_by_cached_key(|plugin| {
+                (
+                    match plugin.kind {
+                        PluginKind::Instrument => 0,
+                        PluginKind::Effect => 1,
+                        PluginKind::Unknown => 2,
+                    },
+                    plugin.name.to_lowercase(),
+                )
+            });
         }
         groups.sort_by_cached_key(|group| group.brand.to_lowercase());
 
-        let mut toggle_brand: Option<String> = None;
-        let mut toggle_plugin: Vec<PathBuf> = Vec::new();
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 for group in &groups {
-                    let collapsed = self.home_plugin_collapsed.contains(&group.brand);
-                    if plugin_brand_header(
-                        ui,
-                        &group.brand,
-                        group.instruments.len(),
-                        group.effects.len(),
-                        group.unknown.len(),
-                        collapsed,
-                    )
-                    .clicked()
+                    let brand_id = ui.make_persistent_id(("plugin-brand", &group.brand));
+                    let mut brand_state =
+                        egui::collapsing_header::CollapsingState::load_with_default_open(
+                            ui.ctx(),
+                            brand_id,
+                            true,
+                        );
+                    let brand_openness = brand_state.openness(ui.ctx());
+                    if plugin_brand_header(ui, &group.brand, group.plugins.len(), brand_openness)
+                        .clicked()
                     {
-                        toggle_brand = Some(group.brand.clone());
+                        brand_state.toggle(ui);
                     }
-                    if collapsed {
+                    brand_state.store(ui.ctx());
+                    if !brand_state.is_open() && brand_openness <= 0.0 {
                         continue;
                     }
-                    for (label, entries) in [
-                        ("乐器", &group.instruments),
-                        ("效果器", &group.effects),
-                        ("未知", &group.unknown),
-                    ] {
-                        if entries.is_empty() {
-                            continue;
-                        }
-                        ui.add_space(4.0);
-                        ui.label(
-                            egui::RichText::new(format!("{label} · {}", entries.len()))
-                                .size(10.5)
-                                .strong()
-                                .color(if label == "乐器" {
-                                    theme::ACCENT
-                                } else {
-                                    theme::TEXT_DIM
-                                }),
-                        );
-                        for plugin in entries {
-                            let expanded = self.home_plugin_expanded.contains(&plugin.path);
-                            if home_plugin_row(ui, plugin, expanded) {
-                                toggle_plugin.push(plugin.path.clone());
+                    brand_state.show_body_unindented(ui, |ui| {
+                        ui.add_space(theme::SPACE_XS);
+                        for plugin in &group.plugins {
+                            let row_id = ui.make_persistent_id(("plugin-row", &plugin.path));
+                            let mut row_state =
+                                egui::collapsing_header::CollapsingState::load_with_default_open(
+                                    ui.ctx(),
+                                    row_id,
+                                    false,
+                                );
+                            let row_openness = row_state.openness(ui.ctx());
+                            if home_plugin_row(ui, plugin, row_openness) {
+                                row_state.toggle(ui);
                             }
+                            row_state.store(ui.ctx());
+                            if !row_state.is_open() && row_openness <= 0.0 {
+                                continue;
+                            }
+                            row_state.show_body_unindented(ui, |ui| {
+                                plugin_detail_body(ui, plugin);
+                            });
                         }
-                    }
-                    ui.add_space(8.0);
+                    });
+                    ui.add_space(theme::SPACE_MD);
                 }
             });
-        if let Some(brand) = toggle_brand {
-            if !self.home_plugin_collapsed.remove(&brand) {
-                self.home_plugin_collapsed.insert(brand);
-            }
-        }
-        for path in toggle_plugin {
-            if !self.home_plugin_expanded.remove(&path) {
-                self.home_plugin_expanded.insert(path);
-            }
-        }
     }
 
     /// 所属模块：app / 主页 / 提示页
@@ -1477,7 +1521,7 @@ impl SurfingApp {
         let tips: [(String, &str); 6] = [
             (
                 self.settings.shortcut_label(ShortcutAction::PlayPause),
-                "播放 / 暂停。焦点在插件窗口或浮动卷帘时同样有效。",
+                t("播放 / 暂停。焦点在插件窗口或浮动卷帘时同样有效。"),
             ),
             (
                 format!(
@@ -1486,11 +1530,11 @@ impl SurfingApp {
                     self.settings.shortcut_label(ShortcutAction::Open),
                     self.settings.shortcut_label(ShortcutAction::New)
                 ),
-                "保存、打开与新建工程。",
+                t("保存、打开与新建工程。"),
             ),
             (
                 self.settings.shortcut_label(ShortcutAction::PluginBrowser),
-                "打开插件浏览器，管理 VST3 / VST2 插件。",
+                t("打开插件浏览器，管理 VST3 / VST2 插件。"),
             ),
             (
                 format!(
@@ -1498,28 +1542,28 @@ impl SurfingApp {
                     self.settings.shortcut_label(ShortcutAction::ControllerRoll),
                     self.settings.shortcut_label(ShortcutAction::EffectsRoll)
                 ),
-                "打开当前轨道的控制器卷帘 / 效果器链卷帘。",
+                t("打开当前轨道的控制器卷帘 / 效果器链卷帘。"),
             ),
             (
-                "双击片段或子轨".to_string(),
-                "进入钢琴卷帘、控制器或效果器编辑；单击只选中。",
+                t("双击片段或子轨").to_string(),
+                t("进入钢琴卷帘、控制器或效果器编辑；单击只选中。"),
             ),
             (
-                "拖入 WAV".to_string(),
-                "在轨道上创建音频片段；拖到空白处会自动新建音频轨道。",
+                t("拖入 WAV").to_string(),
+                t("在轨道上创建音频片段；拖到空白处会自动新建音频轨道。"),
             ),
         ];
         ui.add_space(2.0);
         ui.label(
-            egui::RichText::new("提示")
+            egui::RichText::new(t("提示"))
                 .size(HOME_TITLE_SIZE)
                 .strong()
                 .color(theme::TEXT),
         );
         ui.label(
-            egui::RichText::new(format!(
+            egui::RichText::new(t_args(
                 "常用操作与快捷键，完整说明见帮助窗口（{}）。",
-                self.settings.shortcut_label(ShortcutAction::Help)
+                &[&self.settings.shortcut_label(ShortcutAction::Help)],
             ))
             .size(10.5)
             .color(theme::TEXT_DIM),
@@ -1568,13 +1612,13 @@ impl SurfingApp {
     /// Complexity: O(projects) time (only when missing) and O(1) space.
     pub(super) fn open_recent_project(&mut self, path: PathBuf) {
         if self.load_rx.is_some() || self.dialog_rx.is_some() {
-            self.status = "正在加载工程，请稍候…".into();
+            self.status = t("正在加载工程，请稍候…").into();
             return;
         }
         if !path.is_file() {
             self.settings.remove_recent(&path);
             self.commit_settings();
-            self.status = format!("项目不存在：{}", path.display());
+            self.status = t_args("项目不存在：{}", &[&path.display().to_string()]);
             return;
         }
         self.pending_window_actions
@@ -1707,7 +1751,7 @@ fn format_bytes(bytes: u64) -> String {
 fn format_version_name(path: &Path) -> String {
     path.file_stem()
         .map(|stem| stem.to_string_lossy().to_string())
-        .unwrap_or_else(|| "版本".into())
+        .unwrap_or_else(|| t("版本").into())
 }
 
 /// 所属模块：app / 主页 / 侧栏
@@ -1779,23 +1823,71 @@ fn paint_chevron(
 }
 
 /// 所属模块：app / 主页 / 侧栏
-/// 功能：返回主页菜单项的中文名称。
+/// 功能：返回主页菜单项的当前语言名称。
 /// 输入：`page`：菜单页面。
 /// 输出/副作用：返回静态文本；不修改状态。
 /// 复杂度：时间 O(1)，空间 O(1)。
 ///
 /// Module: app / home page / sidebar
-/// Purpose: Return the Chinese label of a home menu entry.
+/// Purpose: Return the home menu label in the active language.
 /// Inputs: `page`: menu page.
 /// Outputs / side effects: static text; no state change.
 /// Complexity: O(1) time and space.
 fn home_page_label(page: HomePage) -> &'static str {
     match page {
-        HomePage::Projects => "项目",
-        HomePage::Templates => "模板",
-        HomePage::Plugins => "插件",
-        HomePage::Tips => "提示",
+        HomePage::Projects => t("项目"),
+        HomePage::Templates => t("模板"),
+        HomePage::Plugins => t("插件"),
+        HomePage::Tips => t("提示"),
+        HomePage::Agents => "Agent",
+        HomePage::AgentBasics => t("基础"),
+        HomePage::AgentTechniques => t("技能"),
+        HomePage::AgentInstruments => t("乐器"),
     }
+}
+
+/// 所属模块：app / 主页 / 侧栏
+/// 功能：绘制 Agent 下拉中的缩进子项（基础 / 技能 / 乐器）。
+/// 输入：
+/// - `ui`：侧栏绘制上下文；
+/// - `label`：子项名称；
+/// - `selected`：是否为当前页面。
+/// 输出/副作用：分配整行并绘制；点击由调用方处理。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: app / home page / sidebar
+/// Purpose: Draw an indented Agent submenu entry (basics / techniques / instruments).
+/// Inputs:
+/// - `ui`: sidebar paint context;
+/// - `label`: entry label;
+/// - `selected`: whether it is the active page.
+/// Outputs / side effects: allocates the row and paints; the caller handles clicks.
+/// Complexity: O(1) time and space.
+fn home_sub_nav_item(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Response {
+    let width = ui.available_width();
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 24.0), egui::Sense::click());
+    let hovered = response.hovered();
+    let painter = ui.painter();
+    if selected {
+        painter.rect_filled(rect, egui::CornerRadius::from(4), theme::ACCENT_DARK);
+    } else if hovered {
+        painter.rect_filled(rect, egui::CornerRadius::from(4), theme::PANEL_3);
+    }
+    let color = if selected {
+        egui::Color32::WHITE
+    } else if hovered {
+        theme::TEXT
+    } else {
+        theme::TEXT_DIM
+    };
+    painter.text(
+        egui::pos2(rect.left() + 44.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        egui::FontId::proportional(12.0),
+        color,
+    );
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// 所属模块：app / 主页 / 侧栏
@@ -1813,9 +1905,15 @@ fn home_page_label(page: HomePage) -> &'static str {
 /// - `ui`: sidebar paint context.
 /// - `page`: menu page.
 /// - `selected`: whether this page is active.
+/// - `expanded`: whether the Agent submenu is open; the chevron flips with it.
 /// Outputs / side effects: allocates the full row and paints; the caller handles clicks.
 /// Complexity: O(1) time and space.
-fn home_nav_item(ui: &mut egui::Ui, page: HomePage, selected: bool) -> egui::Response {
+fn home_nav_item(
+    ui: &mut egui::Ui,
+    page: HomePage,
+    selected: bool,
+    expanded: bool,
+) -> egui::Response {
     let width = ui.available_width();
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, NAV_H), egui::Sense::click());
     let hovered = response.hovered();
@@ -1850,6 +1948,22 @@ fn home_nav_item(ui: &mut egui::Ui, page: HomePage, selected: bool) -> egui::Res
         egui::FontId::proportional(12.5),
         color,
     );
+    // Agent 是下拉入口：左侧入口在收起时指向右，展开时向下；箭头随状态补间旋转。
+    // Agent is a disclosure entry at the left edge: right when closed, down when open; the chevron
+    // tweens with the state.
+    if page == HomePage::Agents {
+        let openness = ui.ctx().animate_bool_with_time(
+            ui.make_persistent_id("home-agent-nav-arrow"),
+            expanded,
+            theme::DROPDOWN_ANIM_SECS,
+        );
+        theme::paint_dropdown_angle(
+            painter,
+            egui::pos2(rect.right() - 13.0, rect.center().y),
+            std::f32::consts::FRAC_PI_2 * (1.0 - openness),
+            color,
+        );
+    }
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
@@ -1936,6 +2050,30 @@ fn home_nav_icon(painter: &egui::Painter, rect: egui::Rect, page: HomePage, colo
                 stroke,
             );
         }
+        HomePage::Agents
+        | HomePage::AgentBasics
+        | HomePage::AgentTechniques
+        | HomePage::AgentInstruments => {
+            // Agent 图标：一个头像轮廓 + 右侧三点，表示可管理的智能体资料。
+            // Agent icon: a head outline with three dots, representing managed agent assets.
+            painter.circle_stroke(egui::pos2(rect.left() + 5.0, rect.top() + 4.5), 3.0, stroke);
+            painter.add(egui::Shape::line(
+                vec![
+                    egui::pos2(rect.left() + 1.0, rect.bottom() - 1.5),
+                    egui::pos2(rect.left() + 3.5, rect.bottom() - 5.0),
+                    egui::pos2(rect.left() + 6.5, rect.bottom() - 5.0),
+                    egui::pos2(rect.left() + 9.0, rect.bottom() - 1.5),
+                ],
+                stroke,
+            ));
+            for row in 0..3 {
+                painter.circle_filled(
+                    egui::pos2(rect.right() - 2.0, rect.top() + 4.0 + row as f32 * 3.5),
+                    0.9,
+                    color,
+                );
+            }
+        }
     }
 }
 
@@ -1957,7 +2095,7 @@ fn home_nav_icon(painter: &egui::Painter, rect: egui::Rect, page: HomePage, colo
 /// Complexity: O(families) per frame.
 fn template_family_filter(ui: &mut egui::Ui, selected: &mut Option<TemplateFamily>) {
     ui.horizontal_wrapped(|ui| {
-        if template_filter_chip(ui, "全部", selected.is_none()).clicked() {
+        if template_filter_chip(ui, t("全部"), selected.is_none()).clicked() {
             *selected = None;
         }
         for family in TemplateFamily::ALL {
@@ -1986,28 +2124,7 @@ fn template_family_filter(ui: &mut egui::Ui, selected: &mut Option<TemplateFamil
 /// Outputs / side effects: the button response; no state change.
 /// Complexity: O(1) time and space.
 fn template_filter_chip(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Response {
-    let fill = if selected {
-        theme::ACCENT_DARK
-    } else {
-        theme::PANEL_2
-    };
-    let stroke = if selected {
-        egui::Stroke::new(1.0_f32, theme::ACCENT)
-    } else {
-        egui::Stroke::new(1.0_f32, theme::LINE)
-    };
-    let color = if selected {
-        egui::Color32::WHITE
-    } else {
-        theme::TEXT_DIM
-    };
-    ui.add(
-        egui::Button::new(egui::RichText::new(label).size(11.0).color(color))
-            .fill(fill)
-            .stroke(stroke)
-            .min_size(egui::vec2(52.0, 22.0)),
-    )
-    .on_hover_cursor(egui::CursorIcon::PointingHand)
+    theme::chip(ui, label, selected)
 }
 
 /// 所属模块：app / 主页 / 模板页
@@ -2035,19 +2152,21 @@ fn template_card(ui: &mut egui::Ui, template: &MusicTemplate, width: f32) -> egu
     let painter = ui.painter();
     painter.rect_filled(
         rect,
-        egui::CornerRadius::from(6),
+        egui::CornerRadius::from(theme::RADIUS_CARD),
         if hovered {
             theme::PANEL_3
         } else {
             theme::PANEL_2
         },
     );
-    painter.rect_stroke(
-        rect,
-        egui::CornerRadius::from(6),
-        egui::Stroke::new(1.0_f32, if hovered { theme::ACCENT } else { theme::LINE }),
-        egui::StrokeKind::Inside,
-    );
+    if hovered {
+        painter.rect_stroke(
+            rect,
+            egui::CornerRadius::from(theme::RADIUS_CARD),
+            egui::Stroke::new(1.0_f32, theme::ACCENT),
+            egui::StrokeKind::Inside,
+        );
+    }
     painter.rect_filled(
         egui::Rect::from_min_size(
             egui::pos2(rect.left() + 10.0, rect.top() + 12.0),
@@ -2066,11 +2185,13 @@ fn template_card(ui: &mut egui::Ui, template: &MusicTemplate, width: f32) -> egu
     painter.text(
         egui::pos2(rect.left() + 22.0, rect.top() + 29.0),
         egui::Align2::LEFT_TOP,
-        format!(
+        t_args(
             "{} · {} BPM · 4/4 · {} 小节",
-            template.style,
-            template.bpm.round() as i32,
-            template.bars
+            &[
+                template.style,
+                &(template.bpm.round() as i32).to_string(),
+                &template.bars.to_string(),
+            ],
         ),
         egui::FontId::proportional(9.5),
         theme::TEXT_FAINT,
@@ -2121,7 +2242,7 @@ fn template_card(ui: &mut egui::Ui, template: &MusicTemplate, width: f32) -> egu
     painter.text(
         button.center(),
         egui::Align2::CENTER_CENTER,
-        "创建",
+        t("创建"),
         egui::FontId::proportional(10.5),
         egui::Color32::WHITE,
     );
@@ -2157,19 +2278,21 @@ fn example_card(ui: &mut egui::Ui, example: &ExampleProject, width: f32) -> egui
     let painter = ui.painter();
     painter.rect_filled(
         rect,
-        egui::CornerRadius::from(6),
+        egui::CornerRadius::from(theme::RADIUS_CARD),
         if hovered {
             theme::PANEL_3
         } else {
             theme::PANEL_2
         },
     );
-    painter.rect_stroke(
-        rect,
-        egui::CornerRadius::from(6),
-        egui::Stroke::new(1.0_f32, if hovered { theme::ACCENT } else { theme::LINE }),
-        egui::StrokeKind::Inside,
-    );
+    if hovered {
+        painter.rect_stroke(
+            rect,
+            egui::CornerRadius::from(theme::RADIUS_CARD),
+            egui::Stroke::new(1.0_f32, theme::ACCENT),
+            egui::StrokeKind::Inside,
+        );
+    }
     painter.rect_filled(
         egui::Rect::from_min_size(
             egui::pos2(rect.left() + 10.0, rect.top() + 12.0),
@@ -2180,7 +2303,7 @@ fn example_card(ui: &mut egui::Ui, example: &ExampleProject, width: f32) -> egui
     );
     let template_name = template::find_template(example.template_id)
         .map(|template| template.name)
-        .unwrap_or("模板");
+        .unwrap_or(t("模板"));
     painter.text(
         egui::pos2(rect.left() + 22.0, rect.top() + 10.0),
         egui::Align2::LEFT_TOP,
@@ -2191,7 +2314,10 @@ fn example_card(ui: &mut egui::Ui, example: &ExampleProject, width: f32) -> egui
     painter.text(
         egui::pos2(rect.left() + 22.0, rect.top() + 28.0),
         egui::Align2::LEFT_TOP,
-        format!("{template_name} · {} 小节 · 范例", example.bars),
+        t_args(
+            "{} · {} 小节 · 范例",
+            &[template_name, &example.bars.to_string()],
+        ),
         egui::FontId::proportional(9.5),
         theme::TEXT_FAINT,
     );
@@ -2227,7 +2353,7 @@ fn example_card(ui: &mut egui::Ui, example: &ExampleProject, width: f32) -> egui
     painter.text(
         button.center(),
         egui::Align2::CENTER_CENTER,
-        "打开",
+        t("打开"),
         egui::FontId::proportional(10.5),
         egui::Color32::WHITE,
     );
@@ -2237,31 +2363,50 @@ fn example_card(ui: &mut egui::Ui, example: &ExampleProject, width: f32) -> egui
 }
 
 /// 所属模块：app / 主页 / 插件页
-/// 功能：绘制一个插件品牌标题行：展开箭头、品牌名与各类数量；默认展开。
+/// 功能：返回插件类别对应的强调色：乐器蓝、效果器琥珀、未知灰。
+/// 输入：`kind` 插件类别。
+/// 输出/副作用：颜色常量；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: app / home page / plugins
+/// Purpose: Return the accent color of a plugin kind: blue for instruments, amber for effects and
+/// grey for unknown.
+/// Inputs: `kind`.
+/// Outputs / side effects: a color constant; no state change.
+/// Complexity: O(1) time and space.
+fn plugin_kind_color(kind: PluginKind) -> egui::Color32 {
+    match kind {
+        PluginKind::Instrument => theme::ACCENT,
+        PluginKind::Effect => theme::AMBER,
+        PluginKind::Unknown => theme::TEXT_FAINT,
+    }
+}
+
+/// 所属模块：app / 主页 / 插件页
+/// 功能：绘制一个插件品牌标题行：左侧箭头、品牌名与插件数量；箭头随展开进度从右向下旋转。
 /// 输入：
 /// - `ui`：插件列表。
 /// - `brand`：品牌名。
-/// - `instruments` / `effects` / `unknown`：三类插件数量。
-/// - `collapsed`：是否收起。
+/// - `count`：当前筛选下该品牌的插件数量。
+/// - `openness`：展开进度（0 收起，1 展开）。
 /// 输出/副作用：分配整行并绘制；返回点击响应。
 /// 复杂度：时间 O(文本长度)，空间 O(文本长度)。
 ///
 /// Module: app / home page / plugins
-/// Purpose: Draw one plugin brand header: chevron, brand name and per-kind counts; expanded by default.
+/// Purpose: Draw one plugin brand header: left chevron, brand name and plugin count; the chevron
+/// rotates from right to down with the expansion progress.
 /// Inputs:
 /// - `ui`: plugin list.
 /// - `brand`: brand name.
-/// - `instruments` / `effects` / `unknown`: plugin counts per kind.
-/// - `collapsed`: whether the brand is collapsed.
+/// - `count`: plugins of this brand under the current filter.
+/// - `openness`: expansion progress (0 closed, 1 open).
 /// Outputs / side effects: allocates and paints the row; returns the click response.
 /// Complexity: O(text length) time and space.
 fn plugin_brand_header(
     ui: &mut egui::Ui,
     brand: &str,
-    instruments: usize,
-    effects: usize,
-    unknown: usize,
-    collapsed: bool,
+    count: usize,
+    openness: f32,
 ) -> egui::Response {
     let width = ui.available_width();
     let (rect, response) =
@@ -2269,179 +2414,246 @@ fn plugin_brand_header(
     let hovered = response.hovered();
     let painter = ui.painter();
     if hovered {
-        painter.rect_filled(rect, egui::CornerRadius::from(4), theme::PANEL_2);
+        painter.rect_filled(rect, egui::CornerRadius::from(8), theme::PANEL_2);
     }
-    paint_chevron(
+    theme::paint_dropdown_angle(
         painter,
-        egui::pos2(rect.left() + 12.0, rect.center().y),
-        !collapsed,
+        egui::pos2(rect.left() + 10.0, rect.center().y),
+        -std::f32::consts::FRAC_PI_2 * (1.0 - openness),
         theme::TEXT_DIM,
     );
     painter.text(
-        egui::pos2(rect.left() + 26.0, rect.center().y),
+        egui::pos2(rect.left() + 24.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
         brand,
-        egui::FontId::proportional(12.5),
+        egui::FontId::proportional(theme::FONT_BODY),
         theme::TEXT,
     );
-    let mut counts = format!("乐器 {instruments} · 效果器 {effects}");
-    if unknown > 0 {
-        counts.push_str(&format!(" · 未知 {unknown}"));
-    }
     painter.text(
         egui::pos2(rect.right() - 12.0, rect.center().y),
         egui::Align2::RIGHT_CENTER,
-        counts,
-        egui::FontId::proportional(10.0),
+        count.to_string(),
+        egui::FontId::proportional(theme::FONT_MICRO),
         theme::TEXT_FAINT,
-    );
-    painter.hline(
-        rect.left()..=rect.right(),
-        rect.bottom(),
-        egui::Stroke::new(1.0_f32, theme::LINE),
     );
     response
         .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text(if collapsed {
-            "点击展开该品牌的插件"
+        .on_hover_text(if openness > 0.5 {
+            t("点击收起该品牌的插件")
         } else {
-            "点击收起该品牌的插件"
+            t("点击展开该品牌的插件")
         })
 }
 
 /// 所属模块：app / 主页 / 插件页
-/// 功能：绘制一条插件：类型、分类、格式等标签 + 名称，右侧“详情”按钮展开路径与元数据。
+/// 功能：绘制一条紧凑插件行：类别圆点、名称、厂商 · 格式与一个类别标签；右侧箭头随展开进度
+/// 从左向下旋转，点击展开内联详情。
 /// 输入：
 /// - `ui`：插件列表。
 /// - `plugin`：扫描记录。
-/// - `expanded`：是否展开详情。
-/// 输出/副作用：分配卡片并绘制；返回是否点击了“详情”。
-/// 复杂度：时间 O(文本长度)，空间 O(文本长度)。
+/// - `openness`：详情展开进度（0 收起，1 展开）。
+/// 输出/副作用：分配整行并绘制；返回是否点击。
+/// 复杂度：时间 O(文本长度)，空间 O(1)。
 ///
 /// Module: app / home page / plugins
-/// Purpose: Draw one plugin: kind/category/format tags + name, with a “detail” button that expands
-/// the path and metadata.
+/// Purpose: Draw one compact plugin row: kind dot, name, vendor · format and a single kind tag. The
+/// right chevron rotates from left to down with the expansion progress; clicking reveals inline
+/// details.
 /// Inputs:
 /// - `ui`: plugin list.
 /// - `plugin`: scan record.
-/// - `expanded`: whether the details are open.
-/// Outputs / side effects: allocates and paints the card; returns whether “detail” was clicked.
-/// Complexity: O(text length) time and space.
-fn home_plugin_row(ui: &mut egui::Ui, plugin: &ScannedPlugin, expanded: bool) -> bool {
+/// - `openness`: detail expansion progress (0 closed, 1 open).
+/// Outputs / side effects: allocates and paints the row; returns whether it was clicked.
+/// Complexity: O(text length) time and O(1) space.
+fn home_plugin_row(ui: &mut egui::Ui, plugin: &ScannedPlugin, openness: f32) -> bool {
     let width = ui.available_width();
     let (rect, response) =
         ui.allocate_exact_size(egui::vec2(width, PLUGIN_ROW_H), egui::Sense::click());
     let hovered = response.hovered();
-    if hovered || expanded {
-        ui.painter()
-            .rect_filled(rect, egui::CornerRadius::from(4), theme::PANEL_2);
+    let painter = ui.painter();
+    if hovered || openness > 0.01 {
+        painter.rect_filled(rect, egui::CornerRadius::from(8), theme::PANEL_2);
     }
-    let content_rect = rect.shrink2(egui::vec2(8.0, 0.0));
+    if openness > 0.01 {
+        painter.rect_filled(
+            egui::Rect::from_min_size(
+                egui::pos2(rect.left(), rect.top() + 14.0),
+                egui::vec2(3.0, rect.height() - 28.0),
+            ),
+            egui::CornerRadius::from(2),
+            theme::with_alpha(theme::ACCENT, (openness * 255.0) as u8),
+        );
+    }
+    let kind_color = plugin_kind_color(plugin.kind);
+    let content_rect = egui::Rect::from_min_max(
+        egui::pos2(rect.left() + 12.0, rect.top()),
+        egui::pos2(rect.right() - 28.0, rect.bottom()),
+    );
     ui.scope_builder(egui::UiBuilder::new().max_rect(content_rect), |ui| {
         ui.horizontal_centered(|ui| {
-            let kind_color = match plugin.kind {
-                PluginKind::Instrument => theme::ACCENT,
-                PluginKind::Effect => theme::AMBER,
-                PluginKind::Unknown => theme::TEXT_FAINT,
-            };
-            // 名称在前、标签在后：先读插件名，再读它的类型信息，符合从左到右的阅读顺序。
-            // Name first, tags afterwards: the plugin is identified before its metadata is read.
+            let (dot, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+            ui.painter().circle_filled(dot.center(), 3.5, kind_color);
+            ui.add_space(theme::SPACE_SM);
+            let text_width = (ui.available_width() - 84.0).max(80.0);
             ui.allocate_ui_with_layout(
-                egui::vec2(PLUGIN_NAME_W, ui.available_height()),
-                egui::Layout::left_to_right(egui::Align::Center),
+                egui::vec2(text_width, ui.available_height()),
+                egui::Layout::top_down(egui::Align::Min),
                 |ui| {
+                    ui.add_space(8.0);
                     ui.add(
                         egui::Label::new(
                             egui::RichText::new(&plugin.name)
-                                .size(11.5)
+                                .size(theme::FONT_BODY)
                                 .color(theme::TEXT),
                         )
                         .truncate(),
                     );
+                    let vendor = if plugin.vendor.trim().is_empty() {
+                        t("未标注厂商")
+                    } else {
+                        plugin.vendor.trim()
+                    };
+                    ui.label(
+                        egui::RichText::new(format!("{vendor} · {}", plugin.format.label()))
+                            .size(theme::FONT_MICRO)
+                            .color(theme::TEXT_FAINT),
+                    );
                 },
             );
-            theme::badge(ui, plugin.kind.label(), kind_color);
-            theme::badge(
-                ui,
-                plugin.format.label(),
-                if plugin.format == crate::core::model::PluginFormat::Vst3 {
-                    theme::ACCENT
-                } else {
-                    theme::AMBER
-                },
-            );
-            let category = if plugin.category.trim().is_empty() {
-                "未分类"
-            } else {
-                plugin.category.trim()
-            };
-            theme::badge(ui, category, theme::TEXT_DIM);
-            if plugin.has_midi_input {
-                theme::badge(ui, "MIDI", theme::TEXT_DIM);
-            }
-            if plugin.has_gui {
-                theme::badge(ui, "GUI", theme::ACCENT);
-            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                theme::badge(ui, plugin.kind.label(), kind_color);
+            });
         });
     });
-    paint_chevron(
+    theme::paint_dropdown_angle(
         ui.painter(),
         egui::pos2(rect.right() - 14.0, rect.center().y),
-        expanded,
-        theme::TEXT_DIM,
+        std::f32::consts::FRAC_PI_2 * (1.0 - openness),
+        if openness > 0.5 {
+            theme::ACCENT
+        } else {
+            theme::TEXT_DIM
+        },
     );
-    let toggled = response
+    response
         .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text(format!(
-            "{}\n{}\n点击查看插件详情",
-            plugin.name,
-            plugin.path.display()
+        .on_hover_text(t_args(
+            "{}\n{}\n点击展开插件详情",
+            &[&plugin.name, &plugin.path.display().to_string()],
         ))
-        .clicked();
-    if expanded {
+        .clicked()
+}
+
+/// 所属模块：app / 主页 / 插件页
+/// 功能：绘制插件行下方展开的内联详情卡片：左侧路径与标识，右侧厂商、分类与能力。
+/// 输入：`ui`：详情区域；`plugin`：扫描记录。
+/// 输出/副作用：只绘制；不修改状态。
+/// 复杂度：时间 O(文本长度)，空间 O(文本长度)。
+///
+/// Module: app / home page / plugins
+/// Purpose: Draw the inline detail card below a plugin row: path and identifier on the left, vendor,
+/// category and capabilities on the right.
+/// Inputs: `ui`: detail area; `plugin`: scan record.
+/// Outputs / side effects: paint only; no state change.
+/// Complexity: O(text length) time and space.
+fn plugin_detail_body(ui: &mut egui::Ui, plugin: &ScannedPlugin) {
+    ui.add_space(theme::SPACE_XS);
+    egui::Frame::NONE
+        .fill(theme::PANEL)
+        .corner_radius(theme::RADIUS_CARD)
+        .inner_margin(egui::Margin::symmetric(theme::CARD_PAD, 14))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            let gap = theme::SPACE_LG;
+            let column = ((ui.available_width() - gap) * 0.5).max(120.0);
+            ui.horizontal_top(|ui| {
+                ui.vertical(|ui| {
+                    ui.set_width(column);
+                    plugin_detail_field(ui, t("路径"), &plugin.path.display().to_string(), true);
+                    if !plugin.uid.is_empty() {
+                        ui.add_space(theme::SPACE_MD);
+                        plugin_detail_field(ui, t("标识"), &plugin.uid, true);
+                    }
+                });
+                ui.add_space(gap);
+                ui.vertical(|ui| {
+                    ui.set_width(column);
+                    let vendor = if plugin.vendor.trim().is_empty() {
+                        t("未标注厂商")
+                    } else {
+                        plugin.vendor.trim()
+                    };
+                    plugin_detail_field(ui, t("厂商"), vendor, false);
+                    ui.add_space(theme::SPACE_MD);
+                    plugin_detail_field(
+                        ui,
+                        t("分类"),
+                        if plugin.category.trim().is_empty() {
+                            t("未分类")
+                        } else {
+                            plugin.category.trim()
+                        },
+                        false,
+                    );
+                    ui.add_space(theme::SPACE_MD);
+                    plugin_detail_field(
+                        ui,
+                        t("能力"),
+                        &t_args(
+                            "MIDI 输入：{}    原生界面：{}",
+                            &[
+                                if plugin.has_midi_input {
+                                    t("是")
+                                } else {
+                                    t("否")
+                                },
+                                if plugin.has_gui { t("是") } else { t("否") },
+                            ],
+                        ),
+                        false,
+                    );
+                });
+            });
+        });
+    ui.add_space(theme::SPACE_SM);
+}
+
+/// 所属模块：app / 主页 / 插件页
+/// 功能：绘制详情抽屉中的一组“字段 + 值”；路径与标识使用深底等宽块。
+/// 输入：`ui`；`label` 字段名；`value` 字段值；`mono` 是否使用等宽深底块。
+/// 输出/副作用：只绘制；不修改状态。
+/// 复杂度：时间 O(文本长度)，空间 O(1)。
+///
+/// Module: app / home page / plugins
+/// Purpose: Draw one "field + value" pair in the drawer; paths and identifiers use a deep monospace
+/// block.
+/// Inputs: `ui`; `label`; `value`; `mono`.
+/// Outputs / side effects: paint only; no state change.
+/// Complexity: O(text length) time and O(1) space.
+fn plugin_detail_field(ui: &mut egui::Ui, label: &str, value: &str, mono: bool) {
+    theme::field_label(ui, label);
+    ui.add_space(theme::SPACE_XS);
+    if mono {
         egui::Frame::NONE
-            .fill(theme::PANEL)
-            .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
-            .corner_radius(4)
-            .inner_margin(egui::Margin::symmetric(12, 8))
+            .fill(theme::BG_DEEP)
+            .corner_radius(8)
+            .inner_margin(egui::Margin::symmetric(10, 8))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                project_detail_row(ui, "路径", &plugin.path.display().to_string());
-                project_detail_row(
-                    ui,
-                    "厂商",
-                    if plugin.vendor.is_empty() {
-                        "未标注"
-                    } else {
-                        &plugin.vendor
-                    },
+                ui.label(
+                    egui::RichText::new(value)
+                        .size(theme::FONT_MICRO)
+                        .monospace()
+                        .color(theme::TEXT_DIM),
                 );
-                project_detail_row(
-                    ui,
-                    "分类",
-                    if plugin.category.is_empty() {
-                        "未分类"
-                    } else {
-                        &plugin.category
-                    },
-                );
-                project_detail_row(ui, "格式", plugin.format.label());
-                project_detail_row(
-                    ui,
-                    "能力",
-                    &format!(
-                        "MIDI 输入：{} · 原生界面：{}",
-                        if plugin.has_midi_input { "是" } else { "否" },
-                        if plugin.has_gui { "是" } else { "否" }
-                    ),
-                );
-                if !plugin.uid.is_empty() {
-                    project_detail_row(ui, "标识", &plugin.uid);
-                }
             });
+    } else {
+        ui.label(
+            egui::RichText::new(value)
+                .size(theme::FONT_LABEL)
+                .color(theme::TEXT),
+        );
     }
-    ui.add_space(2.0);
-    toggled
 }
 
 /// 所属模块：app / 主页 / 项目页
