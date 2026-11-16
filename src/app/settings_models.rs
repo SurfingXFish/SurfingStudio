@@ -1,6 +1,6 @@
 //! 所属模块：app / 设置窗口 / 模型管理
 //! 文件用途：
-//! - 绘制“设置 → 模型”页：内置/自定义分组、启用开关、编辑与删除。
+//! - 绘制“设置 → 模型”页：用户添加的模型列表、启用开关、编辑与删除，以及空状态。
 //! - 绘制“添加模型”两阶段弹窗：服务商网格 → 通过服务商添加/自定义模型表单。
 //! - 在后台线程执行连通性测试，成功后写入模型列表并同步设置。
 //!
@@ -9,12 +9,12 @@
 //! - `SurfingApp::ui_model_modal`：添加/编辑/删除弹窗。
 //! - `SurfingApp::poll_model_probe`：轮询后台连通性测试。
 //! - `SurfingApp::start_model_probe` / `apply_model_draft`：启动测试与落库。
-//! - `model_group_header` / `model_row` / `provider_card` / `ui_model_form`：页面与表单绘制。
-//! - `model_icon_button` / `paint_model_icon`：细线图标与模型标识。
+//! - `model_row` / `provider_card` / `ui_model_form`：页面与表单绘制。
+//! - `model_icon_button` / `paint_provider_mark`：细线图标与模型标识。
 //!
 //! Module: app / settings / model management
 //! Purpose:
-//! - Draw the “Settings → Models” page: built-in/custom groups, toggles, edit and delete.
+//! - Draw the “Settings → Models” page: user-added models, toggles, edit/delete and the empty state.
 //! - Draw the two-stage add dialog: provider grid → provider/custom form.
 //! - Run the connectivity probe on a worker and commit the model after it succeeds.
 //!
@@ -23,8 +23,8 @@
 //! - `SurfingApp::ui_model_modal`: add/edit/delete dialogs.
 //! - `SurfingApp::poll_model_probe`: poll the background connectivity test.
 //! - `SurfingApp::start_model_probe` / `apply_model_draft`: start the probe and commit the draft.
-//! - `model_group_header` / `model_row` / `provider_card` / `ui_model_form`: page and form painting.
-//! - `model_icon_button` / `paint_model_icon`: thin icons and the model mark.
+//! - `model_row` / `provider_card` / `ui_model_form`: page and form painting.
+//! - `model_icon_button` / `paint_provider_mark`: thin icons and the model mark.
 
 use super::i18n::t;
 use super::settings::{
@@ -41,28 +41,26 @@ use std::time::{Duration, Instant};
 
 /// 模型列表行高（逻辑点）。
 /// Model-list row height in logical points.
-const MODELS_ROW_H: f32 = 44.0;
-/// 分组标题行高（逻辑点）。
-/// Group-header height in logical points.
-const MODELS_GROUP_H: f32 = 34.0;
-/// 表头行高（逻辑点）。
-/// Table-header height in logical points.
-const MODELS_HEADER_H: f32 = 28.0;
-/// 模型图标尺寸（逻辑点）。
-/// Model mark size in logical points.
-const MODELS_ICON: f32 = 26.0;
-/// 服务商列宽（逻辑点）。
-/// Provider column width in logical points.
-const MODELS_PROVIDER_W: f32 = 170.0;
-/// 操作列宽（逻辑点）。
-/// Action column width in logical points.
-const MODELS_OPS_W: f32 = 98.0;
+const MODELS_ROW_H: f32 = 56.0;
+/// 模型列表图标尺寸（逻辑点）。
+/// Model-list mark size in logical points.
+const MODELS_ICON: f32 = 34.0;
+/// 操作列宽（逻辑点）；含当前标记、启用开关与两个图标按钮。
+/// Action column width in logical points; holds the active chip, toggle and two icon buttons.
+const MODELS_OPS_W: f32 = 112.0;
 /// 添加/编辑弹窗宽度（逻辑点）。
 /// Add/edit dialog width in logical points.
-const MODELS_MODAL_W: f32 = 620.0;
+const MODELS_MODAL_W: f32 = 680.0;
+/// 服务商选择弹窗宽度（逻辑点）。
+/// Provider-picker dialog width in logical points.
+const MODELS_GRID_W: f32 = 600.0;
 /// 服务商网格卡片高度（逻辑点）。
 /// Provider-card height in logical points.
 const MODELS_CARD_H: f32 = 52.0;
+/// 表单滚动区最大高度（逻辑点）；保证 620 点高的默认设置窗口上下仍留出边距。
+/// Maximum height of the form scroll area in logical points; keeps margins above and below in the
+/// default 620-point settings window.
+const MODELS_FORM_H: f32 = 340.0;
 /// 连通性测试超时（秒）；超过后 UI 主动放弃等待。
 /// Connectivity-test timeout in seconds; the UI stops waiting afterwards.
 const MODELS_PROBE_TIMEOUT: u64 = 40;
@@ -147,6 +145,8 @@ pub(super) struct ModelDraft {
     pub context_input: u32,
     pub context_output: u32,
     pub tool_rounds: u32,
+    /// 推理强度不提供界面，仅原样保留已有条目的值。
+    /// Reasoning has no UI and only carries over the existing entry's value.
     pub reasoning: String,
     pub temperature: String,
     pub top_p: String,
@@ -295,16 +295,16 @@ impl ModelDraft {
 
     /// 所属模块：app / 设置 / 模型
     /// 功能：把草稿转换为持久化模型条目。
-    /// 输入：`id` 条目 id；`builtin` 是否内置。
+    /// 输入：`id` 条目 id。
     /// 输出/副作用：模型条目；不读盘。
     /// 复杂度：时间 O(文本长度)，空间 O(文本长度)。
     ///
     /// Module: app / settings / models
     /// Purpose: Convert the draft into a persistable model entry.
-    /// Inputs: `id` entry id; `builtin` whether it is built in.
+    /// Inputs: `id` entry id.
     /// Outputs / side effects: the model entry; no disk access.
     /// Complexity: O(text length) time and space.
-    pub fn to_model(&self, id: &str, builtin: bool) -> AiModelConfig {
+    pub fn to_model(&self, id: &str) -> AiModelConfig {
         let temperature = parse_optional_f32(&self.temperature)
             .ok()
             .flatten()
@@ -335,7 +335,6 @@ impl ModelDraft {
             top_p,
             top_k,
             enabled: self.enabled,
-            builtin,
         };
         model.sanitize();
         model
@@ -420,13 +419,14 @@ fn parse_optional_u32(text: &str) -> Result<Option<u32>, String> {
 
 impl SurfingApp {
     /// 所属模块：app / 设置 / 模型
-    /// 功能：绘制模型管理页：标题、添加按钮、内置/自定义分组表格与联网检索开关。
+    /// 功能：绘制模型管理页：标题与添加按钮、用户模型列表（或空状态）与联网检索开关。
     /// 输入：`ui`：设置内容区。
     /// 输出/副作用：增删改模型、启停、写盘；打开添加/编辑弹窗。
     /// 复杂度：每帧 O(模型数)。
     ///
     /// Module: app / settings / models
-    /// Purpose: Draw the model page: title, add button, built-in/custom groups and the search switch.
+    /// Purpose: Draw the model page: title and add button, the user model list (or empty state) and
+    /// the web-search switch.
     /// Inputs: `ui`: settings content area.
     /// Outputs / side effects: adds/edits/deletes models, toggles them and saves; opens the dialogs.
     /// Complexity: O(models) per frame.
@@ -435,94 +435,136 @@ impl SurfingApp {
         let mut add = false;
         let mut changed = false;
 
-        ui.label(
-            egui::RichText::new(t("模型"))
-                .size(theme::FONT_PAGE)
-                .strong()
-                .color(theme::TEXT),
-        );
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(t("模型"))
+                    .size(theme::FONT_PAGE)
+                    .strong()
+                    .color(theme::TEXT),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let button = egui::Button::new(
+                    egui::RichText::new(format!("+ {}", t("添加模型")))
+                        .size(theme::FONT_LABEL)
+                        .color(egui::Color32::WHITE),
+                )
+                .fill(theme::ACCENT)
+                .stroke(egui::Stroke::NONE)
+                .min_size(egui::vec2(0.0, 28.0));
+                if ui
+                    .add(button)
+                    .on_hover_text(t("配置服务商与 API Key，添加新的可用模型"))
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .clicked()
+                {
+                    add = true;
+                }
+            });
+        });
         ui.add_space(theme::SPACE_XS);
-        ui.label(
-            egui::RichText::new(t("模型管理"))
-                .size(theme::FONT_BODY)
-                .strong()
-                .color(theme::TEXT),
-        );
         settings_hint(
             ui,
-            t("配置 API key 添加更多可用模型，预置模型默认使用稳定版本。"),
+            t("对话与编曲使用这里选择的模型；API 密钥只保存在本机配置文件中。"),
         );
-        ui.add_space(theme::SPACE_MD);
-        let add_button = egui::Button::new(
-            egui::RichText::new(format!("+ {}", t("添加模型")))
-                .size(theme::FONT_LABEL)
-                .color(theme::TEXT),
-        )
-        .fill(theme::PANEL_2)
-        .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
-        .min_size(egui::vec2(0.0, 28.0));
-        if ui
-            .add(add_button)
-            .on_hover_text(t("配置服务商与 API Key，添加新的可用模型"))
-            .clicked()
-        {
-            add = true;
-        }
-        ui.add_space(theme::SPACE_MD);
+        ui.add_space(theme::SPACE_LG);
 
         let models = self.settings.ai.models.clone();
         let active_id = self.settings.ai.active_model.clone();
-        let builtins: Vec<AiModelConfig> = models
-            .iter()
-            .filter(|model| model.builtin)
-            .cloned()
-            .collect();
-        let customs: Vec<AiModelConfig> = models
-            .iter()
-            .filter(|model| !model.builtin)
-            .cloned()
-            .collect();
 
-        egui::Frame::NONE
-            .fill(theme::PANEL)
-            .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
-            .corner_radius(6)
-            .inner_margin(egui::Margin::symmetric(8, 6))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                model_table_header(ui);
-                let mut actions: Vec<(String, ModelRowAction)> = Vec::new();
-                model_group(
-                    ui,
-                    "settings_models_builtin",
-                    t("内置"),
-                    &builtins,
-                    false,
-                    &active_id,
-                    &mut actions,
-                );
-                model_group(
-                    ui,
-                    "settings_models_custom",
-                    t("自定义"),
-                    &customs,
-                    true,
-                    &active_id,
-                    &mut actions,
-                );
-                for (id, action) in actions {
-                    match action {
-                        ModelRowAction::Edit => self.open_edit_model(&id),
-                        ModelRowAction::Delete => {
-                            self.settings_models.confirm_delete = Some(id);
+        if models.is_empty() {
+            egui::Frame::NONE
+                .fill(theme::PANEL)
+                .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
+                .corner_radius(theme::RADIUS_CARD)
+                .inner_margin(egui::Margin::symmetric(16, 30))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.vertical_centered(|ui| {
+                        let (rect, _) =
+                            ui.allocate_exact_size(egui::vec2(44.0, 44.0), egui::Sense::hover());
+                        ui.painter().rect_filled(
+                            rect,
+                            egui::CornerRadius::from(11),
+                            theme::PANEL_2,
+                        );
+                        ui.painter().rect_stroke(
+                            rect,
+                            egui::CornerRadius::from(11),
+                            egui::Stroke::new(1.0_f32, theme::LINE),
+                            egui::StrokeKind::Inside,
+                        );
+                        ui.painter().text(
+                            rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "+",
+                            egui::FontId::proportional(22.0),
+                            theme::TEXT_DIM,
+                        );
+                        ui.add_space(theme::SPACE_MD);
+                        ui.label(
+                            egui::RichText::new(t("尚未添加模型"))
+                                .size(theme::FONT_SECTION)
+                                .strong()
+                                .color(theme::TEXT),
+                        );
+                        ui.add_space(theme::SPACE_XS);
+                        ui.label(
+                            egui::RichText::new(t(
+                                "从服务商目录选择模型并填写 API 密钥，即可开始使用。",
+                            ))
+                            .size(theme::FONT_LABEL)
+                            .color(theme::TEXT_DIM),
+                        );
+                        ui.add_space(theme::SPACE_MD);
+                        let button = egui::Button::new(
+                            egui::RichText::new(t("添加第一个模型"))
+                                .size(theme::FONT_LABEL)
+                                .color(egui::Color32::WHITE),
+                        )
+                        .fill(theme::ACCENT)
+                        .stroke(egui::Stroke::NONE)
+                        .min_size(egui::vec2(0.0, 28.0));
+                        if ui.add(button).clicked() {
+                            add = true;
                         }
-                        ModelRowAction::Toggle(enabled) => {
-                            self.settings.ai.set_model_enabled(&id, enabled);
-                            changed = true;
+                    });
+                });
+        } else {
+            egui::Frame::NONE
+                .fill(theme::PANEL)
+                .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
+                .corner_radius(theme::RADIUS_CARD)
+                .inner_margin(egui::Margin::symmetric(6, 4))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    let mut actions: Vec<(String, ModelRowAction)> = Vec::new();
+                    for (index, model) in models.iter().enumerate() {
+                        if index > 0 {
+                            let y = ui.cursor().top();
+                            ui.painter().hline(
+                                ui.max_rect().x_range(),
+                                y,
+                                egui::Stroke::new(1.0_f32, theme::LINE),
+                            );
+                        }
+                        if let Some(action) = model_row(ui, model, model.id == active_id) {
+                            actions.push((model.id.clone(), action));
                         }
                     }
-                }
-            });
+                    for (id, action) in actions {
+                        match action {
+                            ModelRowAction::Edit => self.open_edit_model(&id),
+                            ModelRowAction::Delete => {
+                                self.settings_models.confirm_delete = Some(id);
+                            }
+                            ModelRowAction::Toggle(enabled) => {
+                                self.settings.ai.set_model_enabled(&id, enabled);
+                                changed = true;
+                            }
+                        }
+                    }
+                });
+        }
 
         ui.add_space(theme::SPACE_LG);
         settings_section(ui, t("联网搜索"), |ui| {
@@ -545,9 +587,7 @@ impl SurfingApp {
             });
             settings_hint(
                 ui,
-                t(
-                    "使用 DeepSeek Search API，需要 DeepSeek API Key 并按次计费；没有 Key 时自动跳过检索。",
-                ),
+                t("使用内置的 Bing 网页检索，无需额外 API Key，也不会把密钥发送给搜索引擎。"),
             );
             settings_hint(
                 ui,
@@ -686,14 +726,14 @@ impl SurfingApp {
     }
 
     /// 所属模块：app / 设置 / 模型
-    /// 功能：把当前草稿写入模型列表；新增时生成唯一 id，编辑时保留原 id 与内置标记。
+    /// 功能：把当前草稿写入模型列表；新增时生成唯一 id，编辑时保留原 id。
     /// 输入：`self` 可变引用。
     /// 输出/副作用：修改 `settings.ai.models` 与 `active_model`，关闭弹窗；不写盘。
     /// 复杂度：时间 O(模型数)，空间 O(文本长度)。
     ///
     /// Module: app / settings / models
-    /// Purpose: Write the current draft into the model list; new entries get a unique id, edits keep
-    /// the original id and built-in flag.
+    /// Purpose: Write the current draft into the model list; new entries get a unique id while edits
+    /// keep the original id.
     /// Inputs: `self`: mutable reference.
     /// Outputs / side effects: mutates `settings.ai.models` and `active_model`, closes the dialog; no
     /// disk write.
@@ -793,11 +833,13 @@ impl SurfingApp {
                 let mut close = false;
                 let response =
                     egui::Modal::new(egui::Id::new("settings_model_picker")).show(ctx, |ui| {
-                        ui.set_width(MODELS_MODAL_W);
+                        ui.set_width(MODELS_GRID_W);
                         if model_modal_title(ui, t("添加模型"), false, &mut close) {
                             return;
                         }
-                        ui.add_space(theme::SPACE_SM);
+                        ui.add_space(theme::SPACE_XS);
+                        settings_hint(ui, t("选择服务商，下一步填写 API 密钥并测试连接。"));
+                        ui.add_space(theme::SPACE_MD);
                         egui::ScrollArea::vertical()
                             .max_height(500.0)
                             .auto_shrink([false, false])
@@ -864,11 +906,11 @@ impl SurfingApp {
                             go_back = true;
                             return;
                         }
-                        ui.add_space(theme::SPACE_SM);
+                        ui.add_space(theme::SPACE_MD);
                         action = ui_model_form(
                             ui,
                             &mut draft,
-                            editing.as_ref(),
+                            editing.is_some(),
                             self.settings_models.probe.is_some(),
                             self.settings_models.error.as_deref(),
                             &mut show_key,
@@ -910,8 +952,6 @@ impl SurfingApp {
                         {
                             self.settings_models.error = Some(message);
                         } else {
-                            let builtin =
-                                editing.as_ref().map(|model| model.builtin).unwrap_or(false);
                             let id = editing
                                 .as_ref()
                                 .map(|model| model.id.clone())
@@ -922,7 +962,7 @@ impl SurfingApp {
                                         self.settings_models.draft.model
                                     ))
                                 });
-                            let model = self.settings_models.draft.to_model(&id, builtin);
+                            let model = self.settings_models.draft.to_model(&id);
                             self.start_model_probe(model);
                         }
                     }
@@ -959,175 +999,14 @@ enum FormAction {
 }
 
 /// 所属模块：app / 设置 / 模型
-/// 功能：绘制表头：模型 / 服务商 / 操作。
-/// 输入：`ui`：模型列表。
-/// 输出/副作用：分配一行并绘制；不修改状态。
-/// 复杂度：时间 O(1)，空间 O(1)。
-///
-/// Module: app / settings / models
-/// Purpose: Draw the table header: model / provider / actions.
-/// Inputs: `ui`: model list.
-/// Outputs / side effects: allocates and paints one row; no state change.
-/// Complexity: O(1) time and space.
-fn model_table_header(ui: &mut egui::Ui) {
-    let width = ui.available_width();
-    let (rect, _) =
-        ui.allocate_exact_size(egui::vec2(width, MODELS_HEADER_H), egui::Sense::hover());
-    ui.painter()
-        .rect_filled(rect, egui::CornerRadius::from(4), theme::PANEL_2);
-    let painter = ui.painter();
-    painter.text(
-        egui::pos2(rect.left() + 12.0, rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        t("模型"),
-        egui::FontId::proportional(theme::FONT_MICRO),
-        theme::TEXT_DIM,
-    );
-    painter.text(
-        egui::pos2(rect.right() - MODELS_OPS_W - 12.0, rect.center().y),
-        egui::Align2::RIGHT_CENTER,
-        t("服务商"),
-        egui::FontId::proportional(theme::FONT_MICRO),
-        theme::TEXT_DIM,
-    );
-    painter.text(
-        egui::pos2(rect.right() - 14.0, rect.center().y),
-        egui::Align2::RIGHT_CENTER,
-        t("操作"),
-        egui::FontId::proportional(theme::FONT_MICRO),
-        theme::TEXT_DIM,
-    );
-}
-
-/// 所属模块：app / 设置 / 模型
-/// 功能：绘制一个可折叠分组及其模型行。
-/// 输入：
-/// - `ui`：模型列表；
-/// - `id`：分组折叠状态的稳定 id；
-/// - `label`：分组名称；
-/// - `models`：该分组的模型；
-/// - `default_open`：默认是否展开；
-/// - `active_id`：当前模型 id；
-/// - `actions`：收集行操作。
-/// 输出/副作用：绘制行；把操作追加到 `actions`。
-/// 复杂度：时间 O(模型数)，空间 O(1)。
-///
-/// Module: app / settings / models
-/// Purpose: Draw one collapsible group and its model rows.
-/// Inputs:
-/// - `ui`: model list;
-/// - `id`: stable collapse-state id;
-/// - `label`: group name;
-/// - `models`: models in the group;
-/// - `default_open`: whether it starts open;
-/// - `active_id`: current model id;
-/// - `actions`: collects row actions.
-/// Outputs / side effects: paints rows and appends actions to `actions`.
-/// Complexity: O(models) time and O(1) space.
-fn model_group(
-    ui: &mut egui::Ui,
-    id: &str,
-    label: &str,
-    models: &[AiModelConfig],
-    default_open: bool,
-    active_id: &str,
-    actions: &mut Vec<(String, ModelRowAction)>,
-) {
-    let state_id = ui.make_persistent_id(id);
-    let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
-        ui.ctx(),
-        state_id,
-        default_open,
-    );
-    let openness = state.openness(ui.ctx());
-    if model_group_header(ui, label, models.len(), openness).clicked() {
-        state.toggle(ui);
-    }
-    state.store(ui.ctx());
-    if !state.is_open() && openness <= 0.0 {
-        return;
-    }
-    state.show_body_unindented(ui, |ui| {
-        if models.is_empty() {
-            ui.add_space(theme::SPACE_SM);
-            ui.label(
-                egui::RichText::new(t("暂无模型"))
-                    .size(theme::FONT_MICRO)
-                    .color(theme::TEXT_FAINT),
-            );
-            ui.add_space(theme::SPACE_SM);
-            return;
-        }
-        for model in models {
-            if let Some(action) = model_row(ui, model, model.id == active_id) {
-                actions.push((model.id.clone(), action));
-            }
-        }
-    });
-}
-
-/// 所属模块：app / 设置 / 模型
-/// 功能：绘制分组标题行：左侧箭头、名称与数量。
-/// 输入：`ui`；`label` 名称；`count` 数量；`openness` 展开进度。
-/// 输出/副作用：返回点击响应；不修改状态。
-/// 复杂度：时间 O(1)，空间 O(1)。
-///
-/// Module: app / settings / models
-/// Purpose: Draw a group header with a left chevron, name and count.
-/// Inputs: `ui`; `label`; `count`; `openness`.
-/// Outputs / side effects: the click response; no state change.
-/// Complexity: O(1) time and space.
-fn model_group_header(
-    ui: &mut egui::Ui,
-    label: &str,
-    count: usize,
-    openness: f32,
-) -> egui::Response {
-    let width = ui.available_width();
-    let (rect, response) =
-        ui.allocate_exact_size(egui::vec2(width, MODELS_GROUP_H), egui::Sense::click());
-    if response.hovered() {
-        ui.painter()
-            .rect_filled(rect, egui::CornerRadius::from(4), theme::PANEL_2);
-    }
-    let painter = ui.painter();
-    theme::paint_dropdown_angle(
-        painter,
-        egui::pos2(rect.left() + 10.0, rect.center().y),
-        -std::f32::consts::FRAC_PI_2 * (1.0 - openness),
-        theme::TEXT_DIM,
-    );
-    painter.text(
-        egui::pos2(rect.left() + 24.0, rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        label,
-        egui::FontId::proportional(theme::FONT_LABEL),
-        theme::TEXT,
-    );
-    painter.text(
-        egui::pos2(rect.right() - 12.0, rect.center().y),
-        egui::Align2::RIGHT_CENTER,
-        count.to_string(),
-        egui::FontId::proportional(theme::FONT_MICRO),
-        theme::TEXT_FAINT,
-    );
-    response
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text(if openness > 0.5 {
-            t("点击收起该分组")
-        } else {
-            t("点击展开该分组")
-        })
-}
-
-/// 所属模块：app / 设置 / 模型
-/// 功能：绘制一条模型行：图标、名称、服务商、编辑/删除/启用。
+/// 功能：绘制一条模型行：服务商标识、展示名、服务商与模型、当前标记、启用与编辑/删除。
 /// 输入：`ui` 列表；`model` 模型；`active` 是否当前模型。
 /// 输出/副作用：返回行操作；不直接修改状态。
 /// 复杂度：时间 O(文本长度)，空间 O(1)。
 ///
 /// Module: app / settings / models
-/// Purpose: Draw one model row: mark, name, provider, edit/delete/enable.
+/// Purpose: Draw one model row: provider mark, display name, provider/model, active chip, toggle and
+/// edit/delete.
 /// Inputs: `ui`; `model`; `active`.
 /// Outputs / side effects: the row action; no direct state change.
 /// Complexity: O(text length) time and O(1) space.
@@ -1135,58 +1014,61 @@ fn model_row(ui: &mut egui::Ui, model: &AiModelConfig, active: bool) -> Option<M
     let width = ui.available_width();
     let (rect, response) =
         ui.allocate_exact_size(egui::vec2(width, MODELS_ROW_H), egui::Sense::hover());
-    let hovered = response.hovered();
-    if hovered {
+    if response.hovered() {
         ui.painter()
-            .rect_filled(rect, egui::CornerRadius::from(4), theme::PANEL_3);
+            .rect_filled(rect, egui::CornerRadius::from(8), theme::PANEL_2);
     }
     let icon_rect = egui::Rect::from_center_size(
-        egui::pos2(rect.left() + 12.0 + MODELS_ICON / 2.0, rect.center().y),
+        egui::pos2(rect.left() + 14.0 + MODELS_ICON / 2.0, rect.center().y),
         egui::vec2(MODELS_ICON, MODELS_ICON),
     );
     paint_model_icon(ui, icon_rect, model, active);
+
+    let ops_left = rect.right() - MODELS_OPS_W;
+    let chip_w = if active { 44.0 } else { 0.0 };
+    let text_left = icon_rect.right() + 12.0;
+    let text_right = (ops_left - 10.0 - chip_w).max(text_left + 40.0);
+    let text_rect = egui::Rect::from_min_max(
+        egui::pos2(text_left, rect.top()),
+        egui::pos2(text_right, rect.bottom()),
+    );
     let painter = ui.painter();
-    let name = model.display_label();
-    let provider_right = rect.right() - MODELS_OPS_W - 12.0;
-    let provider_w = MODELS_PROVIDER_W.min((width * 0.35).max(80.0));
-    let name_rect = egui::Rect::from_min_max(
-        egui::pos2(icon_rect.right() + 10.0, rect.top()),
-        egui::pos2(
-            (provider_right - provider_w).max(icon_rect.right() + 50.0),
-            rect.bottom(),
-        ),
-    );
-    painter.with_clip_rect(name_rect).text(
-        egui::pos2(name_rect.left(), rect.center().y),
+    painter.with_clip_rect(text_rect).text(
+        egui::pos2(text_left, rect.center().y - 8.0),
         egui::Align2::LEFT_CENTER,
-        name,
+        model.display_label(),
         egui::FontId::proportional(theme::FONT_BODY),
-        if active { theme::TEXT } else { theme::TEXT_DIM },
+        theme::TEXT,
     );
-    let provider_text = if model.provider_id == CUSTOM_PROVIDER_ID {
-        format!("{} (OpenAI Compatible)", t("自定义"))
-    } else {
-        model.provider_label().to_string()
-    };
-    let provider_rect = egui::Rect::from_min_max(
-        egui::pos2(provider_right - provider_w, rect.top()),
-        egui::pos2(provider_right, rect.bottom()),
+    painter.with_clip_rect(text_rect).text(
+        egui::pos2(text_left, rect.center().y + 9.0),
+        egui::Align2::LEFT_CENTER,
+        format!("{}  ·  {}", model.provider_label(), model.model),
+        egui::FontId::proportional(theme::FONT_MICRO),
+        theme::TEXT_FAINT,
     );
-    painter.with_clip_rect(provider_rect).text(
-        egui::pos2(provider_right, rect.center().y),
-        egui::Align2::RIGHT_CENTER,
-        provider_text,
-        egui::FontId::proportional(theme::FONT_LABEL),
-        theme::TEXT_DIM,
-    );
+    if active {
+        let chip_rect = egui::Rect::from_center_size(
+            egui::pos2(ops_left - 6.0 - chip_w / 2.0, rect.center().y),
+            egui::vec2(chip_w, 18.0),
+        );
+        painter.rect_filled(chip_rect, egui::CornerRadius::from(9), theme::ACCENT_DARK);
+        painter.text(
+            chip_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            t("当前"),
+            egui::FontId::proportional(theme::FONT_MICRO),
+            theme::TEXT,
+        );
+    }
 
     let ops_rect = egui::Rect::from_min_max(
-        egui::pos2(rect.right() - MODELS_OPS_W, rect.top()),
+        egui::pos2(ops_left, rect.top()),
         egui::pos2(rect.right() - 6.0, rect.bottom()),
     );
     let mut action = None;
     ui.scope_builder(egui::UiBuilder::new().max_rect(ops_rect), |ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.spacing_mut().item_spacing.x = 6.0;
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let mut enabled = model.enabled;
             if theme::toggle_switch(ui, &mut enabled)
@@ -1199,7 +1081,7 @@ fn model_row(ui: &mut egui::Ui, model: &AiModelConfig, active: bool) -> Option<M
             {
                 action = Some(ModelRowAction::Toggle(enabled));
             }
-            if !model.builtin && model_icon_button(ui, ModelIcon::Delete, t("删除模型")) {
+            if model_icon_button(ui, ModelIcon::Delete, t("删除模型")) {
                 action = Some(ModelRowAction::Delete);
             }
             if model_icon_button(ui, ModelIcon::Edit, t("编辑模型")) {
@@ -1207,7 +1089,7 @@ fn model_row(ui: &mut egui::Ui, model: &AiModelConfig, active: bool) -> Option<M
             }
         });
     });
-    response.on_hover_text(format!("{} · {}", name, model.model));
+    response.on_hover_text(format!("{} · {}", model.display_label(), model.model));
     action
 }
 
@@ -1361,10 +1243,27 @@ fn model_icon_button(ui: &mut egui::Ui, icon: ModelIcon, tooltip: &str) -> bool 
 /// Outputs / side effects: paint only; no state change.
 /// Complexity: O(1) time and space.
 fn paint_model_icon(ui: &egui::Ui, rect: egui::Rect, model: &AiModelConfig, active: bool) {
+    paint_provider_mark(ui, rect, model.provider_label(), active);
+}
+
+/// 所属模块：app / 设置 / 模型
+/// 功能：绘制服务商标识：圆角方块 + 名称首字；可切换强调色描边与更大的字号。
+/// 输入：`ui`；`rect` 图标区域；`label` 服务商名称；`active` 是否强调。
+/// 输出/副作用：只绘制；不修改状态。
+/// 复杂度：时间 O(1)，空间 O(1)。
+///
+/// Module: app / settings / models
+/// Purpose: Draw a provider mark: rounded square with the name initial, with an optional accent
+/// outline and a larger glyph.
+/// Inputs: `ui`; `rect`; `label`; `active`.
+/// Outputs / side effects: paint only; no state change.
+/// Complexity: O(1) time and space.
+fn paint_provider_mark(ui: &egui::Ui, rect: egui::Rect, label: &str, active: bool) {
     let painter = ui.painter();
+    let radius = egui::CornerRadius::from(if rect.width() >= 40.0 { 9 } else { 7 });
     painter.rect_filled(
         rect,
-        egui::CornerRadius::from(6),
+        radius,
         if active {
             theme::ACCENT_DARK
         } else {
@@ -1373,17 +1272,21 @@ fn paint_model_icon(ui: &egui::Ui, rect: egui::Rect, model: &AiModelConfig, acti
     );
     painter.rect_stroke(
         rect,
-        egui::CornerRadius::from(6),
+        radius,
         egui::Stroke::new(1.0_f32, if active { theme::ACCENT } else { theme::LINE }),
         egui::StrokeKind::Inside,
     );
-    let label = model.provider_label();
     let initial = label.chars().next().unwrap_or('?').to_string();
+    let size = if rect.width() >= 40.0 {
+        theme::FONT_SECTION
+    } else {
+        theme::FONT_BODY
+    };
     painter.text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
         initial,
-        egui::FontId::proportional(theme::FONT_BODY),
+        egui::FontId::proportional(size),
         if active {
             egui::Color32::WHITE
         } else {
@@ -1409,16 +1312,16 @@ fn provider_card(ui: &mut egui::Ui, width: f32, label: &str, id: &str) -> bool {
     let hovered = response.hovered();
     ui.painter().rect_filled(
         rect,
-        egui::CornerRadius::from(6),
+        egui::CornerRadius::from(8),
         if hovered {
             theme::PANEL_3
         } else {
-            theme::PANEL_2
+            theme::PANEL
         },
     );
     ui.painter().rect_stroke(
         rect,
-        egui::CornerRadius::from(6),
+        egui::CornerRadius::from(8),
         egui::Stroke::new(1.0_f32, if hovered { theme::ACCENT } else { theme::LINE }),
         egui::StrokeKind::Inside,
     );
@@ -1427,16 +1330,7 @@ fn provider_card(ui: &mut egui::Ui, width: f32, label: &str, id: &str) -> bool {
         egui::vec2(26.0, 26.0),
     );
     let spec = model_provider(id);
-    let initial = spec.label.chars().next().unwrap_or('?').to_string();
-    ui.painter()
-        .rect_filled(icon_rect, egui::CornerRadius::from(6), theme::PANEL);
-    ui.painter().text(
-        icon_rect.center(),
-        egui::Align2::CENTER_CENTER,
-        initial,
-        egui::FontId::proportional(theme::FONT_BODY),
-        theme::TEXT_DIM,
-    );
+    paint_provider_mark(ui, icon_rect, spec.label, false);
     ui.painter().text(
         egui::pos2(icon_rect.right() + 10.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
@@ -1488,12 +1382,11 @@ fn model_modal_title(ui: &mut egui::Ui, title: &str, back: bool, close: &mut boo
 }
 
 /// 所属模块：app / 设置 / 模型
-/// 功能：绘制模型表单：服务商/模型、展示名称、密钥、高级配置与底部操作。
+/// 功能：绘制模型表单：身份行、连接、凭据、上下文、采样与底部操作。
 /// 输入：
 /// - `ui`：弹窗内容；
 /// - `draft`：表单草稿；
-/// - `editing`：正在编辑的模型；
-/// - `models`：现有模型列表；
+/// - `editing`：是否正在编辑已有模型；
 /// - `probing`：是否正在测试；
 /// - `error`：错误文本；
 /// - `show_key`：是否明文显示密钥。
@@ -1501,12 +1394,11 @@ fn model_modal_title(ui: &mut egui::Ui, title: &str, back: bool, close: &mut boo
 /// 复杂度：时间 O(服务商模型数)。
 ///
 /// Module: app / settings / models
-/// Purpose: Draw the model form: provider/model, display name, key, advanced settings and footer.
+/// Purpose: Draw the model form: identity row, connection, credentials, context, sampling and footer.
 /// Inputs:
 /// - `ui`: dialog content;
 /// - `draft`: form draft;
-/// - `editing`: model being edited;
-/// - `models`: existing models;
+/// - `editing`: whether an existing model is being edited;
 /// - `probing`: whether a test is running;
 /// - `error`: error text;
 /// - `show_key`: whether the key is visible.
@@ -1515,78 +1407,130 @@ fn model_modal_title(ui: &mut egui::Ui, title: &str, back: bool, close: &mut boo
 fn ui_model_form(
     ui: &mut egui::Ui,
     draft: &mut ModelDraft,
-    editing: Option<&AiModelConfig>,
+    editing: bool,
     probing: bool,
     error: Option<&str>,
     show_key: &mut bool,
 ) -> FormAction {
     let mut action = FormAction::None;
+    let spec = model_provider(&draft.provider_id);
+    let mut chosen_provider: Option<&'static str> = None;
+
+    // 身份行：先用草稿里的展示名/模型给出即时反馈，让表单顶部始终有明确对象。
+    // Identity row: mirror the draft's display name/model so the dialog always names its subject.
+    egui::Frame::NONE
+        .fill(theme::PANEL_2)
+        .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
+        .corner_radius(8)
+        .inner_margin(egui::Margin::symmetric(12, 10))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(40.0, 40.0), egui::Sense::hover());
+                paint_provider_mark(ui, rect, spec.label, true);
+                ui.add_space(theme::SPACE_MD);
+                ui.vertical(|ui| {
+                    let title = if !draft.display_name.trim().is_empty() {
+                        draft.display_name.trim().to_string()
+                    } else if !draft.model.trim().is_empty() {
+                        draft.model.trim().to_string()
+                    } else {
+                        t("新模型").to_string()
+                    };
+                    ui.label(
+                        egui::RichText::new(title)
+                            .size(theme::FONT_SECTION)
+                            .strong()
+                            .color(theme::TEXT),
+                    );
+                    let subtitle = if draft.model.trim().is_empty() {
+                        spec.label.to_string()
+                    } else {
+                        format!("{}  ·  {}", spec.label, draft.model.trim())
+                    };
+                    ui.label(
+                        egui::RichText::new(subtitle)
+                            .size(theme::FONT_MICRO)
+                            .color(theme::TEXT_FAINT),
+                    );
+                });
+            });
+        });
+    ui.add_space(theme::SPACE_MD);
+
     egui::ScrollArea::vertical()
-        .max_height(470.0)
+        .max_height(MODELS_FORM_H)
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            let spec = model_provider(&draft.provider_id);
-            let mut chosen_provider: Option<&'static str> = None;
 
-            let locked = editing.map(|model| model.builtin).unwrap_or(false);
-            ui.add_enabled_ui(!locked, |ui| {
-                theme::field_label(ui, t("服务商"));
-                settings_combo(ui, "settings_model_provider", spec.label, |ui| {
-                    for provider in PROVIDERS.iter() {
+            form_section(ui, t("连接"), |ui| {
+                ui.columns(2, |columns| {
+                    theme::field_label(&mut columns[0], t("服务商"));
+                    settings_combo(
+                        &mut columns[0],
+                        "settings_model_provider",
+                        spec.label,
+                        |ui| {
+                            for provider in PROVIDERS.iter() {
+                                if ui
+                                    .selectable_label(
+                                        draft.provider_id == provider.id,
+                                        provider.label,
+                                    )
+                                    .clicked()
+                                {
+                                    chosen_provider = Some(provider.id);
+                                }
+                            }
+                            if ui
+                                .selectable_label(
+                                    draft.provider_id == CUSTOM_PROVIDER_ID,
+                                    t("自定义"),
+                                )
+                                .clicked()
+                            {
+                                chosen_provider = Some(CUSTOM_PROVIDER_ID);
+                            }
+                        },
+                    );
+
+                    theme::field_label(&mut columns[1], t("模型"));
+                    let selected = if draft.model_custom {
+                        t("手动输入 Model ID").to_string()
+                    } else {
+                        spec.models
+                            .iter()
+                            .find(|model| model.id == draft.model)
+                            .map(|model| model.label.to_string())
+                            .unwrap_or_else(|| draft.model.clone())
+                    };
+                    let mut choose_manual = false;
+                    settings_combo(&mut columns[1], "settings_model_model", selected, |ui| {
+                        for model in spec.models {
+                            if ui
+                                .selectable_label(
+                                    !draft.model_custom && draft.model == model.id,
+                                    format!("{}  ({})", model.label, model.id),
+                                )
+                                .clicked()
+                            {
+                                draft.model = model.id.to_string();
+                                draft.model_custom = false;
+                            }
+                        }
                         if ui
-                            .selectable_label(draft.provider_id == provider.id, provider.label)
+                            .selectable_label(draft.model_custom, t("手动输入 Model ID"))
                             .clicked()
                         {
-                            chosen_provider = Some(provider.id);
+                            choose_manual = true;
                         }
-                    }
-                    if ui
-                        .selectable_label(draft.provider_id == CUSTOM_PROVIDER_ID, t("自定义"))
-                        .clicked()
-                    {
-                        chosen_provider = Some(CUSTOM_PROVIDER_ID);
+                    });
+                    if choose_manual {
+                        draft.model_custom = true;
                     }
                 });
-                if let Some(provider_id) = chosen_provider {
-                    draft.switch_provider(provider_id);
-                }
-                ui.add_space(theme::SPACE_MD);
-
-                theme::field_label(ui, t("模型"));
-                let selected = if draft.model_custom {
-                    t("手动输入 Model ID").to_string()
-                } else {
-                    spec.models
-                        .iter()
-                        .find(|model| model.id == draft.model)
-                        .map(|model| model.label.to_string())
-                        .unwrap_or_else(|| draft.model.clone())
-                };
-                let mut choose_manual = false;
-                settings_combo(ui, "settings_model_model", selected, |ui| {
-                    for model in spec.models {
-                        if ui
-                            .selectable_label(
-                                !draft.model_custom && draft.model == model.id,
-                                format!("{}  ({})", model.label, model.id),
-                            )
-                            .clicked()
-                        {
-                            draft.model = model.id.to_string();
-                            draft.model_custom = false;
-                        }
-                    }
-                    if ui
-                        .selectable_label(draft.model_custom, t("手动输入 Model ID"))
-                        .clicked()
-                    {
-                        choose_manual = true;
-                    }
-                });
-                if choose_manual {
-                    draft.model_custom = true;
-                }
                 if draft.model_custom {
                     ui.add_space(theme::SPACE_SM);
                     ui.add(
@@ -1595,117 +1539,139 @@ fn ui_model_form(
                             .desired_width(f32::INFINITY),
                     );
                 }
-            });
-            if locked {
-                settings_hint(
-                    ui,
-                    t("内置模型的模型 ID 固定，只能调整展示名、密钥与参数。"),
-                );
-            }
-            ui.add_space(theme::SPACE_MD);
+                ui.add_space(theme::SPACE_MD);
 
-            theme::field_label(ui, t("模型展示名称"));
-            settings_hint(ui, t("在模型列表中展示的名称，未设置时默认显示 Model ID。"));
-            ui.add(
-                egui::TextEdit::singleline(&mut draft.display_name)
-                    .char_limit(64)
-                    .hint_text(t("请输入模型展示名称"))
-                    .desired_width(f32::INFINITY),
-            );
-            ui.horizontal(|ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(
-                        egui::RichText::new(format!("{}/64", draft.display_name.chars().count()))
-                            .size(theme::FONT_MICRO)
-                            .color(theme::TEXT_FAINT),
-                    );
-                });
-            });
-            ui.add_space(theme::SPACE_MD);
-
-            ui.horizontal(|ui| {
-                theme::field_label(ui, t("API 密钥"));
-                if !spec.key_url.is_empty() {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui
-                            .add(
-                                egui::Button::new(
-                                    egui::RichText::new(t("获取 API 密钥"))
-                                        .size(theme::FONT_MICRO)
-                                        .color(theme::ACCENT),
-                                )
-                                .frame(false),
-                            )
-                            .on_hover_text(spec.key_url)
-                            .clicked()
-                        {
-                            ui.ctx().open_url(egui::OpenUrl::new_tab(spec.key_url));
-                        }
-                    });
-                }
-            });
-            ui.horizontal(|ui| {
+                theme::field_label(ui, t("展示名称"));
                 ui.add(
-                    egui::TextEdit::singleline(&mut draft.api_key)
-                        .password(!*show_key)
-                        .hint_text("sk-…")
+                    egui::TextEdit::singleline(&mut draft.display_name)
+                        .char_limit(64)
+                        .hint_text(t("留空时显示 Model ID"))
                         .desired_width(f32::INFINITY),
                 );
-                if model_icon_button(ui, ModelIcon::Eye(*show_key), t("显示或隐藏密钥")) {
-                    *show_key = !*show_key;
-                }
-            });
-            ui.add_space(theme::SPACE_MD);
-
-            // 高级配置：折叠状态由 egui 内存保存，展开高度与箭头都带动画。
-            // Advanced settings: egui stores the collapse state so height and chevron animate.
-            let advanced_id = ui.make_persistent_id("settings_model_advanced");
-            let mut advanced = egui::collapsing_header::CollapsingState::load_with_default_open(
-                ui.ctx(),
-                advanced_id,
-                true,
-            );
-            let advanced_openness = advanced.openness(ui.ctx());
-            let header = ui
-                .allocate_exact_size(egui::vec2(ui.available_width(), 32.0), egui::Sense::click());
-            if header.1.hovered() {
-                ui.painter()
-                    .rect_filled(header.0, egui::CornerRadius::from(4), theme::PANEL_2);
-            }
-            theme::paint_dropdown_angle(
-                ui.painter(),
-                egui::pos2(header.0.left() + 10.0, header.0.center().y),
-                -std::f32::consts::FRAC_PI_2 * (1.0 - advanced_openness),
-                theme::TEXT_DIM,
-            );
-            ui.painter().text(
-                egui::pos2(header.0.left() + 24.0, header.0.center().y),
-                egui::Align2::LEFT_CENTER,
-                t("高级配置"),
-                egui::FontId::proportional(theme::FONT_LABEL),
-                theme::TEXT,
-            );
-            if header.1.clicked() {
-                advanced.toggle(ui);
-            }
-            advanced.store(ui.ctx());
-            if advanced.is_open() || advanced_openness > 0.0 {
-                advanced.show_body_unindented(ui, |ui| {
-                    ui.add_space(theme::SPACE_SM);
-                    model_advanced_form(ui, draft);
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{}/64",
+                                draft.display_name.chars().count()
+                            ))
+                            .size(theme::FONT_MICRO)
+                            .color(theme::TEXT_FAINT),
+                        );
+                    });
                 });
-            }
+            });
+
+            form_section(ui, t("凭据"), |ui| {
+                ui.horizontal(|ui| {
+                    theme::field_label(ui, t("API 密钥"));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if !spec.key_url.is_empty() {
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        egui::RichText::new(t("获取 API 密钥"))
+                                            .size(theme::FONT_MICRO)
+                                            .color(theme::ACCENT),
+                                    )
+                                    .frame(false),
+                                )
+                                .on_hover_text(spec.key_url)
+                                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                .clicked()
+                            {
+                                ui.ctx().open_url(egui::OpenUrl::new_tab(spec.key_url));
+                            }
+                        }
+                    });
+                });
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut draft.api_key)
+                            .password(!*show_key)
+                            .hint_text("sk-…")
+                            .desired_width(f32::INFINITY),
+                    );
+                    if model_icon_button(ui, ModelIcon::Eye(*show_key), t("显示或隐藏密钥"))
+                    {
+                        *show_key = !*show_key;
+                    }
+                });
+            });
+
+            form_section(ui, t("上下文"), |ui| {
+                theme::field_label(ui, t("接口地址"));
+                ui.add(
+                    egui::TextEdit::singleline(&mut draft.base_url)
+                        .hint_text("https://example.com/v1")
+                        .desired_width(f32::INFINITY),
+                );
+                ui.add_space(theme::SPACE_MD);
+                ui.columns(2, |columns| {
+                    form_context_field(
+                        &mut columns[0],
+                        t("输入"),
+                        &mut draft.context_input,
+                        1_024,
+                        4_000_000,
+                        &[
+                            ("128k", 128_000),
+                            ("256k", 256_000),
+                            ("512k", 512_000),
+                            ("1M", 1_000_000),
+                        ],
+                    );
+                    form_context_field(
+                        &mut columns[1],
+                        t("输出"),
+                        &mut draft.context_output,
+                        256,
+                        MAX_MODEL_OUTPUT_TOKENS,
+                        &[
+                            ("4k", 4_096),
+                            ("16k", 16_384),
+                            ("32k", 32_768),
+                            ("128k", 128_000),
+                        ],
+                    );
+                });
+                ui.add_space(theme::SPACE_MD);
+                ui.horizontal(|ui| {
+                    theme::field_label(ui, t("工具调用轮数"));
+                    ui.add(egui::DragValue::new(&mut draft.tool_rounds).range(1..=1_000));
+                });
+            });
+
+            form_section(ui, t("采样"), |ui| {
+                ui.columns(3, |columns| {
+                    form_text_field(
+                        &mut columns[0],
+                        "Temperature",
+                        &mut draft.temperature,
+                        "0 ~ 2",
+                    );
+                    form_text_field(&mut columns[1], "Top P", &mut draft.top_p, "0 ~ 1");
+                    form_text_field(&mut columns[2], "Top K", &mut draft.top_k, "1 ~ 100");
+                });
+                ui.add_space(theme::SPACE_XS);
+                settings_hint(ui, t("留空使用服务商默认值，不会随请求发送。"));
+            });
         });
 
-    ui.add_space(theme::SPACE_SM);
+    if let Some(provider_id) = chosen_provider {
+        draft.switch_provider(provider_id);
+    }
+
     if let Some(message) = error {
+        ui.add_space(theme::SPACE_SM);
         ui.label(
             egui::RichText::new(message)
                 .size(theme::FONT_LABEL)
                 .color(theme::RED),
         );
-        ui.add_space(theme::SPACE_XS);
     }
+
+    ui.add_space(theme::SPACE_MD);
     ui.horizontal(|ui| {
         let (icon, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
         ui.painter().circle_stroke(
@@ -1738,7 +1704,7 @@ fn ui_model_form(
             );
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let submit_label = if editing.is_some() {
+            let submit_label = if editing {
                 t("保存")
             } else {
                 t("添加模型")
@@ -1767,180 +1733,99 @@ fn ui_model_form(
 }
 
 /// 所属模块：app / 设置 / 模型
-/// 功能：绘制高级配置：接口地址、上下文窗口、工具轮数、思考模式与采样参数。
-/// 输入：`ui`；`draft` 表单草稿。
-/// 输出/副作用：修改草稿；不读盘。
-/// 复杂度：时间 O(1)。
+/// 功能：绘制表单中的一个圆角分区：小标题 + 内容。
+/// 输入：`ui`；`title` 分区标题；`add` 内容闭包。
+/// 输出/副作用：只绘制；内容闭包可修改草稿。
+/// 复杂度：时间 O(1)，空间 O(1)。
 ///
 /// Module: app / settings / models
-/// Purpose: Draw advanced settings: endpoint, context windows, tool rounds, thinking and sampling.
-/// Inputs: `ui`; `draft`.
-/// Outputs / side effects: mutates the draft; no disk access.
-/// Complexity: O(1) time.
-fn model_advanced_form(ui: &mut egui::Ui, draft: &mut ModelDraft) {
-    theme::field_label(ui, t("接口地址"));
-    ui.add(
-        egui::TextEdit::singleline(&mut draft.base_url)
-            .hint_text("https://example.com/v1")
-            .desired_width(f32::INFINITY),
-    );
-    ui.add_space(theme::SPACE_MD);
-
-    ui.label(
-        egui::RichText::new(t("上下文窗口 (Token)"))
-            .size(theme::FONT_LABEL)
-            .color(theme::TEXT),
-    );
-    ui.add_space(theme::SPACE_XS);
-    ui.horizontal(|ui| {
-        theme::field_label(ui, t("输入"));
-        ui.add(
-            egui::DragValue::new(&mut draft.context_input)
-                .range(1_024..=4_000_000)
-                .speed(1_024.0)
-                .suffix(" tokens"),
-        );
-        for (label, value) in [
-            ("128k", 128_000_u32),
-            ("256k", 256_000),
-            ("512k", 512_000),
-            ("1M", 1_000_000),
-        ] {
-            if ui
-                .add(
-                    egui::Button::new(
-                        egui::RichText::new(label)
-                            .size(theme::FONT_MICRO)
-                            .color(theme::TEXT_DIM),
-                    )
-                    .frame(false),
-                )
-                .clicked()
-            {
-                draft.context_input = value;
-            }
-        }
-    });
-    ui.horizontal(|ui| {
-        theme::field_label(ui, t("输出"));
-        ui.add(
-            egui::DragValue::new(&mut draft.context_output)
-                .range(256..=MAX_MODEL_OUTPUT_TOKENS)
-                .speed(1_024.0)
-                .suffix(" tokens"),
-        );
-        for (label, value) in [
-            ("4k", 4_096_u32),
-            ("16k", 16_384),
-            ("32k", 32_768),
-            ("128k", 128_000),
-        ] {
-            if ui
-                .add(
-                    egui::Button::new(
-                        egui::RichText::new(label)
-                            .size(theme::FONT_MICRO)
-                            .color(theme::TEXT_DIM),
-                    )
-                    .frame(false),
-                )
-                .clicked()
-            {
-                draft.context_output = value;
-            }
-        }
-    });
-    ui.add_space(theme::SPACE_MD);
-
-    ui.horizontal(|ui| {
-        theme::field_label(ui, t("工具调用轮数"));
-        ui.add(
-            egui::DragValue::new(&mut draft.tool_rounds)
-                .range(1..=1_000)
-                .speed(1.0),
-        );
-    });
-    ui.add_space(theme::SPACE_MD);
-
-    ui.label(
-        egui::RichText::new(t("思考模式"))
-            .size(theme::FONT_LABEL)
-            .color(theme::TEXT),
-    );
+/// Purpose: Draw one rounded form section: small title plus content.
+/// Inputs: `ui`; `title`; `add`.
+/// Outputs / side effects: paint only; the closure may mutate the draft.
+/// Complexity: O(1) time and space.
+fn form_section(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::NONE
         .fill(theme::PANEL_2)
-        .corner_radius(4)
-        .inner_margin(egui::Margin::symmetric(10, 8))
+        .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
+        .corner_radius(8)
+        .inner_margin(egui::Margin::symmetric(12, 10))
         .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                let (icon, _) =
-                    ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
-                ui.painter().circle_stroke(
-                    icon.center(),
-                    6.5,
-                    egui::Stroke::new(1.1_f32, theme::ACCENT),
-                );
-                ui.painter().text(
-                    icon.center(),
-                    egui::Align2::CENTER_CENTER,
-                    "i",
-                    egui::FontId::proportional(9.0),
-                    theme::ACCENT,
-                );
-                ui.label(
-                    egui::RichText::new(t(
-                        "当前模型支持思考强度调节。添加后，可在聊天界面的模型列表中选择不同的思考强度。",
-                    ))
-                    .size(theme::FONT_MICRO)
+            ui.set_width(ui.available_width());
+            ui.label(
+                egui::RichText::new(title)
+                    .size(theme::FONT_LABEL)
+                    .strong()
                     .color(theme::TEXT_DIM),
-                );
-            });
+            );
+            ui.add_space(theme::SPACE_SM);
+            add(ui);
         });
-    ui.add_space(theme::SPACE_XS);
-    ui.horizontal(|ui| {
-        theme::field_label(ui, t("推理强度"));
-        let current = AiReasoning::from_id(&draft.reasoning);
-        settings_combo(ui, "settings_model_reasoning", current.label(), |ui| {
-            for entry in AiReasoning::ALL {
-                if ui
-                    .selectable_label(current == entry, entry.label())
-                    .clicked()
-                {
-                    draft.reasoning = entry.id().to_string();
-                }
-            }
-        });
-    });
-    ui.add_space(theme::SPACE_MD);
+    ui.add_space(theme::SPACE_SM);
+}
 
-    ui.label(
-        egui::RichText::new(t("采样参数"))
-            .size(theme::FONT_LABEL)
-            .color(theme::TEXT),
+/// 所属模块：app / 设置 / 模型
+/// 功能：绘制上下文数值字段：标签、可拖拽数值与常用值快捷按钮。
+/// 输入：`ui`；`label`；`value`；`min`/`max` 范围；`chips` 快捷值。
+/// 输出/副作用：点击快捷值或拖动时修改 `value`；不读盘。
+/// 复杂度：时间 O(快捷值数)，空间 O(1)。
+///
+/// Module: app / settings / models
+/// Purpose: Draw a context numeric field: label, drag value and quick-pick chips.
+/// Inputs: `ui`; `label`; `value`; `min`/`max`; `chips`.
+/// Outputs / side effects: mutates `value` on drag or chip click; no disk access.
+/// Complexity: O(chips) time and O(1) space.
+fn form_context_field(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut u32,
+    min: u32,
+    max: u32,
+    chips: &[(&str, u32)],
+) {
+    theme::field_label(ui, label);
+    ui.add(
+        egui::DragValue::new(value)
+            .range(min..=max)
+            .speed(1_024.0)
+            .suffix(" tokens"),
     );
-    ui.add_space(theme::SPACE_XS);
-    ui.horizontal(|ui| {
-        theme::field_label(ui, "Temperature");
-        ui.add(
-            egui::TextEdit::singleline(&mut draft.temperature)
-                .hint_text(t("留空使用最佳配置，或输入 0 ~ 2 之间的数值"))
-                .desired_width(260.0),
-        );
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        for (text, chip_value) in chips {
+            if ui
+                .add(
+                    egui::Button::new(
+                        egui::RichText::new(*text)
+                            .size(theme::FONT_MICRO)
+                            .color(theme::TEXT_FAINT),
+                    )
+                    .frame(false),
+                )
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked()
+            {
+                *value = *chip_value;
+            }
+        }
     });
-    ui.horizontal(|ui| {
-        theme::field_label(ui, "Top P");
-        ui.add(
-            egui::TextEdit::singleline(&mut draft.top_p)
-                .hint_text(t("留空使用最佳配置，或输入 0 ~ 1 之间的数值"))
-                .desired_width(260.0),
-        );
-    });
-    ui.horizontal(|ui| {
-        theme::field_label(ui, "Top K");
-        ui.add(
-            egui::TextEdit::singleline(&mut draft.top_k)
-                .hint_text(t("留空使用最佳配置，或输入 1 ~ 100 之间的数值"))
-                .desired_width(260.0),
-        );
-    });
+}
+
+/// 所属模块：app / 设置 / 模型
+/// 功能：绘制一个文本字段：标签与输入框。
+/// 输入：`ui`；`label`；`value`；`hint` 占位文本。
+/// 输出/副作用：修改 `value`；不读盘。
+/// 复杂度：时间 O(文本长度)，空间 O(1)。
+///
+/// Module: app / settings / models
+/// Purpose: Draw one text field: label plus input.
+/// Inputs: `ui`; `label`; `value`; `hint`.
+/// Outputs / side effects: mutates `value`; no disk access.
+/// Complexity: O(text length) time and O(1) space.
+fn form_text_field(ui: &mut egui::Ui, label: &str, value: &mut String, hint: &str) {
+    theme::field_label(ui, label);
+    ui.add(
+        egui::TextEdit::singleline(value)
+            .hint_text(hint)
+            .desired_width(f32::INFINITY),
+    );
 }

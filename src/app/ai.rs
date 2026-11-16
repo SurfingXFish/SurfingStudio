@@ -908,16 +908,11 @@ impl SurfingApp {
         );
         let request_id = self.ai_chat.next_request_id;
         self.ai_chat.next_request_id = self.ai_chat.next_request_id.wrapping_add(1).max(1);
-        // 联网搜索用 DeepSeek 的 Search 接口，因此需要 DeepSeek Key；没有 Key 时搜索关闭，
-        // 模型仍可基于已有知识完成编曲。
-        // Web research uses DeepSeek's Search API and therefore a DeepSeek key; without one the model
-        // still composes from its own knowledge.
-        let search_key = self.settings.ai.provider_api_key("deepseek").to_string();
+        // 联网搜索使用自建 Bing HTML 检索，不再依赖 DeepSeek Search API 与额外密钥。
+        // Web research uses the built-in Bing HTML search and no extra Search API or key.
         let search = AiSearchConfig {
-            enabled: self.settings.ai.search_enabled && !search_key.is_empty(),
-            base_url: "https://api.deepseek.com".into(),
-            api_key: search_key,
-            timeout: Duration::from_secs(30),
+            enabled: self.settings.ai.search_enabled,
+            timeout: Duration::from_secs(20),
         };
         let (tx, rx) = channel();
         // 网络请求只在工作线程执行；UI 线程每帧非阻塞轮询事件并逐条写入工程。

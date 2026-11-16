@@ -6,7 +6,7 @@
 //!
 //! 函数清单：
 //! - `AiProvider::id` / `label` / `protocol` / `default_base_url` / `default_model`：协议族信息。
-//! - `AiModelConfig` / `PROVIDERS` / `builtin_models`：服务商目录、内置模型与用户模型条目。
+//! - `AiModelConfig` / `PROVIDERS`：服务商目录与用户模型条目。
 //! - `AiRole::as_str`：消息角色到接口字段的映射。
 //! - `AiRuntime::standard` / `complete` / `stream`：按协议分派到后端并返回助手回复。
 //! - `AiStreamEvent`：流式补全过程中推送的思考与内容增量。
@@ -21,7 +21,7 @@
 //!
 //! Functions:
 //! - `AiProvider::id` / `label` / `protocol` / `default_base_url` / `default_model`: protocol family.
-//! - `AiModelConfig` / `PROVIDERS` / `builtin_models`: provider catalogue, built-in models and user entries.
+//! - `AiModelConfig` / `PROVIDERS`: provider catalogue and user model entries.
 //! - `AiRole::as_str`: message role to API field mapping.
 //! - `AiRuntime::standard` / `complete`: dispatch to a backend by protocol and return the assistant reply.
 //! - `truncate_for_error`: trim an error response body into readable text.
@@ -42,7 +42,7 @@ pub use library::{AiAgentProfile, AiInstrumentDoc, AiLibrary, AiSkillDoc, make_i
 pub use models::{
     AiModelConfig, AiProviderModel, AiProviderSpec, CUSTOM_PROVIDER_ID,
     DEFAULT_MODEL_CONTEXT_INPUT, DEFAULT_MODEL_CONTEXT_OUTPUT, DEFAULT_MODEL_TEMPERATURE,
-    DEFAULT_MODEL_TOOL_ROUNDS, MAX_MODEL_OUTPUT_TOKENS, PROVIDERS, builtin_models, default_model,
+    DEFAULT_MODEL_TOOL_ROUNDS, MAX_MODEL_OUTPUT_TOKENS, PROVIDERS, default_model,
     provider as model_provider, provider_label as model_provider_label,
 };
 pub use plan::{AiApplySummary, AiOperation, AiPlan, AiPluginInfo, AiPluginKind};

@@ -139,8 +139,9 @@ const BUFFER_FRAMES_OPTIONS: [u32; 6] = [128, 256, 512, 1024, 2048, 4096];
 /// GPU 界面渲染可选 API：持久化标识与展示文本。
 /// Selectable GPU UI-render APIs: persisted id and display text.
 const DEFAULT_GPU_RENDER_API: &str = "auto";
-/// 默认 AI 模型 id；与 `ai::builtin_models` 的第一项一致。
-/// Default AI model id; matches the first entry of `ai::builtin_models`.
+/// 旧版本默认模型预设 id；仅用于迁移旧配置，不再创建任何内置模型。
+/// Legacy default model preset id; used only when migrating old configurations and never creates a
+/// built-in model.
 const DEFAULT_AI_MODEL_PRESET: &str = "deepseek-flash";
 /// 默认 AI 采样温度：略高以保留编曲创意。
 /// Default AI temperature: slightly high to keep compositional variety.
@@ -259,17 +260,16 @@ pub struct AiSettings {
     /// Reasoning effort: `off` / `low` / `medium` / `high`.
     #[serde(default = "default_ai_reasoning")]
     pub reasoning: String,
-    /// 允许 AI 在不确定插件特点时使用 DeepSeek Search API 联网检索。
-    /// Whether the AI may use the DeepSeek Search API to research plugin characteristics.
+    /// 允许 AI 在不确定插件特点时使用自建联网检索（Bing HTML）查询资料。
+    /// Whether the AI may use the built-in web search (Bing HTML) to research plugin characteristics.
     #[serde(default = "default_true")]
     pub search_enabled: bool,
     /// 主页 Agent 栏维护的智能体、基础乐理、编曲技巧与乐器资料。
     /// Agents, theory skills, techniques and instrument notes maintained by the home Agent column.
     #[serde(default)]
     pub library: crate::ai::AiLibrary,
-    /// 用户管理的模型列表（含内置种子）；旧版本没有该字段时由 `migrate_models` 生成。
-    /// User-managed models (including built-in seeds); old configurations generate it in
-    /// `migrate_models`.
+    /// 用户添加的模型列表；旧版本没有该字段时由 `migrate_models` 从旧字段迁移生成。
+    /// User-managed models; old configurations generate the list in `migrate_models`.
     #[serde(default)]
     pub models: Vec<crate::ai::AiModelConfig>,
     /// 当前选中的模型条目 id；空字符串表示尚未选择。
@@ -280,13 +280,13 @@ pub struct AiSettings {
 
 impl Default for AiSettings {
     /// 所属模块：app / 全局设置 / AI
-    /// 功能：构造默认 AI 设置：DeepSeek Flash、空密钥与默认采样参数。
+    /// 功能：构造默认 AI 设置：空模型列表、空密钥与默认采样参数。
     /// 输入：无。
     /// 输出/副作用：默认设置；不读盘。
     /// 复杂度：时间 O(1)，空间 O(1)。
     ///
     /// Module: app / global settings / AI
-    /// Purpose: Build default AI settings: DeepSeek Flash, empty keys and default sampling.
+    /// Purpose: Build default AI settings: an empty model list, empty keys and default sampling.
     /// Inputs: none.
     /// Outputs / side effects: defaults; no disk access.
     /// Complexity: O(1) time and space.
@@ -302,8 +302,8 @@ impl Default for AiSettings {
             reasoning: default_ai_reasoning(),
             search_enabled: true,
             library: crate::ai::AiLibrary::default(),
-            models: crate::ai::builtin_models(),
-            active_model: DEFAULT_AI_MODEL_PRESET.to_string(),
+            models: Vec::new(),
+            active_model: String::new(),
         }
     }
 }
@@ -364,49 +364,105 @@ impl AiSettings {
     }
 
     /// 所属模块：app / 全局设置 / 模型
-    /// 功能：迁移旧版 AI 设置：没有模型列表时生成四条内置模型，并把旧 API Key、自定义接口、
-    /// 采样参数与默认预设映射到条目；已有列表时统一去重、修剪文本并修正选中项。
+    /// 功能：迁移旧版 AI 设置：没有模型列表时，把配置过密钥的 DeepSeek / MiMo / 自定义服务转换为
+    /// 用户模型；清理旧版本写入的未配置密钥占位条目；最后统一去重、修剪文本并修正选中项。
     /// 输入：`self` 可变引用。
     /// 输出/副作用：修改 `models` 与 `active_model`；不写盘。
     /// 复杂度：时间 O(模型数)，空间 O(模型数)。
     ///
     /// Module: app / global settings / models
-    /// Purpose: Migrate legacy AI settings: when no model list exists, seed the four built-ins and map
-    /// the old API keys, custom endpoint, sampling values and default preset; otherwise normalise,
-    /// de-duplicate and repair the selected entry.
+    /// Purpose: Migrate legacy AI settings: when no model list exists, turn the configured
+    /// DeepSeek / MiMo / custom services into user models; drop the empty-key placeholder entries
+    /// written by older builds; then normalise, de-duplicate and repair the selected entry.
     /// Inputs: `self`: mutable reference.
     /// Outputs / side effects: mutates `models` and `active_model`; does not write the file.
     /// Complexity: O(models) time and space.
     pub fn migrate_models(&mut self) {
         if self.models.is_empty() {
-            let mut models = crate::ai::builtin_models();
-            for model in &mut models {
-                model.api_key = self.api_key(&model.provider_id).to_string();
-                model.temperature = self.temperature;
-                model.reasoning = self.reasoning.clone();
+            // 旧版本把密钥与参数分散在顶层字段；只有配置过密钥的服务商才生成模型，
+            // 避免重新产生未配置的空壳条目。
+            // Old builds kept keys and sampling at the top level; only configured providers become
+            // models so no empty placeholder entries are created again.
+            let temperature = self.temperature.clamp(0.0, 2.0);
+            let reasoning = self.reasoning.clone();
+            let preset = self.model_preset.trim().to_string();
+            let mut models = Vec::new();
+            for (provider_id, model_id) in [
+                (
+                    "deepseek",
+                    if preset.starts_with("deepseek-") {
+                        preset.as_str()
+                    } else {
+                        crate::ai::default_model("deepseek")
+                    },
+                ),
+                (
+                    "mimo",
+                    if preset.starts_with("mimo-") {
+                        preset.as_str()
+                    } else {
+                        crate::ai::default_model("mimo")
+                    },
+                ),
+            ] {
+                let key = self.api_key(provider_id).trim();
+                if key.is_empty() {
+                    continue;
+                }
+                let mut model = crate::ai::AiModelConfig::default();
+                model.id = model_id.to_string();
+                model.provider_id = provider_id.to_string();
+                model.model = model_id.to_string();
+                model.display_name = crate::ai::model_provider(provider_id)
+                    .models
+                    .iter()
+                    .find(|entry| entry.id == model_id)
+                    .map(|entry| entry.label.to_string())
+                    .unwrap_or_default();
+                model.api_key = key.to_string();
+                model.temperature = temperature;
+                model.reasoning = reasoning.clone();
+                model.sanitize();
+                models.push(model);
             }
             let custom_model = self.custom_model.trim();
             let custom_base = self.custom_base_url.trim();
-            if !custom_model.is_empty() || !custom_base.is_empty() {
-                let mut custom = crate::ai::AiModelConfig::default();
-                custom.id = crate::ai::CUSTOM_PROVIDER_ID.to_string();
-                custom.provider_id = crate::ai::CUSTOM_PROVIDER_ID.to_string();
-                custom.model = custom_model.to_string();
-                custom.base_url = custom_base.to_string();
-                custom.display_name = if custom_model.is_empty() {
-                    "自定义模型".to_string()
+            let custom_key = self.api_key(crate::ai::CUSTOM_PROVIDER_ID).trim();
+            if !custom_key.is_empty() && (!custom_model.is_empty() || !custom_base.is_empty()) {
+                let mut model = crate::ai::AiModelConfig::default();
+                model.id = crate::ai::CUSTOM_PROVIDER_ID.to_string();
+                model.provider_id = crate::ai::CUSTOM_PROVIDER_ID.to_string();
+                model.model = custom_model.to_string();
+                model.display_name = if custom_model.is_empty() {
+                    t("自定义模型").to_string()
                 } else {
                     custom_model.to_string()
                 };
-                custom.api_key = self.api_key(crate::ai::CUSTOM_PROVIDER_ID).to_string();
-                custom.temperature = self.temperature;
-                custom.context_output = self.max_tokens;
-                custom.reasoning = self.reasoning.clone();
-                custom.sanitize();
-                models.push(custom);
+                model.base_url = custom_base.to_string();
+                model.api_key = custom_key.to_string();
+                model.temperature = temperature;
+                model.context_output = self.max_tokens;
+                model.reasoning = reasoning.clone();
+                model.sanitize();
+                models.push(model);
             }
             self.models = models;
         }
+        // 旧版本写入过四条未配置密钥的内置占位（`builtin` 字段已不再解析），这里清理掉。
+        // Older builds seeded four empty-key placeholders (the `builtin` field is no longer parsed);
+        // drop them so the list only contains user-configured models.
+        const LEGACY_PLACEHOLDER_IDS: [(&str, &str); 4] = [
+            ("deepseek", "deepseek-flash"),
+            ("deepseek", "deepseek-v4-pro"),
+            ("mimo", "mimo-v2.6-flash"),
+            ("mimo", "mimo-v2.6-pro"),
+        ];
+        self.models.retain(|model| {
+            !(model.api_key.trim().is_empty()
+                && LEGACY_PLACEHOLDER_IDS
+                    .iter()
+                    .any(|(provider, id)| model.provider_id == *provider && model.id == *id))
+        });
         // 手工编辑或旧版本可能留下空 id、重复 id 与越界值，这里统一修正。
         // Manual edits or old builds may leave empty/duplicate ids and out-of-range values.
         let mut seen = std::collections::HashSet::new();
@@ -427,8 +483,8 @@ impl AiSettings {
             .iter()
             .any(|model| model.id == self.active_model);
         if !active_exists {
-            // 旧配置用模型预设 id 选模型；内置条目的 id 与旧预设一致，可直接命中。
-            // Legacy configs selected a preset id; built-in ids match those presets, so they resolve.
+            // 旧配置用模型预设 id 选模型；迁移生成条目的 id 与预设一致时可直接命中。
+            // Legacy configs selected a preset id; migrated entries keep that id, so it resolves.
             if !self.model_preset.trim().is_empty()
                 && self
                     .models
@@ -582,14 +638,13 @@ impl AiSettings {
     }
 
     /// 所属模块：app / 全局设置 / 模型
-    /// 功能：删除自定义模型；内置模型拒绝删除，删除当前模型时回退到第一条启用条目。
+    /// 功能：删除模型；删除当前模型时回退到第一条启用条目。
     /// 输入：`id`：模型条目 id。
     /// 输出/副作用：修改 `models` 与 `active_model`；返回是否删除。
     /// 复杂度：时间 O(模型数)，空间 O(1)。
     ///
     /// Module: app / global settings / models
-    /// Purpose: Delete a custom model; built-ins are refused, and deleting the active model falls
-    /// back to the first enabled entry.
+    /// Purpose: Delete a model; deleting the active model falls back to the first enabled entry.
     /// Inputs: `id`: model-entry id.
     /// Outputs / side effects: mutates `models` and `active_model`; returns whether it was removed.
     /// Complexity: O(models) time and O(1) space.
@@ -597,9 +652,6 @@ impl AiSettings {
         let Some(index) = self.models.iter().position(|model| model.id == id) else {
             return false;
         };
-        if self.models[index].builtin {
-            return false;
-        }
         self.models.remove(index);
         if self.active_model == id {
             self.active_model = self
@@ -3791,8 +3843,8 @@ mod tests {
         assert_eq!(settings.ai.timeout_seconds, DEFAULT_AI_TIMEOUT_SECONDS);
         assert_eq!(settings.ai.reasoning, "medium");
         assert!(settings.ai.search_enabled);
-        assert_eq!(settings.ai.models.len(), 4);
-        assert_eq!(settings.ai.active_model, DEFAULT_AI_MODEL_PRESET);
+        assert!(settings.ai.models.is_empty());
+        assert!(settings.ai.active_model.is_empty());
     }
 
     /// 覆盖：AI 设置可以往返序列化，且空密钥会移除记录。
@@ -3821,9 +3873,9 @@ mod tests {
         assert!(!loaded.search_enabled);
     }
 
-    /// 覆盖：旧版 AI 设置迁移到模型列表，保留密钥、自定义接口与选中预设。
-    /// Covers: legacy AI settings migrate into the model list, keeping keys, the custom endpoint and
-    /// the selected preset.
+    /// 覆盖：旧版 AI 设置迁移到模型列表，只把配置过密钥的服务转换为用户模型，没有内置条目。
+    /// Covers: legacy AI settings migrate into the model list, only configured services become user
+    /// models and no built-in entries are created.
     #[test]
     fn legacy_ai_settings_migrate_to_models() {
         let mut ai = AiSettings::default();
@@ -3836,39 +3888,64 @@ mod tests {
         ai.custom_model = "example-model".into();
         ai.set_api_key("custom", "sk-custom");
         ai.migrate_models();
-        assert_eq!(ai.models.len(), 5);
+        assert_eq!(ai.models.len(), 3);
         assert_eq!(ai.active_model, "deepseek-v4-pro");
-        let deepseek = ai.model_by_id("deepseek-flash").expect("builtin");
+        let deepseek = ai.model_by_id("deepseek-v4-pro").expect("deepseek");
         assert_eq!(deepseek.api_key, "sk-legacy");
+        assert_eq!(deepseek.display_label(), "DeepSeek V4 Pro");
         let mimo = ai.model_by_id("mimo-v2.6-flash").expect("mimo");
         assert_eq!(mimo.api_key, "sk-mimo");
         let custom = ai.model_by_id("custom").expect("custom");
         assert_eq!(custom.model, "example-model");
         assert_eq!(custom.api_key, "sk-custom");
-        assert!(!custom.builtin);
-        assert!(!ai.remove_model("deepseek-flash"));
-        assert!(ai.model_by_id("deepseek-flash").is_some());
+        // 所有模型都可以删除，不再有内置锁定。
+        // Every model can be deleted; built-in locks are gone.
+        assert!(ai.remove_model("deepseek-v4-pro"));
+        assert!(ai.model_by_id("deepseek-v4-pro").is_none());
     }
 
-    /// 覆盖：停用当前模型会回退到其他启用模型，删除自定义模型后回退有效。
-    /// Covers: disabling the active model falls back to another enabled model and removing a custom
-    /// model keeps the selection valid.
+    /// 覆盖：迁移会清理旧版本写入的未配置密钥占位条目，并保留已配置密钥的条目。
+    /// Covers: migration drops empty-key placeholder entries written by older builds and keeps
+    /// configured ones.
+    #[test]
+    fn legacy_placeholders_are_dropped() {
+        let mut ai = AiSettings::default();
+        let mut empty = crate::ai::AiModelConfig::default();
+        empty.id = "deepseek-flash".into();
+        empty.provider_id = "deepseek".into();
+        empty.model = "deepseek-flash".into();
+        let mut configured = crate::ai::AiModelConfig::default();
+        configured.id = "mimo-v2.6-pro".into();
+        configured.provider_id = "mimo".into();
+        configured.model = "mimo-v2.6-pro".into();
+        configured.api_key = "sk-mimo".into();
+        ai.models = vec![empty, configured];
+        ai.active_model = "deepseek-flash".into();
+        ai.migrate_models();
+        assert_eq!(ai.models.len(), 1);
+        assert_eq!(ai.models[0].id, "mimo-v2.6-pro");
+        assert_eq!(ai.active_model, "mimo-v2.6-pro");
+    }
+
+    /// 覆盖：停用当前模型会回退到其他启用模型，删除模型后回退有效。
+    /// Covers: disabling the active model falls back to another enabled model and removing a model
+    /// keeps the selection valid.
     #[test]
     fn model_selection_falls_back() {
         let mut ai = AiSettings::default();
-        ai.set_active_model("deepseek-flash");
-        ai.set_model_enabled("deepseek-flash", false);
-        assert_eq!(ai.active_model, "deepseek-v4-pro");
-        let mut custom = crate::ai::AiModelConfig::default();
-        custom.id = "custom-1".into();
-        custom.model = "demo".into();
-        custom.api_key = "sk".into();
-        ai.upsert_model(custom);
-        assert!(ai.set_active_model("custom-1"));
-        assert_eq!(ai.active_model, "custom-1");
-        assert!(ai.remove_model("custom-1"));
-        assert_ne!(ai.active_model, "custom-1");
-        assert!(ai.active_model().is_some());
+        for (id, enabled) in [("first", true), ("second", true)] {
+            let mut model = crate::ai::AiModelConfig::default();
+            model.id = id.into();
+            model.model = id.into();
+            model.api_key = "sk".into();
+            model.enabled = enabled;
+            ai.upsert_model(model);
+        }
+        assert!(ai.set_active_model("first"));
+        ai.set_model_enabled("first", false);
+        assert_eq!(ai.active_model, "second");
+        assert!(ai.remove_model("second"));
+        assert_ne!(ai.active_model, "second");
     }
 
     /// 覆盖：音频设置转换为启动选项时保留系统、设备、采样率与缓冲。

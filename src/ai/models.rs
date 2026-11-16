@@ -1,24 +1,22 @@
 //! 所属模块：ai / 模型目录与用户模型配置
 //! 文件用途：
 //! - 维护可添加的服务商目录、默认 Base URL、密钥申请地址与常用模型列表。
-//! - 定义用户可启停、可编辑的模型条目（`AiModelConfig`）与内置模型种子。
+//! - 定义用户可启停、可编辑的模型条目（`AiModelConfig`）。
 //! - 把模型条目转换为后端请求，统一处理采样参数、上下文与推理强度。
 //!
 //! 函数清单：
 //! - `provider` / `provider_label` / `default_model`：按 id 查询服务商目录。
-//! - `builtin_models`：生成内置模型条目。
 //! - `AiModelConfig::display_label` / `resolved_base_url` / `provider_label` / `family` /
 //!   `is_ready` / `sanitize` / `build_request`：模型条目的展示、校验与请求构造。
 //!
 //! Module: ai / model catalogue and user model entries
 //! Purpose:
 //! - Maintain the provider catalogue, default base URLs, key pages and common model lists.
-//! - Define user-managed model entries (`AiModelConfig`) and the built-in model seeds.
+//! - Define user-managed model entries (`AiModelConfig`).
 //! - Convert an entry into a backend request with sampling, context and reasoning parameters.
 //!
 //! Functions:
 //! - `provider` / `provider_label` / `default_model`: look up the provider catalogue by id.
-//! - `builtin_models`: build the built-in model entries.
 //! - `AiModelConfig::display_label` / `resolved_base_url` / `provider_label` / `family` /
 //!   `is_ready` / `sanitize` / `build_request`: display, validation and request construction.
 
@@ -537,62 +535,12 @@ pub fn default_model(id: &str) -> &'static str {
         .unwrap_or("")
 }
 
-/// 所属模块：ai / 模型目录
-/// 功能：生成四条内置模型（DeepSeek Flash / V4 Pro、MiMo V2.6 Flash / Pro），id 与旧预设一致，
-/// 便于旧配置直接迁移。
-/// 输入：无。
-/// 输出/副作用：新的模型条目；不读盘。
-/// 复杂度：时间 O(1)，空间 O(1)。
-///
-/// Module: ai / model catalogue
-/// Purpose: Build the four built-in models (DeepSeek Flash / V4 Pro, MiMo V2.6 Flash / Pro) whose
-/// ids match the legacy presets so old settings migrate directly.
-/// Inputs: none.
-/// Outputs / side effects: new model entries; no disk access.
-/// Complexity: O(1) time and space.
-pub fn builtin_models() -> Vec<AiModelConfig> {
-    vec![
-        AiModelConfig::builtin(
-            "deepseek-flash",
-            "deepseek",
-            "deepseek-flash",
-            "DeepSeek Flash",
-            128_000,
-            32_768,
-        ),
-        AiModelConfig::builtin(
-            "deepseek-v4-pro",
-            "deepseek",
-            "deepseek-v4-pro",
-            "DeepSeek V4 Pro",
-            128_000,
-            32_768,
-        ),
-        AiModelConfig::builtin(
-            "mimo-v2.6-flash",
-            "mimo",
-            "mimo-v2.6-flash",
-            "MiMo V2.6 Flash",
-            128_000,
-            32_768,
-        ),
-        AiModelConfig::builtin(
-            "mimo-v2.6-pro",
-            "mimo",
-            "mimo-v2.6-pro",
-            "MiMo V2.6 Pro",
-            128_000,
-            32_768,
-        ),
-    ]
-}
-
-/// 用户可管理的模型条目；内置模型与自定义模型共用同一结构。
-/// A user-managed model entry; built-in and custom models share the same shape.
+/// 用户可管理的模型条目；所有条目都由用户添加。
+/// A user-managed model entry; every entry is added by the user.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct AiModelConfig {
-    /// 稳定唯一 id（内置模型沿用旧预设 id）。
-    /// Stable unique id (built-ins reuse the legacy preset ids).
+    /// 稳定唯一 id。
+    /// Stable unique id.
     #[serde(default)]
     pub id: String,
     /// 服务商目录 id。
@@ -647,53 +595,9 @@ pub struct AiModelConfig {
     /// Whether the model is enabled in the model selector.
     #[serde(default = "default_enabled")]
     pub enabled: bool,
-    /// 是否内置模型；内置模型不可删除。
-    /// Whether this is a built-in model; built-ins cannot be deleted.
-    #[serde(default)]
-    pub builtin: bool,
 }
 
 impl AiModelConfig {
-    /// 所属模块：ai / 模型条目
-    /// 功能：构造一条内置模型。
-    /// 输入：`id` 稳定 id；`provider_id` 服务商；`model` 模型 id；`display_name` 展示名；
-    /// `context_input` / `context_output` 上下文与输出上限。
-    /// 输出/副作用：启用的内置条目；不读盘。
-    /// 复杂度：时间 O(1)，空间 O(1)。
-    ///
-    /// Module: ai / model entry
-    /// Purpose: Build one built-in model.
-    /// Inputs: `id` stable id; `provider_id` provider; `model` model id; `display_name` label;
-    /// `context_input` / `context_output` context and output limits.
-    /// Outputs / side effects: an enabled built-in entry; no disk access.
-    /// Complexity: O(1) time and space.
-    pub fn builtin(
-        id: &str,
-        provider_id: &str,
-        model: &str,
-        display_name: &str,
-        context_input: u32,
-        context_output: u32,
-    ) -> Self {
-        Self {
-            id: id.to_string(),
-            provider_id: provider_id.to_string(),
-            display_name: display_name.to_string(),
-            model: model.to_string(),
-            base_url: String::new(),
-            api_key: String::new(),
-            context_input,
-            context_output,
-            tool_rounds: DEFAULT_MODEL_TOOL_ROUNDS,
-            reasoning: "medium".into(),
-            temperature: DEFAULT_MODEL_TEMPERATURE,
-            top_p: None,
-            top_k: None,
-            enabled: true,
-            builtin: true,
-        }
-    }
-
     /// 所属模块：ai / 模型条目
     /// 功能：返回下拉与列表使用的展示名；展示名为空时回退到模型 id。
     /// 输入：`self`。
@@ -888,7 +792,6 @@ impl Default for AiModelConfig {
             top_p: None,
             top_k: None,
             enabled: true,
-            builtin: false,
         }
     }
 }
@@ -928,7 +831,6 @@ impl std::fmt::Debug for AiModelConfig {
             .field("top_p", &self.top_p)
             .field("top_k", &self.top_k)
             .field("enabled", &self.enabled)
-            .field("builtin", &self.builtin)
             .finish()
     }
 }
@@ -1040,30 +942,37 @@ mod tests {
         assert_eq!(provider("mimo").family, AiProvider::Mimo);
     }
 
-    /// 覆盖：内置模型 id 与旧预设一致，展示名回退与地址解析正确。
-    /// Covers: built-in ids match the legacy presets, and the display/URL fallbacks work.
+    /// 测试用模型：DeepSeek Flash。
+    /// Test model: DeepSeek Flash.
+    fn sample_model() -> AiModelConfig {
+        let mut model = AiModelConfig::default();
+        model.provider_id = "deepseek".into();
+        model.model = "deepseek-flash".into();
+        model.display_name = "DeepSeek Flash".into();
+        model.api_key = "sk-test".into();
+        model
+    }
+
+    /// 覆盖：展示名回退、地址解析与服务商默认模型。
+    /// Covers: display fallback, URL resolution and the provider default model.
     #[test]
-    fn builtin_models_keep_legacy_ids() {
-        let models = builtin_models();
-        assert_eq!(models.len(), 4);
-        let flash = models
-            .iter()
-            .find(|model| model.id == "deepseek-flash")
-            .expect("deepseek flash");
-        assert_eq!(flash.model, "deepseek-flash");
-        assert_eq!(flash.display_label(), "DeepSeek Flash");
-        assert_eq!(flash.resolved_base_url(), "https://api.deepseek.com");
-        assert!(flash.builtin);
-        assert!(flash.enabled);
+    fn model_helpers_resolve_defaults() {
+        let model = sample_model();
+        assert_eq!(model.display_label(), "DeepSeek Flash");
+        assert_eq!(model.resolved_base_url(), "https://api.deepseek.com");
+        assert_eq!(model.provider_label(), "DeepSeek");
         assert_eq!(default_model("mimo"), "mimo-v2.6-flash");
         assert_eq!(default_model("custom"), "");
+        let mut unnamed = model;
+        unnamed.display_name.clear();
+        assert_eq!(unnamed.display_label(), "deepseek-flash");
     }
 
     /// 覆盖：模型条目可序列化往返，缺失字段使用默认值。
     /// Covers: model entries round-trip through JSON and missing fields use defaults.
     #[test]
     fn model_config_serde_roundtrip() {
-        let model = builtin_models().remove(0);
+        let model = sample_model();
         let text = serde_json::to_string(&model).expect("serialize");
         let parsed: AiModelConfig = serde_json::from_str(&text).expect("deserialize");
         assert_eq!(parsed.id, model.id);
@@ -1078,8 +987,7 @@ mod tests {
     /// Covers: request construction carries sampling, JSON output and the output limit.
     #[test]
     fn build_request_carries_sampling() {
-        let mut model = builtin_models().remove(0);
-        model.api_key = "sk-test".into();
+        let mut model = sample_model();
         model.top_p = Some(0.9);
         model.top_k = Some(40);
         let request = model.build_request(Vec::new(), Duration::from_secs(30), 64_000, true);

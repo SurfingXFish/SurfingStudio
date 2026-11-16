@@ -863,31 +863,16 @@ impl SurfingApp {
                                 open_model_settings = true;
                             }
                         } else {
-                            for (group, builtin) in [("内置", true), ("自定义", false)] {
-                                let entries: Vec<&crate::ai::AiModelConfig> = enabled_models
-                                    .iter()
-                                    .filter(|model| model.builtin == builtin)
-                                    .collect();
-                                if entries.is_empty() {
-                                    continue;
+                            for entry in &enabled_models {
+                                if ui
+                                    .selectable_label(
+                                        active_model_id == entry.id,
+                                        format!("{}  ·  {}", entry.display_label(), entry.model),
+                                    )
+                                    .clicked()
+                                {
+                                    active_model_id = entry.id.clone();
                                 }
-                                ui.label(
-                                    RichText::new(group)
-                                        .size(theme::FONT_MICRO)
-                                        .color(theme::TEXT_FAINT),
-                                );
-                                for entry in entries {
-                                    if ui
-                                        .selectable_label(
-                                            active_model_id == entry.id,
-                                            format!("{}  ·  {}", entry.display_label(), entry.model),
-                                        )
-                                        .clicked()
-                                    {
-                                        active_model_id = entry.id.clone();
-                                    }
-                                }
-                                ui.add_space(theme::SPACE_XS);
                             }
                         }
                     });
