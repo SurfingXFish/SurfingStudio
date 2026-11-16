@@ -1,6 +1,6 @@
 ﻿[package]
 name = "surfing-studio-launcher"
-version = "1.3.5-a"
+version = "1.3.6-a"
 edition = "2024"
 rust-version = "1.85"
 description = "SurfingStudio thin launcher: loads the runtime DLL and calls its entry"
