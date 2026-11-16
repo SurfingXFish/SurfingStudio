@@ -68,15 +68,15 @@ struct PluginCacheFile {
 
 /// 所属模块：app / 插件扫描 / 缓存
 /// 功能：返回插件缓存的候选路径。用户指定缓存目录时优先使用该目录，其次平台缓存目录，
-/// 不可写时回退到平台配置目录与系统临时目录。
+/// 再回退平台配置目录、旧版安装目录缓存与系统临时目录。
 /// 输入：`cache_dir`：设置中的自定义缓存目录；`None` 使用系统默认。
 /// 输出/副作用：返回候选路径列表；不创建目录。
 /// 复杂度：时间 O(1)，空间 O(路径长度)。
 ///
 /// Module: app / plugin scanning / cache
 /// Purpose: Return candidate cache paths. A user-selected cache directory comes first, then the
-/// platform cache directory, falling back to the platform config directory and the system temp
-/// directory when that location is not writable.
+/// platform cache directory, falling back to the platform config directory, the legacy install
+/// directory cache and the system temp directory.
 /// Inputs: `cache_dir` — custom cache directory from the settings; `None` uses the default.
 /// Outputs / side effects: candidate paths; no directory is created.
 /// Complexity: O(1) time and O(path length) space.
@@ -93,11 +93,16 @@ fn plugin_cache_paths(cache_dir: Option<&Path>) -> Vec<PathBuf> {
         bases.push(base);
     }
     paths.extend(bases.into_iter().map(|base| base.join("plugin-cache.json")));
-    paths.push(
-        crate::platform::temp_dir()
-            .join(crate::platform::APP_DIR_NAME)
-            .join("plugin-cache.json"),
-    );
+    // 升级前缓存位于安装目录 data/cache；新位置没有缓存时回退旧文件，避免首次启动全量重扫。
+    // Before the upgrade the cache lived in `<install>/data/cache`; fall back to it when the new
+    // location has no cache so the first launch does not rescan every plugin.
+    if let Some(base) = crate::platform::legacy_data_dir() {
+        paths.push(
+            base.join(crate::platform::CACHE_DIR_SUFFIX)
+                .join("plugin-cache.json"),
+        );
+    }
+    paths.push(crate::platform::temp_dir().join("plugin-cache.json"));
     paths
 }
 

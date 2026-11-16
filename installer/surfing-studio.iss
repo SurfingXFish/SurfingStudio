@@ -23,8 +23,11 @@ AppPublisher=SurfingStudio
 DefaultDirName={autopf}\SurfingStudio
 DefaultGroupName=SurfingStudio
 DisableProgramGroupPage=yes
-; 安装到 Program Files 需要管理员权限；数据目录在 [Dirs] 中授予普通用户修改权限。
-; Installing into Program Files requires elevation; [Dirs] grants users modify rights on data.
+; 安装到 Program Files 需要管理员权限；运行期数据按用途写在安装目录的顶层子目录，
+; 因此 [Dirs] 为这些目录授予普通用户修改权限，其余程序文件保持只读。
+; Installing into Program Files requires elevation; runtime data lives in per-purpose top-level
+; sub-directories under the install directory, so [Dirs] grants users modify rights there while the
+; program files stay read-only.
 PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -38,12 +41,24 @@ UninstallDisplayIcon={app}\SurfingStudio.exe
 UninstallDisplayName=SurfingStudio {#AppVersion}
 CloseApplications=yes
 RestartApplications=no
+; 安装向导按当前用户的 Windows 界面语言自动选择；仅当没有任何语言匹配时才显示语言选择框。
+; 每次安装都重新按系统语言选择，不沿用上一次的手动选择。
+; The wizard auto-selects by the current user's Windows UI language; the language dialog appears
+; only when no entry matches. Every install re-detects the system language instead of reusing the
+; previous manual choice.
+LanguageDetectionMethod=uilanguage
+ShowLanguageDialog=auto
+UsePreviousLanguage=no
 
 [Languages]
-Name: "english"; MessagesFile: "compiler:Default.isl"
+; 英文使用 Inno Setup 自带消息；简体中文随仓库提供，兼容未安装中文语言文件的 Inno Setup 6。
+; English uses the bundled Inno Setup messages; Simplified Chinese ships with the repository so it
+; also works with Inno Setup 6 installations that do not include Chinese language files.
+Name: "en"; MessagesFile: "compiler:Default.isl"
+Name: "zh"; MessagesFile: "{#SourcePath}\languages\ChineseSimplified.isl"
 
 [Tasks]
-Name: "desktopicon"; Description: "创建桌面快捷方式 (Create a desktop shortcut)"; GroupDescription: "附加任务 (Additional tasks):"; Flags: unchecked
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
 ; 瘦启动器、运行时 DLL 与 AI 资料 DLL 必须位于同一目录；启动器按相对路径加载。
@@ -52,24 +67,25 @@ Name: "desktopicon"; Description: "创建桌面快捷方式 (Create a desktop sh
 Source: "{#StageDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Dirs]
-; 强制数据目录：用户配置、工程、日志、缓存与 AI 技能/智能体都写入这里。
-; Enforced data directory: settings, projects, logs, cache and AI agents/skills all live here.
-Name: "{app}\data"; Permissions: users-modify
-Name: "{app}\data\ai"; Permissions: users-modify
-Name: "{app}\data\logs"; Permissions: users-modify
-Name: "{app}\data\cache"; Permissions: users-modify
-Name: "{app}\data\temp"; Permissions: users-modify
-Name: "{app}\data\Projects"; Permissions: users-modify
+; 数据目录按用途拆分在安装目录顶层，不再统一放进 data；授予普通用户修改权限。
+; Per-purpose data directories at the install-directory top level instead of a single data folder;
+; standard users get modify rights.
+Name: "{app}\config"; Permissions: users-modify
+Name: "{app}\cache"; Permissions: users-modify
+Name: "{app}\logs"; Permissions: users-modify
+Name: "{app}\temp"; Permissions: users-modify
+Name: "{app}\Projects"; Permissions: users-modify
+Name: "{app}\ai"; Permissions: users-modify
 
 [Icons]
 Name: "{group}\SurfingStudio"; Filename: "{app}\SurfingStudio.exe"; WorkingDir: "{app}"
 Name: "{autodesktop}\SurfingStudio"; Filename: "{app}\SurfingStudio.exe"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\SurfingStudio.exe"; Description: "启动 SurfingStudio (Launch SurfingStudio)"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\SurfingStudio.exe"; Description: "{cm:LaunchProgram,SurfingStudio}"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
-; 只清理可再生的缓存与临时文件；settings、ai、Projects 与 logs 保留给用户。
-; Only remove regenerable cache/temp files; keep settings, ai, Projects and logs for the user.
-Type: filesandordirs; Name: "{app}\data\temp"
-Type: filesandordirs; Name: "{app}\data\cache"
+; 只清理可再生的缓存与临时文件；config、ai、Projects 与 logs 保留给用户。
+; Only remove regenerable cache/temp files; keep config, ai, Projects and logs for the user.
+Type: filesandordirs; Name: "{app}\temp"
+Type: filesandordirs; Name: "{app}\cache"

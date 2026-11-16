@@ -12,6 +12,7 @@
 //! - `collect_peak_entries`：收集编曲区波形峰值。
 //! - `export_wav_dialog` / `export_project_copy_to_public` / `export_wav_copy_to_public` / `pause_transport`：
 //!   打开独立导出窗口、公共目录副本导出与导出前暂停。
+//! - `default_project_dir` / `export_scratch_dir`：无对话框时的默认工程目录与导出临时目录。
 //! - `summarize_warnings`：压缩导入警告用于状态栏。
 //!
 //! Module: app / file operations
@@ -35,6 +36,8 @@
 //! - `export_wav_dialog` / `export_project_copy_to_public` / `export_wav_copy_to_public` /
 //!   `pause_transport`: open the standalone export window, copy exports to a public folder and pause
 //!   before exporting.
+//! - `default_project_dir` / `export_scratch_dir`: default project directory and export scratch
+//!   directory without dialogs.
 //! - `summarize_warnings`: compress import warnings for the status bar.
 
 use super::*;
@@ -42,37 +45,35 @@ use crate::diag;
 use crate::platform::DialogParent;
 
 /// 所属模块：app / 文件操作 / 默认位置
-/// 功能：返回没有系统文件对话框时的默认工程目录（平台数据目录下的 `Projects`）。
+/// 功能：返回没有系统文件对话框时的默认工程目录：安装目录下的 `Projects`。
 /// 输入：无。
 /// 输出/副作用：目录路径或 `None`；不创建目录。
 /// 复杂度：时间 O(路径长度)，空间 O(路径长度)。
 ///
 /// Module: app / file operations / default location
-/// Purpose: Return the default project directory used when no native file dialog exists
-/// (`Projects` under the platform data directory).
+/// Purpose: Return the default project directory used when no native file dialog exists:
+/// `Projects` under the install directory.
 /// Inputs: none.
 /// Outputs / side effects: the path or `None`; nothing is created.
 /// Complexity: O(path length) time and space.
 pub(super) fn default_project_dir() -> Option<PathBuf> {
-    crate::platform::config_dir().map(|base| base.join("Projects"))
+    crate::platform::install_dir().map(|base| base.join(crate::platform::PROJECTS_DIR_SUFFIX))
 }
 
 /// 所属模块：app / 文件操作 / 公共目录
-/// 功能：返回“导出副本”使用的临时目录（系统临时目录下的 `SurfingStudio/export`），并确保存在。
+/// 功能：返回“导出副本”使用的临时目录（应用临时目录下的 `export`），并确保存在。
 /// 输入：无。
 /// 输出/副作用：创建目录；返回路径或 `None`（不可写）。
 /// 复杂度：时间 O(1)，空间 O(路径长度)。
 ///
 /// Module: app / file operations / public folder
-/// Purpose: Return the scratch directory used by "export a copy"
-/// (`SurfingStudio/export` under the temp directory) and make sure it exists.
+/// Purpose: Return the scratch directory used by "export a copy" (`export` under the app temp
+/// directory) and make sure it exists.
 /// Inputs: none.
 /// Outputs / side effects: creates the directory; returns the path, or `None` when unwritable.
 /// Complexity: O(1) time and O(path length) space.
 fn export_scratch_dir() -> Option<PathBuf> {
-    let dir = crate::platform::temp_dir()
-        .join(crate::platform::APP_DIR_NAME)
-        .join("export");
+    let dir = crate::platform::temp_dir().join("export");
     std::fs::create_dir_all(&dir).ok()?;
     Some(dir)
 }

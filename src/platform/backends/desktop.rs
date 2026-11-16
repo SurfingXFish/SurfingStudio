@@ -1,34 +1,39 @@
 //! 所属模块：platform / 桌面后端
 //! 文件用途：
-//! - 桌面（Windows / macOS / Linux）平台后端：沿用原有目录约定与 rfd 文件对话框。
+//! - 桌面（Windows / macOS / Linux）平台后端：数据保存在安装目录下，按用途拆分为
+//!   `config/`、`cache/`、`logs/`、`temp/`、`Projects/` 与 `ai/` 等顶层目录，避免统一塞进
+//!   `data/`；文件对话框使用 rfd。
 //! - Windows 上额外提供 `TerminateProcess` 退出，跳过插件卸载死锁。
 //!
 //! 函数清单：
 //! - `backend`：返回桌面后端静态实例。
 //! - `DesktopPlatform::info` / `caps`：标识与能力。
 //! - `DesktopPlatform::install_dir` / `config_dir` / `cache_dir` / `data_dir` / `log_dir` /
-//!   `temp_dir`：目录约定（全部位于安装目录 `data/` 下）。
+//!   `temp_dir`：安装目录及其按用途拆分的子目录。
 //! - `DesktopPlatform::pick_file` / `pick_folder` / `save_file`：rfd 对话框。
 //! - `DesktopPlatform::system_locale`：系统区域标识（Windows 用户默认区域 / 其他系统环境变量）。
 //! - `DesktopPlatform::exit_process`：终止进程。
+//! - `apply_filters`：把请求过滤器追加到 rfd 对话框。
 //!
 //! Module: platform / desktop backend
 //! Purpose:
-//! - Desktop (Windows / macOS / Linux) backend: keeps the existing directory conventions and the
-//!   rfd file dialogs.
+//! - Desktop (Windows / macOS / Linux) backend: data lives under the install directory, split into
+//!   per-purpose top-level directories such as `config/`, `cache/`, `logs/`, `temp/`, `Projects/`
+//!   and `ai/` instead of a single `data/` folder; file dialogs use rfd.
 //! - On Windows it terminates through `TerminateProcess`, skipping plugin-unload deadlocks.
 //!
 //! Functions:
 //! - `backend`: return the desktop backend singleton.
 //! - `DesktopPlatform::info` / `caps`: identity and capabilities.
 //! - `DesktopPlatform::install_dir` / `config_dir` / `cache_dir` / `data_dir` / `log_dir` /
-//!   `temp_dir`: directory conventions (all under `<install>/data`).
+//!   `temp_dir`: the install directory and its per-purpose sub-directories.
 //! - `DesktopPlatform::pick_file` / `pick_folder` / `save_file`: rfd dialogs.
 //! - `DesktopPlatform::system_locale`: system locale (Windows user default / environment elsewhere).
 //! - `DesktopPlatform::exit_process`: terminate the process.
+//! - `apply_filters`: append request filters to an rfd dialog.
 
 use super::super::{
-    APP_DIR_NAME, CACHE_DIR_SUFFIX, DATA_DIR_SUFFIX, LOG_DIR_SUFFIX, TEMP_DIR_SUFFIX,
+    APP_DIR_NAME, CACHE_DIR_SUFFIX, CONFIG_DIR_SUFFIX, LOG_DIR_SUFFIX, TEMP_DIR_SUFFIX,
 };
 use super::super::{FileRequest, PlatformBackend, PlatformCaps, PlatformInfo};
 use std::path::PathBuf;
@@ -135,84 +140,85 @@ impl PlatformBackend for DesktopPlatform {
     }
 
     /// 所属模块：platform / 桌面后端 / 存储
-    /// 功能：返回配置目录：`<安装目录>/data`，确保设置与工程数据始终随安装目录迁移。
+    /// 功能：返回配置目录：`<安装目录>/config`，存放 `settings.json`。
     /// 输入：`self`。
     /// 输出/副作用：目录路径或 `None`；不创建目录。
     /// 复杂度：时间 O(路径长度)，空间 O(路径长度)。
     ///
     /// Module: platform / desktop backend / storage
-    /// Purpose: Return the config directory: `<install>/data`, keeping settings and project data with
-    /// the installation.
+    /// Purpose: Return the config directory `<install>/config`, holding `settings.json`.
     /// Inputs: `self`.
     /// Outputs / side effects: the path or `None`; nothing is created.
     /// Complexity: O(path length) time and space.
     fn config_dir(&self) -> Option<PathBuf> {
-        self.install_dir().map(|base| base.join(DATA_DIR_SUFFIX))
+        self.install_dir().map(|base| base.join(CONFIG_DIR_SUFFIX))
     }
 
     /// 所属模块：platform / 桌面后端 / 存储
-    /// 功能：返回缓存目录：`<安装目录>/data/cache`。
+    /// 功能：返回缓存目录：`<安装目录>/cache`，存放插件缓存等可再生产数据。
     /// 输入：`self`。
     /// 输出/副作用：目录路径或 `None`；不创建目录。
     /// 复杂度：时间 O(路径长度)，空间 O(路径长度)。
     ///
     /// Module: platform / desktop backend / storage
-    /// Purpose: Return the cache directory: `<install>/data/cache`.
+    /// Purpose: Return the cache directory `<install>/cache`, holding regenerable data such as the
+    /// plugin cache.
     /// Inputs: `self`.
     /// Outputs / side effects: the path or `None`; nothing is created.
     /// Complexity: O(path length) time and space.
     fn cache_dir(&self) -> Option<PathBuf> {
-        self.config_dir().map(|base| base.join(CACHE_DIR_SUFFIX))
+        self.install_dir().map(|base| base.join(CACHE_DIR_SUFFIX))
     }
 
     /// 所属模块：platform / 桌面后端 / 存储
-    /// 功能：桌面平台的数据目录与配置目录相同（`<安装目录>/data`）。
+    /// 功能：返回应用数据根目录：桌面端为安装目录，AI 资料等共享数据位于其 `ai/` 子目录。
     /// 输入：`self`。
     /// 输出/副作用：目录路径或 `None`；不创建目录。
     /// 复杂度：时间 O(路径长度)，空间 O(路径长度)。
     ///
     /// Module: platform / desktop backend / storage
-    /// Purpose: On desktop the data directory equals the config directory (`<install>/data`).
+    /// Purpose: Return the app data root: the install directory on desktop, with shared data such as
+    /// the AI library under its `ai/` sub-directory.
     /// Inputs: `self`.
     /// Outputs / side effects: the path or `None`; nothing is created.
     /// Complexity: O(path length) time and space.
     fn data_dir(&self) -> Option<PathBuf> {
-        self.config_dir()
+        self.install_dir()
     }
 
     /// 所属模块：platform / 桌面后端 / 存储
-    /// 功能：返回日志目录：`<安装目录>/data/logs`，无法定位安装目录时退回系统临时目录。
+    /// 功能：返回日志目录：`<安装目录>/logs`；无法定位安装目录时退回系统临时目录。
     /// 输入：`self`。
     /// 输出/副作用：目录路径；不创建目录。
     /// 复杂度：时间 O(路径长度)，空间 O(路径长度)。
     ///
     /// Module: platform / desktop backend / storage
-    /// Purpose: Return the log directory: `<install>/data/logs`, falling back to the system temp
-    /// directory when the install directory cannot be resolved.
+    /// Purpose: Return the log directory `<install>/logs`, falling back to the system temp directory
+    /// when the install directory cannot be resolved.
     /// Inputs: `self`.
     /// Outputs / side effects: the path; nothing is created.
     /// Complexity: O(path length) time and space.
     fn log_dir(&self) -> PathBuf {
         self.install_dir()
-            .map(|base| base.join(DATA_DIR_SUFFIX).join(LOG_DIR_SUFFIX))
+            .map(|base| base.join(LOG_DIR_SUFFIX))
             .unwrap_or_else(|| std::env::temp_dir().join(APP_DIR_NAME).join(LOG_DIR_SUFFIX))
     }
 
     /// 所属模块：platform / 桌面后端 / 存储
-    /// 功能：返回应用临时目录：`<安装目录>/data/temp`，保证运行期数据不落到用户目录。
+    /// 功能：返回应用临时目录：`<安装目录>/temp`；无法定位安装目录时退回系统临时目录。
     /// 输入：`self`。
     /// 输出/副作用：目录路径；不创建目录。
     /// 复杂度：时间 O(路径长度)，空间 O(路径长度)。
     ///
     /// Module: platform / desktop backend / storage
-    /// Purpose: Return the app temp directory `<install>/data/temp` so runtime data never lands in the
-    /// user profile.
+    /// Purpose: Return the app temp directory `<install>/temp`, falling back to the system temp
+    /// directory when the install directory cannot be resolved.
     /// Inputs: `self`.
     /// Outputs / side effects: the path; nothing is created.
     /// Complexity: O(path length) time and space.
     fn temp_dir(&self) -> PathBuf {
         self.install_dir()
-            .map(|base| base.join(DATA_DIR_SUFFIX).join(TEMP_DIR_SUFFIX))
+            .map(|base| base.join(TEMP_DIR_SUFFIX))
             .unwrap_or_else(std::env::temp_dir)
     }
 

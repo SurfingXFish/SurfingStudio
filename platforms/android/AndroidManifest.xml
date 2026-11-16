@@ -8,7 +8,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.surfingstudio.app"
     android:versionCode="10"
-    android:versionName="1.3.5a">
+    android:versionName="1.3.6a">
 
     <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="35" />
 

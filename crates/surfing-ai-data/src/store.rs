@@ -1,6 +1,6 @@
 //! 所属模块：surfing-ai-data / 资料库文件存储
 //! 文件用途：
-//! - 把 AI 资料库拆成“智能体 JSON + 技能 Markdown + 乐器 JSON + 顺序清单”写入安装目录。
+//! - 把 AI 资料库拆成“智能体 JSON + 技能 Markdown + 乐器 JSON + 顺序清单”写入资料库根目录。
 //! - 读取上述文件并合并为完整的资料库 JSON；损坏条目跳过，不中断整体加载。
 //! - 提供单条导入、单条导出与整类导出，供宿主 UI 调用。
 //!
@@ -14,7 +14,7 @@
 //! Module: surfing-ai-data / library file storage
 //! Purpose:
 //! - Split the AI library into agent JSON, skill Markdown, instrument JSON and an order manifest
-//!   under the install directory.
+//!   under the library root.
 //! - Read those files back into one library JSON; broken entries are skipped without failing the load.
 //! - Provide single-entry import/export and whole-category export for the host UI.
 //!
@@ -55,15 +55,15 @@ const INSTRUMENTS_DIR: &str = "instruments";
 const DEFAULT_VERSION: u64 = 3;
 
 /// 所属模块：surfing-ai-data / 资料库文件存储
-/// 功能：读取安装目录下的资料库文件并合并为 `AiLibrary` 兼容的 JSON。
-/// 输入：`root`：资料库根目录（`<安装目录>/data/ai`）。
+/// 功能：读取资料库根目录下的分类文件并合并为 `AiLibrary` 兼容的 JSON。
+/// 输入：`root`：资料库根目录（由运行时给出，桌面为 `<安装目录>/ai`）。
 /// 输出/副作用：资料库 JSON；只读文件，不创建目录。
 /// 复杂度：时间 O(文件数 × 文件大小)，空间 O(资料库大小)。
 ///
 /// Module: surfing-ai-data / library file storage
-/// Purpose: Read the library files under the install directory and merge them into `AiLibrary`-shaped
-/// JSON.
-/// Inputs: `root`: library root (`<install>/data/ai`).
+/// Purpose: Read the categorized files under the library root and merge them into
+/// `AiLibrary`-shaped JSON.
+/// Inputs: `root`: library root (supplied by the runtime; `<install>/ai` on desktop).
 /// Outputs / side effects: library JSON; reads files only and creates nothing.
 /// Complexity: O(files × file size) time and O(library size) space.
 pub fn load(root: &Path) -> Result<Value, String> {
@@ -91,14 +91,14 @@ pub fn load(root: &Path) -> Result<Value, String> {
 }
 
 /// 所属模块：surfing-ai-data / 资料库文件存储
-/// 功能：把资料库 JSON 拆分为分类文件并写入安装目录，随后删除不再存在的条目文件。
+/// 功能：把资料库 JSON 拆分为分类文件并写入资料库根目录，随后删除不再存在的条目文件。
 /// 输入：`root` 资料库根目录；`library` 资料库 JSON。
 /// 输出/副作用：创建目录并写文件；失败返回中文原因。
 /// 复杂度：时间 O(条目数 × 条目大小)，空间 O(单条大小)。
 ///
 /// Module: surfing-ai-data / library file storage
-/// Purpose: Split library JSON into categorized files under the install directory and delete files
-/// for removed entries.
+/// Purpose: Split library JSON into categorized files under the library root and delete files for
+/// removed entries.
 /// Inputs: `root`; `library`.
 /// Outputs / side effects: creates directories and writes files; returns a Chinese error on failure.
 /// Complexity: O(entries × entry size) time and O(one entry) space.
