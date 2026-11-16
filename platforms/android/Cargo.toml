@@ -1,6 +1,6 @@
 ﻿[package]
 name = "surfing-studio-android"
-version = "1.3.4-a"
+version = "1.3.5-a"
 edition = "2024"
 rust-version = "1.85"
 publish = false
