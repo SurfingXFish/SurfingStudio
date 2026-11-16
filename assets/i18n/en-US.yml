@@ -422,7 +422,7 @@ strings:
   "添加模型": "Add model"
   "配置服务商与 API Key，添加新的可用模型": "Configure a provider and API key to add a new model"
   "内置": "Built-in"
-  "内置模型的模型 ID 固定，只能调整密钥与参数。": "Built-in model IDs are fixed; only the key and parameters can be changed."
+  "内置模型的模型 ID 固定，只能调整展示名、密钥与参数。": "Built-in model IDs are fixed; only the display name, key and parameters can be changed."
   "暂无模型": "No models"
   "服务商": "Provider"
   "操作": "Actions"

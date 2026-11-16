@@ -654,7 +654,11 @@ impl SurfingApp {
             return;
         }
         self.settings_models.pending_model = Some(model.clone());
-        let request = model.build_request(
+        // 连通性测试关闭思考，避免一次探活消耗大量推理 token。
+        // Disable thinking for the connectivity test so a probe does not burn reasoning tokens.
+        let mut probe_model = model;
+        probe_model.reasoning = AiReasoning::Off.id().to_string();
+        let request = probe_model.build_request(
             vec![AiMessage {
                 role: AiRole::User,
                 content: "Reply with OK only.".into(),
@@ -1593,7 +1597,10 @@ fn ui_model_form(
                 }
             });
             if locked {
-                settings_hint(ui, t("内置模型的模型 ID 固定，只能调整密钥与参数。"));
+                settings_hint(
+                    ui,
+                    t("内置模型的模型 ID 固定，只能调整展示名、密钥与参数。"),
+                );
             }
             ui.add_space(theme::SPACE_MD);
 

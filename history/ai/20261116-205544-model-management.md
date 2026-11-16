@@ -27,7 +27,7 @@
 | `src/ai/mod.rs` | 修改 | 导出模型目录类型与常量；`AiRequest` 增加 `provider_label`、`top_p`、`top_k`、`json_output`；`RequestBody` 支持可选 Top P/Top K 与可选 JSON 输出；移除旧静态模型预设 |
 | `src/ai/backends/openai_compat.rs` | 修改 | 请求体写入 Top P/Top K 与可选 `response_format`；错误文案改用模型条目的服务商名称并指向 设置 → 模型 |
 | `src/app/settings.rs` | 修改 | `AiSettings` 增加 `models` / `active_model` 与迁移、选择、增删改、启停、服务商 Key 查询、唯一 id 方法；设置分类 `Ai` 改为 `Models`（显示「模型」）；加载时调用 `migrate_models`；移除旧 AI 页；补充迁移与回退测试 |
-| `src/app/settings_models.rs` | 新增 | 模型页与弹窗：分组列表、服务商网格、通过服务商添加/编辑/删除、表单草稿与本地校验、连通性测试后台线程与单帧轮询、模型标识与细线图标 |
+| `src/app/settings_models.rs` | 新增 | 模型页与弹窗：分组列表、服务商网格、通过服务商添加/编辑/删除、表单草稿与本地校验、连通性测试后台线程（探活关闭思考）与单帧轮询、模型标识与细线图标；内置模型编辑时锁定服务商与模型 ID |
 | `src/app/mod.rs` | 修改 | 注册 `settings_models` 模块，`SurfingApp` 增加模型页 UI 状态 |
 | `src/app/ai.rs` | 修改 | `send_ai_message` 改用 `settings.ai.active_model` 与 `build_request`；联网检索改用模型列表中的 DeepSeek Key；错误文案与截断提示改为 设置 → 模型 |
 | `src/ui/ai_panel.rs` | 修改 | 模型下拉按「内置 / 自定义」列出启用模型并写回 `active_model`；推理下拉写回当前模型；缺少密钥/模型时提示去模型设置 |
