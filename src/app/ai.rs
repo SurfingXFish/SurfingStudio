@@ -50,7 +50,7 @@ use crate::ai::prompt::{
 use crate::ai::search::{self, AiSearchConfig};
 use crate::ai::{
     AiApplySummary, AiLibrary, AiMessage, AiOperation, AiPlan, AiPluginInfo, AiPluginKind,
-    AiRequest, AiRole, AiRuntime, AiStreamEvent, PlanStream, find_preset,
+    AiRequest, AiRole, AiRuntime, AiStreamEvent, PlanStream,
 };
 
 /// 对话历史最多发送给模型的条数，避免上下文无限增长。
@@ -659,7 +659,7 @@ impl SurfingApp {
     /// Complexity: O(1) time and space.
     pub fn open_ai_settings(&mut self, ctx: &egui::Context) {
         self.open_settings(ctx);
-        self.settings_page = settings::SettingsPage::Ai;
+        self.settings_page = settings::SettingsPage::Models;
     }
 
     /// 所属模块：app / AI 编曲 / 插件清单
@@ -835,29 +835,25 @@ impl SurfingApp {
         } else {
             text
         };
-        let Some(preset) = find_preset(&self.settings.ai.model_preset) else {
-            self.ai_chat.error = Some("未知的模型预设，请在 设置 → AI 中重新选择".into());
+        let Some(active_model) = self.settings.ai.active_model().cloned() else {
+            self.ai_chat.error = Some("尚未添加模型，请在 设置 → 模型中添加".into());
             return;
         };
-        let provider = preset.provider;
-        let (base_url, model) = if provider == crate::ai::AiProvider::Custom {
-            (
-                self.settings.ai.custom_base_url.trim().to_string(),
-                self.settings.ai.custom_model.trim().to_string(),
-            )
-        } else {
-            (preset.base_url.to_string(), preset.model.to_string())
-        };
-        let api_key = self.settings.ai.api_key(provider.id()).to_string();
-        if api_key.is_empty() {
+        if !active_model.enabled {
+            self.ai_chat.error = Some("当前模型已停用，请在 设置 → 模型中启用或切换模型".into());
+            return;
+        }
+        if active_model.api_key.trim().is_empty() {
             self.ai_chat.error = Some(format!(
-                "尚未配置 {} 的 API Key，请在 设置 → AI 中填写",
-                provider.label()
+                "尚未配置 {} 的 API Key，请在 设置 → 模型中填写",
+                active_model.provider_label()
             ));
             return;
         }
-        if base_url.is_empty() || model.is_empty() {
-            self.ai_chat.error = Some("自定义接口的 Base URL 或模型名称为空".into());
+        if active_model.model.trim().is_empty()
+            || active_model.resolved_base_url().trim().is_empty()
+        {
+            self.ai_chat.error = Some("当前模型的接口地址或模型 ID 为空".into());
             return;
         }
         self.ai_chat.error = None;
@@ -903,30 +899,20 @@ impl SurfingApp {
                 content: message.content.clone(),
             });
         }
-        let model_name = model.clone();
-        let request = AiRequest {
-            provider,
-            base_url,
-            api_key,
-            model,
+        let model_name = active_model.display_label().to_string();
+        let request = active_model.build_request(
             messages,
-            temperature: self.settings.ai.temperature,
-            max_tokens: self.settings.ai.max_tokens,
-            timeout: Duration::from_secs(self.settings.ai.timeout_seconds.max(30)),
-            reasoning: self.settings.ai.reasoning(),
-        };
+            Duration::from_secs(self.settings.ai.timeout_seconds.max(30)),
+            active_model.context_output,
+            true,
+        );
         let request_id = self.ai_chat.next_request_id;
         self.ai_chat.next_request_id = self.ai_chat.next_request_id.wrapping_add(1).max(1);
-        // 联网搜索用 DeepSeek 的 Search 接口，因此需要 DeepSeek Key；没有 Key 时搜索关闭，
-        // 模型仍可基于已有知识完成编曲。
-        // Web research uses DeepSeek's Search API and therefore a DeepSeek key; without one the model
-        // still composes from its own knowledge.
-        let search_key = self.settings.ai.api_key("deepseek").to_string();
+        // 联网搜索使用自建 Bing HTML 检索，不再依赖 DeepSeek Search API 与额外密钥。
+        // Web research uses the built-in Bing HTML search and no extra Search API or key.
         let search = AiSearchConfig {
-            enabled: self.settings.ai.search_enabled && !search_key.is_empty(),
-            base_url: "https://api.deepseek.com".into(),
-            api_key: search_key,
-            timeout: Duration::from_secs(30),
+            enabled: self.settings.ai.search_enabled,
+            timeout: Duration::from_secs(20),
         };
         let (tx, rx) = channel();
         // 网络请求只在工作线程执行；UI 线程每帧非阻塞轮询事件并逐条写入工程。
@@ -1401,8 +1387,10 @@ impl SurfingApp {
             .map(|live| live.model.clone())
             .filter(|model| !model.is_empty())
             .unwrap_or_else(|| {
-                find_preset(&self.settings.ai.model_preset)
-                    .map(|preset| preset.model.to_string())
+                self.settings
+                    .ai
+                    .active_model()
+                    .map(|model| model.display_label().to_string())
                     .unwrap_or_default()
             });
         let live_steps = live
@@ -1454,7 +1442,7 @@ impl SurfingApp {
             text = format!("已联网检索资料。\n\n{text}");
         }
         if outcome.truncated {
-            text.push_str("\n\n（回复因最大输出上限被截断；可在 设置 → AI 调高“最大输出”。）");
+            text.push_str("\n\n（回复因最大输出上限被截断；可在 设置 → 模型 调高“输出”上限。）");
         }
         if text.is_empty() {
             text = "（模型没有返回内容）".into();

@@ -70,6 +70,7 @@ mod record;
 mod render;
 mod rolls;
 mod settings;
+mod settings_models;
 mod shared;
 mod shell;
 mod shortcuts;
@@ -306,6 +307,9 @@ pub struct SurfingApp {
     /// 设置窗口左侧选中的分类。
     /// Currently selected settings category in the left column.
     settings_page: settings::SettingsPage,
+    /// 设置 → 模型页的弹窗、表单草稿与连通性测试状态；仅 UI 状态，不持久化。
+    /// Dialog, draft and connectivity-test state of the settings model page; UI-only.
+    settings_models: settings_models::ModelsUi,
     /// 后台文件夹选择的目标用途。
     /// Purpose of the background folder picker.
     settings_folder_target: Option<settings::SettingsFolderTarget>,
@@ -1290,6 +1294,7 @@ impl SurfingApp {
             home_plugin_kind: None,
             settings_open: false,
             settings_page: settings::SettingsPage::default(),
+            settings_models: settings_models::ModelsUi::default(),
             settings_folder_target: None,
             settings_audio_systems: None,
             settings_audio_devices: None,

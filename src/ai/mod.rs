@@ -5,8 +5,8 @@
 //! - 聚合可编辑资料库（智能体/基础技能/技巧/乐器资料）、工程提示词、编曲计划、流式计划提取、MIDI 附件与联网检索子模块。
 //!
 //! 函数清单：
-//! - `AiProvider::id` / `label` / `protocol` / `default_base_url` / `default_model` / `preset`：服务商信息与预设。
-//! - `AiModelPreset` / `model_presets` / `find_preset`：对话下方“模型”下拉的选项。
+//! - `AiProvider::id` / `label` / `protocol` / `default_base_url` / `default_model`：协议族信息。
+//! - `AiModelConfig` / `PROVIDERS`：服务商目录与用户模型条目。
 //! - `AiRole::as_str`：消息角色到接口字段的映射。
 //! - `AiRuntime::standard` / `complete` / `stream`：按协议分派到后端并返回助手回复。
 //! - `AiStreamEvent`：流式补全过程中推送的思考与内容增量。
@@ -20,8 +20,8 @@
 //!   extraction and MIDI attachment parsing.
 //!
 //! Functions:
-//! - `AiProvider::id` / `label` / `protocol` / `default_base_url` / `default_model` / `preset`: provider data.
-//! - `AiModelPreset` / `model_presets` / `find_preset`: options of the model selector below the chat input.
+//! - `AiProvider::id` / `label` / `protocol` / `default_base_url` / `default_model`: protocol family.
+//! - `AiModelConfig` / `PROVIDERS`: provider catalogue and user model entries.
 //! - `AiRole::as_str`: message role to API field mapping.
 //! - `AiRuntime::standard` / `complete`: dispatch to a backend by protocol and return the assistant reply.
 //! - `truncate_for_error`: trim an error response body into readable text.
@@ -30,6 +30,7 @@ mod backend;
 mod backends;
 pub mod library;
 pub mod midi_file;
+mod models;
 pub mod plan;
 pub mod prompt;
 pub mod search;
@@ -38,6 +39,12 @@ pub mod stream;
 
 pub use backend::{AiBackend, AiBackendInfo};
 pub use library::{AiAgentProfile, AiInstrumentDoc, AiLibrary, AiSkillDoc, make_id, unique_id};
+pub use models::{
+    AiModelConfig, AiProviderModel, AiProviderSpec, CUSTOM_PROVIDER_ID,
+    DEFAULT_MODEL_CONTEXT_INPUT, DEFAULT_MODEL_CONTEXT_OUTPUT, DEFAULT_MODEL_TEMPERATURE,
+    DEFAULT_MODEL_TOOL_ROUNDS, MAX_MODEL_OUTPUT_TOKENS, PROVIDERS, default_model,
+    provider as model_provider, provider_label as model_provider_label,
+};
 pub use plan::{AiApplySummary, AiOperation, AiPlan, AiPluginInfo, AiPluginKind};
 pub use search::AiSearchConfig;
 pub use skills::{AiSkill, AiTechnique, instrument_catalog};
@@ -167,76 +174,6 @@ impl AiProvider {
             _ => AiProvider::Custom,
         }
     }
-}
-
-/// 对话下方“模型”下拉中的一个预设。
-/// One preset in the model selector below the chat input.
-#[derive(Clone, Copy, Debug)]
-pub struct AiModelPreset {
-    /// 稳定 id（写入全局设置）。
-    /// Stable id persisted in global settings.
-    pub id: &'static str,
-    /// 下拉展示文本。
-    /// Text shown in the selector.
-    pub label: &'static str,
-    pub provider: AiProvider,
-    pub base_url: &'static str,
-    pub model: &'static str,
-}
-
-/// 全部内置模型预设：两个 DeepSeek 模型、两个 MiMo 模型与自定义入口。
-/// Every built-in model preset: two DeepSeek models, two MiMo models and a custom entry.
-pub const MODEL_PRESETS: [AiModelPreset; 5] = [
-    AiModelPreset {
-        id: "deepseek-flash",
-        label: "DeepSeek Flash",
-        provider: AiProvider::DeepSeek,
-        base_url: "https://api.deepseek.com",
-        model: "deepseek-flash",
-    },
-    AiModelPreset {
-        id: "deepseek-v4-pro",
-        label: "DeepSeek V4 Pro",
-        provider: AiProvider::DeepSeek,
-        base_url: "https://api.deepseek.com",
-        model: "deepseek-v4-pro",
-    },
-    AiModelPreset {
-        id: "mimo-v2.6-flash",
-        label: "MiMo V2.6 Flash",
-        provider: AiProvider::Mimo,
-        base_url: "https://api.xiaomimimo.com/v1",
-        model: "mimo-v2.6-flash",
-    },
-    AiModelPreset {
-        id: "mimo-v2.6-pro",
-        label: "MiMo V2.6 Pro",
-        provider: AiProvider::Mimo,
-        base_url: "https://api.xiaomimimo.com/v1",
-        model: "mimo-v2.6-pro",
-    },
-    AiModelPreset {
-        id: "custom",
-        label: "自定义",
-        provider: AiProvider::Custom,
-        base_url: "",
-        model: "",
-    },
-];
-
-/// 所属模块：ai / 模型预设
-/// 功能：按 id 查找内置预设。
-/// 输入：`id`：预设 id。
-/// 输出/副作用：预设或 `None`；不修改状态。
-/// 复杂度：时间 O(预设数)，空间 O(1)。
-///
-/// Module: ai / model presets
-/// Purpose: Find a built-in preset by id.
-/// Inputs: `id`: preset id.
-/// Outputs / side effects: the preset or `None`; no state change.
-/// Complexity: O(presets) time and O(1) space.
-pub fn find_preset(id: &str) -> Option<AiModelPreset> {
-    MODEL_PRESETS.iter().copied().find(|preset| preset.id == id)
 }
 
 /// 对话消息角色。
@@ -381,15 +318,29 @@ impl AiReasoning {
 /// One completion request: provider, key, model and the complete message list.
 #[derive(Clone, Debug)]
 pub struct AiRequest {
+    /// 协议族：决定思考字段与输出上限字段的差异。
+    /// Protocol family: controls thinking and output-limit field differences.
     pub provider: AiProvider,
+    /// 服务商展示名称；只用于错误提示，不参与请求。
+    /// Provider display name; used in error text only.
+    pub provider_label: String,
     pub base_url: String,
     pub api_key: String,
     pub model: String,
     pub messages: Vec<AiMessage>,
     pub temperature: f32,
+    /// Top P；`None` 时不发送。
+    /// Top P; omitted when `None`.
+    pub top_p: Option<f32>,
+    /// Top K；`None` 时不发送。
+    /// Top K; omitted when `None`.
+    pub top_k: Option<u32>,
     pub max_tokens: u32,
     pub timeout: Duration,
     pub reasoning: AiReasoning,
+    /// 是否要求 JSON 对象输出；连通性测试关闭。
+    /// Whether to request a JSON object; the connectivity test disables it.
+    pub json_output: bool,
 }
 
 /// 流式补全过程中推送的增量。
@@ -424,9 +375,14 @@ pub(crate) struct RequestBody<'a> {
     pub model: &'a str,
     pub messages: Vec<BodyMessage<'a>>,
     pub temperature: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_k: Option<u32>,
     pub max_tokens: u32,
     pub stream: bool,
-    pub response_format: ResponseFormat,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_format: Option<ResponseFormat>,
 }
 
 #[derive(Serialize)]
@@ -542,16 +498,6 @@ pub fn truncate_for_error(text: &str, limit: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// 覆盖：预设 id 与模型名一一对应，未知 id 返回 `None`。
-    /// Covers: preset ids map to their model names and unknown ids return `None`.
-    #[test]
-    fn model_presets_resolve_by_id() {
-        let preset = find_preset("deepseek-flash").expect("preset");
-        assert_eq!(preset.model, "deepseek-flash");
-        assert_eq!(preset.provider, AiProvider::DeepSeek);
-        assert!(find_preset("missing").is_none());
-    }
 
     /// 覆盖：服务商默认地址与协议。
     /// Covers: provider default URLs and protocol.

@@ -69,8 +69,8 @@ impl AiBackend for OpenAiCompatible {
     fn complete(&self, request: &AiRequest) -> Result<AiResponse, String> {
         if request.api_key.trim().is_empty() {
             return Err(format!(
-                "尚未配置 {} 的 API Key，请在 设置 → AI 中填写",
-                request.provider.label()
+                "尚未配置 {} 的 API Key，请在 设置 → 模型中填写",
+                request.provider_label
             ));
         }
         if request.model.trim().is_empty() {
@@ -140,8 +140,8 @@ impl AiBackend for OpenAiCompatible {
     ) -> Result<AiResponse, String> {
         if request.api_key.trim().is_empty() {
             return Err(format!(
-                "尚未配置 {} 的 API Key，请在 设置 → AI 中填写",
-                request.provider.label()
+                "尚未配置 {} 的 API Key，请在 设置 → 模型中填写",
+                request.provider_label
             ));
         }
         if request.model.trim().is_empty() {
@@ -316,11 +316,13 @@ fn build_payload(request: &AiRequest, stream: bool) -> Result<String, String> {
         model: &request.model,
         messages: body_messages,
         temperature: request.temperature.clamp(0.0, 2.0),
+        top_p: request.top_p.map(|value| value.clamp(0.0, 1.0)),
+        top_k: request.top_k.map(|value| value.clamp(1, 100)),
         max_tokens: request.max_tokens.max(256),
         stream,
-        response_format: ResponseFormat {
+        response_format: request.json_output.then_some(ResponseFormat {
             kind: "json_object",
-        },
+        }),
     };
     let mut payload =
         serde_json::to_value(&body).map_err(|error| format!("序列化 AI 请求失败：{error}"))?;
@@ -367,7 +369,7 @@ fn build_payload(request: &AiRequest, stream: bool) -> Result<String, String> {
 fn endpoint(base_url: &str) -> Result<String, String> {
     let base = base_url.trim().trim_end_matches('/');
     if base.is_empty() {
-        return Err("尚未配置 AI 接口地址，请在 设置 → AI 中填写 Base URL".into());
+        return Err("尚未配置 AI 接口地址，请在 设置 → 模型中填写 Base URL".into());
     }
     if !base.starts_with("https://") && !base.starts_with("http://") {
         return Err("AI 接口地址必须以 http:// 或 https:// 开头".into());
@@ -509,6 +511,7 @@ mod tests {
         use crate::ai::{AiMessage, AiReasoning, AiRole};
         let request = AiRequest {
             provider: AiProvider::DeepSeek,
+            provider_label: "DeepSeek".into(),
             base_url: "https://api.deepseek.com".into(),
             api_key: "key".into(),
             model: "deepseek-flash".into(),
@@ -517,9 +520,12 @@ mod tests {
                 content: "hi".into(),
             }],
             temperature: 0.7,
+            top_p: Some(0.9),
+            top_k: Some(40),
             max_tokens: 1024,
             timeout: std::time::Duration::from_secs(30),
             reasoning: AiReasoning::Medium,
+            json_output: true,
         };
         let payload: Value =
             serde_json::from_str(&build_payload(&request, true).expect("payload")).expect("json");
@@ -527,6 +533,8 @@ mod tests {
         assert_eq!(payload["thinking"]["type"], json!("enabled"));
         assert_eq!(payload["reasoning_effort"], json!("medium"));
         assert_eq!(payload["response_format"]["type"], json!("json_object"));
+        assert!((payload["top_p"].as_f64().expect("top_p") - 0.9).abs() < 1e-5);
+        assert_eq!(payload["top_k"], json!(40));
     }
 
     /// 覆盖：错误体优先读取 `error.message`。
